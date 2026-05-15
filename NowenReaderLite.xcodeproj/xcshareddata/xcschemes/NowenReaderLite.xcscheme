@@ -18,7 +18,7 @@
                BlueprintIdentifier = "D285CDD4DA0541B2D4FCD794"
                BuildableName = "NowenReaderLite.app"
                BlueprintName = "NowenReaderLite"
-               ReferencedContainer = "container:NowenReader.xcodeproj">
+               ReferencedContainer = "container:NowenReaderLite.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -48,7 +48,7 @@
             BlueprintIdentifier = "D285CDD4DA0541B2D4FCD794"
             BuildableName = "NowenReaderLite.app"
             BlueprintName = "NowenReaderLite"
-            ReferencedContainer = "container:NowenReader.xcodeproj">
+            ReferencedContainer = "container:NowenReaderLite.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -65,7 +65,7 @@
             BlueprintIdentifier = "D285CDD4DA0541B2D4FCD794"
             BuildableName = "NowenReaderLite.app"
             BlueprintName = "NowenReaderLite"
-            ReferencedContainer = "container:NowenReader.xcodeproj">
+            ReferencedContainer = "container:NowenReaderLite.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

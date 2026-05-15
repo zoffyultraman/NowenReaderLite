@@ -25,24 +25,27 @@ struct NovelReaderView: View {
                     fontSize: fontSize,
                     darkMode: viewModel.darkMode,
                     chapterTitle: viewModel.chapterContent?.title,
-                    chapterId: viewModel.currentChapter,
-                    currentPage: $currentPage,
+                    initialPage: currentPage,
+                    onPageChanged: { page in
+                        currentPage = page
+                    },
                     onReachEnd: {
                         showOverlay = false
+                        let saved = currentPage
                         Task {
-                            await viewModel.nextChapter(fontSize: fontSize)
+                            await viewModel.saveProgress(currentPage: saved)
                             currentPage = 0
+                            await viewModel.nextChapter(fontSize: fontSize)
                         }
                     },
                     onSwipeToPrev: {
                         showOverlay = false
-                        currentPage = 99999
+                        let saved = currentPage
                         Task {
+                            await viewModel.saveProgress(currentPage: saved)
+                            currentPage = max(0, viewModel.pages.count - 1)
                             await viewModel.prevChapter(fontSize: fontSize)
                         }
-                    },
-                    onPageChanged: { page in
-                        viewModel.updateReadingPosition(pageIndex: page)
                     }
                 )
                 .ignoresSafeArea()
@@ -50,20 +53,19 @@ struct NovelReaderView: View {
         }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .tabBar)
+        .onAppear {
+            let saved = UserDefaults.standard.integer(forKey: "novel_page_\(comicId)_\(initialChapter)")
+            currentPage = saved
+        }
         .task {
             await viewModel.load(comicId: comicId, chapter: initialChapter, fontSize: fontSize)
         }
         .onDisappear {
-            Task { await viewModel.saveProgress() }
+            Task { await viewModel.saveProgress(currentPage: currentPage) }
         }
         .onChange(of: fontSize) { _, newValue in
             UserDefaults.standard.set(newValue, forKey: "novel_font_size")
             viewModel.repaginate(fontSize: newValue)
-        }
-        .onChange(of: viewModel.targetPage) { _, newPage in
-            if currentPage != 99999 {
-                currentPage = newPage
-            }
         }
         .onTapGesture { showOverlay.toggle() }
         .overlay(alignment: .top) {
@@ -138,7 +140,13 @@ struct NovelReaderView: View {
 
             HStack {
                 Button {
-                    Task { await viewModel.prevChapter(fontSize: fontSize); currentPage = 0 }
+                    showOverlay = false
+                    let saved = currentPage
+                    Task {
+                        await viewModel.saveProgress(currentPage: saved)
+                        currentPage = max(0, viewModel.pages.count - 1)
+                        await viewModel.prevChapter(fontSize: fontSize)
+                    }
                 } label: {
                     Label("上一章", systemImage: "chevron.left")
                         .font(.subheadline)
@@ -150,7 +158,12 @@ struct NovelReaderView: View {
                 if currentPage >= viewModel.pages.count - 1 {
                     Button {
                         showOverlay = false
-                        Task { await viewModel.nextChapter(fontSize: fontSize); currentPage = 0 }
+                        let saved = currentPage
+                        Task {
+                            await viewModel.saveProgress(currentPage: saved)
+                            currentPage = 0
+                            await viewModel.nextChapter(fontSize: fontSize)
+                        }
                     } label: {
                         Label("下一章", systemImage: "chevron.right")
                             .font(.subheadline.weight(.semibold))
@@ -163,7 +176,12 @@ struct NovelReaderView: View {
                 } else {
                     Button {
                         showOverlay = false
-                        Task { await viewModel.nextChapter(fontSize: fontSize); currentPage = 0 }
+                        let saved = currentPage
+                        Task {
+                            await viewModel.saveProgress(currentPage: saved)
+                            currentPage = 0
+                            await viewModel.nextChapter(fontSize: fontSize)
+                        }
                     } label: {
                         Label("下一章", systemImage: "chevron.right")
                             .font(.subheadline)
@@ -178,18 +196,17 @@ struct NovelReaderView: View {
     }
 }
 
-// MARK: - 翻页控制器（VC 缓存池版）
+// MARK: - 翻页控制器
 
 struct NovelPager: UIViewControllerRepresentable {
     let pages: [String]
     let fontSize: Double
     let darkMode: Bool
     let chapterTitle: String?
-    let chapterId: Int
-    @Binding var currentPage: Int
+    let initialPage: Int
+    let onPageChanged: (Int) -> Void
     let onReachEnd: () -> Void
     let onSwipeToPrev: () -> Void
-    let onPageChanged: (Int) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -204,139 +221,80 @@ struct NovelPager: UIViewControllerRepresentable {
         pvc.dataSource = context.coordinator
         pvc.delegate = context.coordinator
         pvc.isDoubleSided = false
-        if !pages.isEmpty {
-            context.coordinator.rebuildCache(pages: pages)
-            if let vc = context.coordinator.cachedVCs.first {
-                pvc.setViewControllers([vc], direction: .forward, animated: false)
-            }
-        }
         return pvc
     }
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         let coord = context.coordinator
 
-        // 章节变化 或 文本变化时重建缓存
-        let chapterChanged = coord.lastChapter != coord.parent.chapterId
-        let pagesChanged = !coord.isSamePages(pages)
-        if !pages.isEmpty && (chapterChanged || pagesChanged) {
-            coord.lastChapter = coord.parent.chapterId
-            coord.fontSize = fontSize
-            coord.rebuildCache(pages: pages)
-            // 跳转到目标页（99999 会被 clamp 到最后一页）
-            let raw = coord.parent.currentPage
-            let target = min(raw, coord.cachedVCs.count - 1)
-            if target >= 0, target < coord.cachedVCs.count {
-                pvc.setViewControllers([coord.cachedVCs[target]], direction: .forward, animated: false)
-                coord.currentPageIndex = target
-                DispatchQueue.main.async {
-                    coord.parent.currentPage = target
-                }
-            } else if let vc = coord.cachedVCs.first {
-                pvc.setViewControllers([vc], direction: .forward, animated: false)
-                coord.currentPageIndex = 0
+        guard !pages.isEmpty else { return }
+
+        let pagesChanged = coord.cachedVCs.count != pages.count
+            || coord.cachedVCs.first?.pageText != pages.first
+            || coord.cachedVCs.last?.pageText != pages.last
+
+        if pagesChanged {
+            coord.rebuildCache(pages: pages, fontSize: fontSize, darkMode: darkMode, title: chapterTitle)
+            let page = min(initialPage, coord.cachedVCs.count - 1)
+            if page >= 0, page < coord.cachedVCs.count {
+                pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
+                coord.currentIndex = page
             }
         }
-
-        coord.darkMode = darkMode
-        coord.chapterTitle = chapterTitle
     }
-
-    // MARK: - Coordinator（VC 缓存池，稳定引用）
 
     class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         let parent: NovelPager
-
-        // 缓存池：预创建所有页 VC，翻页期间不修改
         var cachedVCs: [NovelTextPageVC] = []
-        var currentPageIndex: Int = 0
-        private var triedSwipePastEnd = false
-        var lastChapter: Int = -1
-
-        // 状态（仅 updateUIViewController 更新）
-        var fontSize: Double
-        var darkMode: Bool
-        var chapterTitle: String?
+        var currentIndex: Int = 0
 
         init(_ parent: NovelPager) {
             self.parent = parent
-            self.fontSize = parent.fontSize
-            self.darkMode = parent.darkMode
-            self.chapterTitle = parent.chapterTitle
         }
 
-        // 判断 pages 是否相同
-        func isSamePages(_ newPages: [String]) -> Bool {
-            guard cachedVCs.count == newPages.count else { return false }
-            // 只比较首尾页，速度更快
-            if cachedVCs.first?.pageText != newPages.first { return false }
-            if cachedVCs.last?.pageText != newPages.last { return false }
-            return true
-        }
-
-        // 重建缓存池（只在章节切换时调用，不参与翻页动画）
-        func rebuildCache(pages: [String]) {
+        func rebuildCache(pages: [String], fontSize: Double, darkMode: Bool, title: String?) {
             cachedVCs = pages.enumerated().map { index, text in
-                let showTitle = (index == 0)
-                return NovelTextPageVC(
+                NovelTextPageVC(
                     text: text,
                     index: index,
                     fontSize: fontSize,
                     darkMode: darkMode,
-                    title: showTitle ? chapterTitle : nil
+                    title: index == 0 ? title : nil
                 )
             }
         }
 
-        // MARK: - DataSource（严格从缓存池取，索引越界返回 nil）
-
+        // DataSource
         func pageViewController(_ pvc: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
             guard let page = viewController as? NovelTextPageVC else { return nil }
             let prev = page.index - 1
             if prev < 0 {
-                DispatchQueue.main.async { [weak self] in
-                    self?.parent.onSwipeToPrev()
-                }
+                DispatchQueue.main.async { self.parent.onSwipeToPrev() }
                 return nil
             }
-            return cachedVCs[prev]
+            return cachedVCs[safe: prev]
         }
 
         func pageViewController(_ pvc: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
             guard let page = viewController as? NovelTextPageVC else { return nil }
             let next = page.index + 1
             if next >= cachedVCs.count {
-                DispatchQueue.main.async { [weak self] in
-                    self?.parent.onReachEnd()
-                }
+                DispatchQueue.main.async { self.parent.onReachEnd() }
+                return nil
             }
-            return next < cachedVCs.count ? cachedVCs[next] : nil
+            return cachedVCs[safe: next]
         }
 
-        // MARK: - Delegate（主线程通知 SwiftUI）
-
+        // Delegate
         func pageViewController(_ pvc: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
-            if completed {
-                guard let current = pvc.viewControllers?.first as? NovelTextPageVC else { return }
-                currentPageIndex = current.index
-                parent.onPageChanged(current.index)
-                DispatchQueue.main.async { [weak self] in
-                    self?.parent.currentPage = current.index
-                }
-            }
-
-            // 用户在最后一页向前翻 → 动画结束后加载下一章
-            if triedSwipePastEnd {
-                triedSwipePastEnd = false
-                DispatchQueue.main.async { [weak self] in
-                    self?.parent.onReachEnd()
-                }
-            }
+            guard completed, let current = pvc.viewControllers?.first as? NovelTextPageVC else { return }
+            currentIndex = current.index
+            parent.onPageChanged(current.index)
         }
     }
 }
 
-// MARK: - 单页 VC（UILabel，不拦截手势，pageText 用于比较）
+// MARK: - 单页 VC
 
 class NovelTextPageVC: UIViewController {
     let pageText: String
@@ -407,8 +365,6 @@ final class NovelReaderViewModel: ObservableObject {
     @Published var currentChapter = 0
     @Published var darkMode = false
     @Published var pages: [String] = []
-    @Published var targetPage: Int = 0
-    private var lastReadCharOffset: Int = 0
 
     var plainText: String { chapterContent?.content ?? "" }
 
@@ -437,17 +393,9 @@ final class NovelReaderViewModel: ObservableObject {
         await load(comicId: comicId, chapter: currentChapter - 1, fontSize: fontSize)
     }
 
-    func saveProgress() async {
+    func saveProgress(currentPage: Int = 0) async {
         try? await api.updateProgress(comicId: comicId, page: currentChapter)
-    }
-
-    /// 更新当前阅读位置（由 delegate 调用）
-    func updateReadingPosition(pageIndex: Int) {
-        var offset = 0
-        for i in 0..<min(pageIndex, pages.count) {
-            offset += pages[i].count
-        }
-        lastReadCharOffset = offset
+        UserDefaults.standard.set(currentPage, forKey: "novel_page_\(comicId)_\(currentChapter)")
     }
 
     func repaginate(fontSize: Double) {
@@ -457,28 +405,9 @@ final class NovelReaderViewModel: ObservableObject {
             .first ?? 0
         let maxW = screen.width - 40
         let maxH = screen.height - safeAreaTop - 40
-        // 第一页有标题，减去标题高度
         let titleHeight: CGFloat = (chapterContent?.title != nil) ? fontSize * 2.5 : 0
         let firstPageMaxH = maxH - titleHeight
-        let newPages = paginate(text: plainText, fontSize: fontSize, maxWidth: maxW, maxHeight: maxH, firstPageMaxH: firstPageMaxH)
-
-        // 在新分页中找到对应位置
-        var offset = 0
-        var newTarget = 0
-        for (i, page) in newPages.enumerated() {
-            if offset >= lastReadCharOffset {
-                newTarget = i
-                break
-            }
-            offset += page.count
-            newTarget = i
-        }
-
-        pages = newPages
-
-        DispatchQueue.main.async { [weak self] in
-            self?.targetPage = newTarget
-        }
+        pages = paginate(text: plainText, fontSize: fontSize, maxWidth: maxW, maxHeight: maxH, firstPageMaxH: firstPageMaxH)
     }
 
     func paginate(text: String, fontSize: Double, maxWidth: CGFloat, maxHeight: CGFloat, firstPageMaxH: CGFloat? = nil) -> [String] {
@@ -492,7 +421,6 @@ final class NovelReaderViewModel: ObservableObject {
             .paragraphStyle: paraStyle,
         ]
 
-        // 用 UILabel.intrinsicContentSize 测量（和渲染一致）
         let label = UILabel()
         label.numberOfLines = 0
         label.preferredMaxLayoutWidth = maxWidth
@@ -528,8 +456,7 @@ final class NovelReaderViewModel: ObservableObject {
             let mid = (low + high) / 2
             let end = text.index(text.startIndex, offsetBy: min(mid, text.count))
             label.attributedText = NSAttributedString(string: String(text[text.startIndex..<end]), attributes: attrs)
-            let h = label.intrinsicContentSize.height
-            if h <= maxHeight {
+            if label.intrinsicContentSize.height <= maxHeight {
                 best = mid
                 low = mid + 1
             } else {
@@ -551,7 +478,7 @@ final class NovelReaderViewModel: ObservableObject {
     }
 }
 
-// MARK: - Double 扩展
+// MARK: - Extensions
 
 extension Comparable {
     func clamped(to range: ClosedRange<Self>, default defaultValue: Self) -> Self {
