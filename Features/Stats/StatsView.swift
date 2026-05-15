@@ -147,6 +147,7 @@ final class StatsViewModel: ObservableObject {
     @Published var isLoading = false
 
     func loadStats() async {
+        guard !isLoading else { return }
         isLoading = true
         do {
             stats = try await APIClient.shared.fetchStats()

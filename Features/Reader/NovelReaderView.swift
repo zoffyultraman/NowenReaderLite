@@ -9,9 +9,12 @@ struct NovelReaderView: View {
 
     @StateObject private var viewModel = NovelReaderViewModel()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showOverlay = false
     @State private var fontSize: Double = UserDefaults.standard.double(forKey: "novel_font_size").clamped(to: 12...30, default: 17)
     @State private var currentPage = 0
+    private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
+    @State private var restoredChapter = -1
 
     var body: some View {
         ZStack {
@@ -28,24 +31,25 @@ struct NovelReaderView: View {
                     initialPage: currentPage,
                     onPageChanged: { page in
                         currentPage = page
+                        // 每次翻页保存记录
+                        recordManager.save(
+                            comicId: comicId,
+                            chapter: viewModel.currentChapter,
+                            page: page
+                        )
                     },
                     onReachEnd: {
                         showOverlay = false
                         let saved = currentPage
-                        Task {
-                            await viewModel.saveProgress(currentPage: saved)
-                            currentPage = 0
-                            await viewModel.nextChapter(fontSize: fontSize)
-                        }
+                        recordManager.save(comicId: comicId, chapter: viewModel.currentChapter, page: saved)
+                        currentPage = 0
+                        Task { await viewModel.nextChapter(fontSize: fontSize) }
                     },
                     onSwipeToPrev: {
                         showOverlay = false
-                        let saved = currentPage
-                        Task {
-                            await viewModel.saveProgress(currentPage: saved)
-                            currentPage = max(0, viewModel.pages.count - 1)
-                            await viewModel.prevChapter(fontSize: fontSize)
-                        }
+                        recordManager.save(comicId: comicId, chapter: viewModel.currentChapter, page: currentPage)
+                        currentPage = 99999
+                        Task { await viewModel.prevChapter(fontSize: fontSize) }
                     }
                 )
                 .ignoresSafeArea()
@@ -53,15 +57,29 @@ struct NovelReaderView: View {
         }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .tabBar)
-        .onAppear {
-            let saved = UserDefaults.standard.integer(forKey: "novel_page_\(comicId)_\(initialChapter)")
-            currentPage = saved
-        }
         .task {
-            await viewModel.load(comicId: comicId, chapter: initialChapter, fontSize: fontSize)
+            // 以本地记录为准，没有记录则用 initialChapter
+            let savedChapter = recordManager.load(comicId: comicId)?.chapter ?? initialChapter
+            await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize)
+            restorePosition()
         }
         .onDisappear {
-            Task { await viewModel.saveProgress(currentPage: currentPage) }
+            saveRecord()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background || newPhase == .inactive {
+                saveRecord()
+            }
+        }
+        .onChange(of: viewModel.pages.count) { _, _ in
+            restorePosition()
+        }
+        .onChange(of: viewModel.currentChapter) { _, _ in
+            // 后备恢复（pages.count 不变时不会触发上面的 handler）
+            Task {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                restorePosition()
+            }
         }
         .onChange(of: fontSize) { _, newValue in
             UserDefaults.standard.set(newValue, forKey: "novel_font_size")
@@ -76,11 +94,38 @@ struct NovelReaderView: View {
         }
     }
 
+    // MARK: - 恢复阅读位置
+
+    private func restorePosition() {
+        let count = viewModel.pages.count
+        guard count > 0 else { return }
+
+        guard restoredChapter != viewModel.currentChapter else { return }
+        restoredChapter = viewModel.currentChapter
+
+        if let record = recordManager.load(comicId: comicId),
+           record.chapter == viewModel.currentChapter {
+            // 有记录：恢复到上次位置（覆盖 99999）
+            currentPage = min(record.page, count - 1)
+        }
+        // 无记录：保留 currentPage（前翻=0，回翻=99999→clamp 到末页）
+    }
+
+    // MARK: - 保存记录
+
+    private func saveRecord() {
+        recordManager.save(
+            comicId: comicId,
+            chapter: viewModel.currentChapter,
+            page: currentPage
+        )
+    }
+
+    // MARK: - UI
+
     private var backgroundForTheme: Color {
         viewModel.darkMode ? Color(white: 0.1) : Color(.systemBackground)
     }
-
-    // MARK: - 顶部工具栏
 
     private var topOverlay: some View {
         HStack {
@@ -122,8 +167,6 @@ struct NovelReaderView: View {
         )
     }
 
-    // MARK: - 底部工具栏
-
     private var bottomOverlay: some View {
         VStack(spacing: 12) {
             HStack {
@@ -141,12 +184,9 @@ struct NovelReaderView: View {
             HStack {
                 Button {
                     showOverlay = false
-                    let saved = currentPage
-                    Task {
-                        await viewModel.saveProgress(currentPage: saved)
-                        currentPage = max(0, viewModel.pages.count - 1)
-                        await viewModel.prevChapter(fontSize: fontSize)
-                    }
+                    saveRecord()
+                    currentPage = 99999
+                    Task { await viewModel.prevChapter(fontSize: fontSize) }
                 } label: {
                     Label("上一章", systemImage: "chevron.left")
                         .font(.subheadline)
@@ -158,12 +198,9 @@ struct NovelReaderView: View {
                 if currentPage >= viewModel.pages.count - 1 {
                     Button {
                         showOverlay = false
-                        let saved = currentPage
-                        Task {
-                            await viewModel.saveProgress(currentPage: saved)
-                            currentPage = 0
-                            await viewModel.nextChapter(fontSize: fontSize)
-                        }
+                        saveRecord()
+                        currentPage = 0
+                        Task { await viewModel.nextChapter(fontSize: fontSize) }
                     } label: {
                         Label("下一章", systemImage: "chevron.right")
                             .font(.subheadline.weight(.semibold))
@@ -176,12 +213,9 @@ struct NovelReaderView: View {
                 } else {
                     Button {
                         showOverlay = false
-                        let saved = currentPage
-                        Task {
-                            await viewModel.saveProgress(currentPage: saved)
-                            currentPage = 0
-                            await viewModel.nextChapter(fontSize: fontSize)
-                        }
+                        saveRecord()
+                        currentPage = 0
+                        Task { await viewModel.nextChapter(fontSize: fontSize) }
                     } label: {
                         Label("下一章", systemImage: "chevron.right")
                             .font(.subheadline)
@@ -226,15 +260,23 @@ struct NovelPager: UIViewControllerRepresentable {
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         let coord = context.coordinator
-
         guard !pages.isEmpty else { return }
 
         let pagesChanged = coord.cachedVCs.count != pages.count
             || coord.cachedVCs.first?.pageText != pages.first
             || coord.cachedVCs.last?.pageText != pages.last
 
+        let pageJumped = initialPage != coord.currentIndex
+
         if pagesChanged {
             coord.rebuildCache(pages: pages, fontSize: fontSize, darkMode: darkMode, title: chapterTitle)
+            let page = min(initialPage, coord.cachedVCs.count - 1)
+            if page >= 0, page < coord.cachedVCs.count {
+                pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
+                coord.currentIndex = page
+            }
+        } else if pageJumped {
+            // initialPage 变了但 pages 没变（restorePosition）
             let page = min(initialPage, coord.cachedVCs.count - 1)
             if page >= 0, page < coord.cachedVCs.count {
                 pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
@@ -264,7 +306,6 @@ struct NovelPager: UIViewControllerRepresentable {
             }
         }
 
-        // DataSource
         func pageViewController(_ pvc: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
             guard let page = viewController as? NovelTextPageVC else { return nil }
             let prev = page.index - 1
@@ -285,7 +326,6 @@ struct NovelPager: UIViewControllerRepresentable {
             return cachedVCs[safe: next]
         }
 
-        // Delegate
         func pageViewController(_ pvc: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
             guard completed, let current = pvc.viewControllers?.first as? NovelTextPageVC else { return }
             currentIndex = current.index
@@ -366,6 +406,8 @@ final class NovelReaderViewModel: ObservableObject {
     @Published var darkMode = false
     @Published var pages: [String] = []
 
+    init() {}
+
     var plainText: String { chapterContent?.content ?? "" }
 
     private var comicId = ""
@@ -395,7 +437,6 @@ final class NovelReaderViewModel: ObservableObject {
 
     func saveProgress(currentPage: Int = 0) async {
         try? await api.updateProgress(comicId: comicId, page: currentChapter)
-        UserDefaults.standard.set(currentPage, forKey: "novel_page_\(comicId)_\(currentChapter)")
     }
 
     func repaginate(fontSize: Double) {
@@ -416,10 +457,7 @@ final class NovelReaderViewModel: ObservableObject {
         let font = UIFont.systemFont(ofSize: fontSize)
         let paraStyle = NSMutableParagraphStyle()
         paraStyle.lineSpacing = fontSize * 0.6
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .paragraphStyle: paraStyle,
-        ]
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paraStyle]
 
         let label = UILabel()
         label.numberOfLines = 0
@@ -427,9 +465,7 @@ final class NovelReaderViewModel: ObservableObject {
 
         let fpMaxH = firstPageMaxH ?? maxHeight
         label.attributedText = NSAttributedString(string: text, attributes: attrs)
-        if label.intrinsicContentSize.height <= fpMaxH {
-            return [text]
-        }
+        if label.intrinsicContentSize.height <= fpMaxH { return [text] }
 
         var result: [String] = []
         var remaining = text
@@ -470,7 +506,7 @@ final class NovelReaderViewModel: ObservableObject {
         if best < text.count {
             let searchStart = pageText.index(pageText.endIndex, offsetBy: -min(30, pageText.count))
             if let dot = pageText[searchStart..<pageText.endIndex].lastIndex(where: { "。！？.!?".contains($0) }) {
-                pageText = String(pageText[pageText.startIndex..<pageText.index(after: dot)])
+                pageText = String(pageText[pageText.startIndex...dot])
             }
         }
 
@@ -478,16 +514,42 @@ final class NovelReaderViewModel: ObservableObject {
     }
 }
 
+// MARK: - 阅读记录管理器
+
+@MainActor
+
+final class ReadingRecordManager {
+    static let shared = ReadingRecordManager()
+    private let defaults = UserDefaults.standard
+    private let key = "reading_records"
+
+    struct Record: Codable {
+        let chapter: Int
+        let page: Int
+        let timestamp: Date
+    }
+
+    private init() {}
+
+    func save(comicId: String, chapter: Int, page: Int) {
+        var records = loadAll()
+        records[comicId] = Record(chapter: chapter, page: page, timestamp: Date())
+        if let data = try? JSONEncoder().encode(records) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    func load(comicId: String) -> Record? {
+        return loadAll()[comicId]
+    }
+
+    private func loadAll() -> [String: Record] {
+        guard let data = defaults.data(forKey: key),
+              let records = try? JSONDecoder().decode([String: Record].self, from: data) else {
+            return [:]
+        }
+        return records
+    }
+}
+
 // MARK: - Extensions
-
-extension Comparable {
-    func clamped(to range: ClosedRange<Self>, default defaultValue: Self) -> Self {
-        range.contains(self) ? self : defaultValue
-    }
-}
-
-extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
-}

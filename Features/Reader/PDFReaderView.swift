@@ -4,20 +4,12 @@ import PDFKit
 struct PDFReaderView: View {
     let comicId: String
     @Environment(\.dismiss) private var dismiss
-    @State private var isLoading = true
-
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if isLoading {
-                ProgressView()
-                    .tint(.white)
-            }
-
             PDFKitView(url: APIClient.shared.pdfURL(comicId: comicId))
                 .ignoresSafeArea()
-                .opacity(isLoading ? 0 : 1)
         }
         .navigationBarHidden(true)
         .overlay(alignment: .topLeading) {
@@ -32,11 +24,7 @@ struct PDFReaderView: View {
                     .padding(8)
             }
         }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                isLoading = false
-            }
-        }
+
     }
 }
 

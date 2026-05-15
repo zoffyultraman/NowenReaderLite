@@ -388,9 +388,3 @@ final class LibraryViewModel: ObservableObject {
     }
 }
 
-private func formatFileSize(_ bytes: Int64) -> String {
-    if bytes < 1024 { return "\(bytes) B" }
-    if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
-    if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }
-    return String(format: "%.1f GB", Double(bytes) / (1024 * 1024 * 1024))
-}

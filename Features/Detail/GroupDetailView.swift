@@ -211,6 +211,7 @@ final class GroupDetailViewModel: ObservableObject {
     @Published var isLoading = false
 
     func load(groupId: Int) async {
+        guard !isLoading else { return }
         isLoading = true
         do {
             detail = try await APIClient.shared.fetchGroupDetail(id: groupId)
