@@ -6,6 +6,7 @@ import UIKit
 struct NovelReaderView: View {
     let comicId: String
     let initialChapter: Int
+    var groupContext: ReadingGroupContext? = nil
 
     @StateObject private var viewModel = NovelReaderViewModel()
     @Environment(\.dismiss) private var dismiss
@@ -33,7 +34,7 @@ struct NovelReaderView: View {
                         currentPage = page
                         // 每次翻页保存记录
                         recordManager.save(
-                            comicId: comicId,
+                            comicId: viewModel.currentComicId,
                             chapter: viewModel.currentChapter,
                             page: page
                         )
@@ -41,13 +42,17 @@ struct NovelReaderView: View {
                     onReachEnd: {
                         showOverlay = false
                         let saved = currentPage
-                        recordManager.save(comicId: comicId, chapter: viewModel.currentChapter, page: saved)
+                        let currentComicId = viewModel.currentComicId
+                        let currentChapter = viewModel.currentChapter
+                        recordManager.save(comicId: currentComicId, chapter: currentChapter, page: saved)
                         currentPage = 0
                         Task { await viewModel.nextChapter(fontSize: fontSize) }
                     },
                     onSwipeToPrev: {
                         showOverlay = false
-                        recordManager.save(comicId: comicId, chapter: viewModel.currentChapter, page: currentPage)
+                        let currentComicId = viewModel.currentComicId
+                        let currentChapter = viewModel.currentChapter
+                        recordManager.save(comicId: currentComicId, chapter: currentChapter, page: currentPage)
                         currentPage = 99999
                         Task { await viewModel.prevChapter(fontSize: fontSize) }
                     }
@@ -59,8 +64,8 @@ struct NovelReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .task {
             // 以本地记录为准，没有记录则用 initialChapter
-            let savedChapter = recordManager.load(comicId: comicId)?.chapter ?? initialChapter
-            await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize)
+            let savedChapter = recordManager.load(comicId: viewModel.currentComicId.isEmpty ? comicId : viewModel.currentComicId)?.chapter ?? initialChapter
+            await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize, groupContext: groupContext)
             restorePosition()
         }
         .onDisappear {
@@ -103,7 +108,7 @@ struct NovelReaderView: View {
         guard restoredChapter != viewModel.currentChapter else { return }
         restoredChapter = viewModel.currentChapter
 
-        if let record = recordManager.load(comicId: comicId),
+        if let record = recordManager.load(comicId: viewModel.currentComicId),
            record.chapter == viewModel.currentChapter {
             // 有记录：恢复到上次位置（覆盖 99999）
             currentPage = min(record.page, count - 1)
@@ -115,7 +120,7 @@ struct NovelReaderView: View {
 
     private func saveRecord() {
         recordManager.save(
-            comicId: comicId,
+            comicId: viewModel.currentComicId,
             chapter: viewModel.currentChapter,
             page: currentPage
         )
@@ -191,7 +196,7 @@ struct NovelReaderView: View {
                     Label("上一章", systemImage: "chevron.left")
                         .font(.subheadline)
                 }
-                .disabled(viewModel.currentChapter <= 0)
+                .disabled(viewModel.currentChapter <= 0 && viewModel.groupContext?.previousVolumeId == nil)
 
                 Spacer()
 
@@ -405,17 +410,23 @@ final class NovelReaderViewModel: ObservableObject {
     @Published var currentChapter = 0
     @Published var darkMode = false
     @Published var pages: [String] = []
+    @Published var groupContext: ReadingGroupContext?
+    @Published var currentComicId: String
 
-    init() {}
+    init() {
+        self.currentComicId = ""
+    }
 
     var plainText: String { chapterContent?.content ?? "" }
 
     private var comicId = ""
     private let api = APIClient.shared
 
-    func load(comicId: String, chapter: Int, fontSize: Double = 17) async {
+    func load(comicId: String, chapter: Int, fontSize: Double = 17, groupContext: ReadingGroupContext? = nil) async {
         self.comicId = comicId
+        self.currentComicId = comicId
         self.currentChapter = chapter
+        self.groupContext = groupContext
         isLoading = true
         do {
             chapterContent = try await api.fetchChapter(comicId: comicId, index: chapter)
@@ -426,17 +437,73 @@ final class NovelReaderViewModel: ObservableObject {
         isLoading = false
     }
 
+    func loadVolume(comicId: String, chapter: Int, fontSize: Double = 17) async {
+        // Update group context index
+        if let ctx = groupContext,
+           let newIdx = ctx.volumeIds.firstIndex(of: comicId) {
+            groupContext = ReadingGroupContext(
+                groupId: ctx.groupId,
+                volumeIds: ctx.volumeIds,
+                currentIndex: newIdx
+            )
+        }
+
+        self.comicId = comicId
+        self.currentComicId = comicId
+        self.currentChapter = chapter
+        isLoading = true
+
+        do {
+            let pageList = try await api.fetchPages(comicId: comicId)
+            // For novels, totalPages from the API represents total chapters
+            let totalChapters = max(1, pageList.totalPages)
+            let safeChapter = min(chapter, totalChapters - 1)
+            chapterContent = try await api.fetchChapter(comicId: comicId, index: safeChapter)
+            currentChapter = safeChapter
+            repaginate(fontSize: fontSize)
+        } catch {
+            print("加载卷失败: \(error)")
+        }
+        isLoading = false
+    }
+
     func nextChapter(fontSize: Double = 17) async {
-        await load(comicId: comicId, chapter: currentChapter + 1, fontSize: fontSize)
+        // Try next chapter in current volume
+        let nextChapterIndex = currentChapter + 1
+        if let totalChapters = chapterContent?.totalChapters {
+            // Server reports total chapters — use it to check bounds
+            if nextChapterIndex < totalChapters {
+                await load(comicId: comicId, chapter: nextChapterIndex, fontSize: fontSize)
+                return
+            }
+            // At last chapter in volume — try next volume
+        } else {
+            // No totalChapters info — optimistically try next chapter
+            await load(comicId: comicId, chapter: nextChapterIndex, fontSize: fontSize)
+            return
+        }
+        // Try next volume
+        guard let nextId = groupContext?.nextVolumeId else { return }
+        await loadVolume(comicId: nextId, chapter: 0, fontSize: fontSize)
     }
 
     func prevChapter(fontSize: Double = 17) async {
-        guard currentChapter > 0 else { return }
-        await load(comicId: comicId, chapter: currentChapter - 1, fontSize: fontSize)
+        if currentChapter > 0 {
+            await load(comicId: comicId, chapter: currentChapter - 1, fontSize: fontSize)
+            return
+        }
+        // At chapter 0 — try previous volume
+        guard let prevId = groupContext?.previousVolumeId else { return }
+        // Load previous volume to find last chapter index
+        if let pageList = try? await api.fetchPages(comicId: prevId) {
+            // For novels, totalPages from the API represents total chapters
+            let lastChapter = max(0, pageList.totalPages - 1)
+            await loadVolume(comicId: prevId, chapter: lastChapter, fontSize: fontSize)
+        }
     }
 
     func saveProgress(currentPage: Int = 0) async {
-        try? await api.updateProgress(comicId: comicId, page: currentChapter)
+        try? await api.updateProgress(comicId: currentComicId, page: currentChapter)
     }
 
     func repaginate(fontSize: Double) {

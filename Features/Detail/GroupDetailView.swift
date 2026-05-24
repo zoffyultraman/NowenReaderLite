@@ -66,8 +66,17 @@ struct GroupDetailView: View {
                     if isGrid {
                         let cols = Array(repeating: GridItem(.flexible(), spacing: 12), count: sizeClass == .regular ? 5 : 3)
                         LazyVGrid(columns: cols, spacing: 16) {
-                            ForEach(detail.comics) { comic in
-                                NavigationLink(value: comic.id) {
+                            ForEach(Array(detail.comics.enumerated()), id: \.element.id) { index, comic in
+                                NavigationLink {
+                                    ComicDetailView(
+                                        comicId: comic.id,
+                                        groupContext: ReadingGroupContext(
+                                            groupId: viewModel.detail?.id ?? groupId,
+                                            volumeIds: detail.comics.map { $0.id },
+                                            currentIndex: index
+                                        )
+                                    )
+                                } label: {
                                     VolumeCardView(comic: comic, serverURL: APIClient.shared.serverURL)
                                 }
                                 .buttonStyle(.plain)
@@ -78,8 +87,17 @@ struct GroupDetailView: View {
                         .padding(.bottom, 20)
                     } else {
                         LazyVStack(spacing: 0) {
-                            ForEach(detail.comics) { comic in
-                                NavigationLink(value: comic.id) {
+                            ForEach(Array(detail.comics.enumerated()), id: \.element.id) { index, comic in
+                                NavigationLink {
+                                    ComicDetailView(
+                                        comicId: comic.id,
+                                        groupContext: ReadingGroupContext(
+                                            groupId: viewModel.detail?.id ?? groupId,
+                                            volumeIds: detail.comics.map { $0.id },
+                                            currentIndex: index
+                                        )
+                                    )
+                                } label: {
                                     VolumeListRowView(comic: comic, serverURL: APIClient.shared.serverURL)
                                         .padding(.horizontal, 20)
                                 }

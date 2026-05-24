@@ -6,6 +6,7 @@ import UIKit
 struct ComicReaderView: View {
     let comicId: String
     let initialPage: Int
+    var groupContext: ReadingGroupContext? = nil
 
     @StateObject private var viewModel = ComicReaderViewModel()
     @Environment(\.dismiss) private var dismiss
@@ -19,16 +20,29 @@ struct ComicReaderView: View {
                 ProgressView()
                     .tint(.white)
             } else {
-                // UIKit 翻页阅读器
                 PageViewController(
-                    comicId: comicId,
+                    comicId: viewModel.currentComicId,
                     totalPages: viewModel.totalPages,
                     currentPage: $viewModel.currentPage,
                     onToggleOverlay: { showOverlay.toggle() },
                     onPageChange: { page in
                         viewModel.onPageChanged(page)
+                    },
+                    onReachEnd: {
+                        guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
+                        Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
+                    },
+                    onSwipeToPrev: {
+                        guard let prevId = viewModel.groupContext?.previousVolumeId else { return }
+                        Task {
+                            // 先获取上一卷页数，跳到末尾
+                            let pages = try? await APIClient.shared.fetchPages(comicId: prevId)
+                            let lastPage = max(0, (pages?.totalPages ?? 1) - 1)
+                            await viewModel.loadVolume(comicId: prevId, initialPage: lastPage)
+                        }
                     }
                 )
+                .id(viewModel.currentComicId)
                 .ignoresSafeArea()
             }
 
@@ -41,7 +55,7 @@ struct ComicReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden(!showOverlay)
         .task {
-            await viewModel.load(comicId: comicId, initialPage: initialPage)
+            await viewModel.load(comicId: comicId, initialPage: initialPage, groupContext: groupContext)
         }
         .onDisappear {
             Task {
@@ -73,7 +87,14 @@ struct ComicReaderView: View {
 
                 Spacer()
 
-                Color.clear.frame(width: 44, height: 44)
+                if viewModel.groupContext != nil {
+                    Text(volumeLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.trailing, 4)
+                } else {
+                    Color.clear.frame(width: 44, height: 44)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -113,6 +134,11 @@ struct ComicReaderView: View {
         }
         .transition(.opacity)
     }
+
+    private var volumeLabel: String {
+        guard let ctx = viewModel.groupContext else { return "" }
+        return "\(ctx.currentIndex + 1)/\(ctx.volumeIds.count)"
+    }
 }
 
 // MARK: - UIKit 翻页控制器（桥接）
@@ -123,6 +149,8 @@ struct PageViewController: UIViewControllerRepresentable {
     @Binding var currentPage: Int
     let onToggleOverlay: () -> Void
     let onPageChange: (Int) -> Void
+    var onReachEnd: (() -> Void)?
+    var onSwipeToPrev: (() -> Void)?
 
     func makeUIViewController(context: Context) -> PageViewControllerImpl {
         let vc = PageViewControllerImpl(
@@ -133,12 +161,18 @@ struct PageViewController: UIViewControllerRepresentable {
             onPageChange: { page in
                 currentPage = page
                 onPageChange(page)
-            }
+            },
+            onReachEnd: onReachEnd,
+            onSwipeToPrev: onSwipeToPrev
         )
         return vc
     }
 
     func updateUIViewController(_ uiViewController: PageViewControllerImpl, context: Context) {
+        uiViewController.totalPages = totalPages
+        uiViewController.comicId = comicId
+        uiViewController.onReachEnd = onReachEnd
+        uiViewController.onSwipeToPrev = onSwipeToPrev
         uiViewController.goToPage(currentPage)
     }
 }
@@ -146,24 +180,30 @@ struct PageViewController: UIViewControllerRepresentable {
 // MARK: - UIPageViewController 实现
 
 class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
-    let comicId: String
-    let totalPages: Int
+    var comicId: String
+    var totalPages: Int
     var currentIdx: Int
     let onToggleOverlay: () -> Void
     let onPageChange: (Int) -> Void
+    var onReachEnd: (() -> Void)?
+    var onSwipeToPrev: (() -> Void)?
 
     init(
         comicId: String,
         totalPages: Int,
         currentPage: Int,
         onToggleOverlay: @escaping () -> Void,
-        onPageChange: @escaping (Int) -> Void
+        onPageChange: @escaping (Int) -> Void,
+        onReachEnd: (() -> Void)?,
+        onSwipeToPrev: (() -> Void)?
     ) {
         self.comicId = comicId
         self.totalPages = totalPages
         self.currentIdx = currentPage
         self.onToggleOverlay = onToggleOverlay
         self.onPageChange = onPageChange
+        self.onReachEnd = onReachEnd
+        self.onSwipeToPrev = onSwipeToPrev
         super.init(transitionStyle: .pageCurl, navigationOrientation: .horizontal, options: nil)
         self.dataSource = self
         self.delegate = self
@@ -202,13 +242,21 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
     func pageViewController(_ pvc: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
         guard let vc = viewController as? ZoomablePageVC else { return nil }
         let idx = vc.pageIndex - 1
-        return idx >= 0 ? makePage(for: idx) : nil
+        if idx < 0 {
+            DispatchQueue.main.async { self.onSwipeToPrev?() }
+            return nil
+        }
+        return makePage(for: idx)
     }
 
     func pageViewController(_ pvc: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
         guard let vc = viewController as? ZoomablePageVC else { return nil }
         let idx = vc.pageIndex + 1
-        return idx < totalPages ? makePage(for: idx) : nil
+        if idx >= totalPages {
+            DispatchQueue.main.async { self.onReachEnd?() }
+            return nil
+        }
+        return makePage(for: idx)
     }
 
     // MARK: - Delegate
@@ -359,14 +407,20 @@ final class ComicReaderViewModel: ObservableObject {
     @Published var totalPages = 0
     @Published var currentPage = 0
     @Published var isLoading = true
+    @Published var currentComicId: String
+    @Published var groupContext: ReadingGroupContext?
 
-    private var comicId = ""
     private var sessionId: Int?
     private var sessionStart: Date?
     private let api = APIClient.shared
 
-    func load(comicId: String, initialPage: Int) async {
-        self.comicId = comicId
+    init() {
+        self.currentComicId = ""
+    }
+
+    func load(comicId: String, initialPage: Int, groupContext: ReadingGroupContext? = nil) async {
+        self.currentComicId = comicId
+        self.groupContext = groupContext
         self.currentPage = initialPage
         do {
             let pages = try await api.fetchPages(comicId: comicId)
@@ -375,6 +429,35 @@ final class ComicReaderViewModel: ObservableObject {
             startSession()
         } catch {
             print("加载页面列表失败: \(error)")
+            isLoading = false
+        }
+    }
+
+    func loadVolume(comicId: String, initialPage: Int) async {
+        await saveProgressAndWait()
+        await endSessionAndWait()
+        isLoading = true
+
+        // Update group context index
+        if let ctx = groupContext,
+           let newIdx = ctx.volumeIds.firstIndex(of: comicId) {
+            groupContext = ReadingGroupContext(
+                groupId: ctx.groupId,
+                volumeIds: ctx.volumeIds,
+                currentIndex: newIdx
+            )
+        }
+
+        currentComicId = comicId
+        currentPage = initialPage
+
+        do {
+            let pages = try await api.fetchPages(comicId: comicId)
+            totalPages = pages.totalPages
+            isLoading = false
+            startSession()
+        } catch {
+            print("加载下一卷失败: \(error)")
             isLoading = false
         }
     }
@@ -393,6 +476,7 @@ final class ComicReaderViewModel: ObservableObject {
     func saveProgress() {
         saveTask?.cancel()
         let page = currentPage
+        let comicId = currentComicId
         saveTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
@@ -403,7 +487,7 @@ final class ComicReaderViewModel: ObservableObject {
     /// 等待完成版本，退出时调用
     func saveProgressAndWait() async {
         saveTask?.cancel()
-        try? await api.updateProgress(comicId: comicId, page: currentPage)
+        try? await api.updateProgress(comicId: currentComicId, page: currentPage)
     }
 
     func endSessionAndWait() async {
@@ -414,16 +498,8 @@ final class ComicReaderViewModel: ObservableObject {
 
     private func startSession() {
         Task {
-            sessionId = try? await api.startSession(comicId: comicId, startPage: currentPage)
+            sessionId = try? await api.startSession(comicId: currentComicId, startPage: currentPage)
             sessionStart = Date()
-        }
-    }
-
-    func endSession() {
-        guard let sessionId, let sessionStart else { return }
-        let duration = Int(Date().timeIntervalSince(sessionStart))
-        Task {
-            try? await api.endSession(sessionId: sessionId, endPage: currentPage, duration: duration)
         }
     }
 }

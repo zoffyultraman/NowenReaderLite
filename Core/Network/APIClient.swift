@@ -177,6 +177,32 @@ final class APIClient: ObservableObject {
         try await get("/api/stats")
     }
 
+    func fetchEnhancedStats() async throws -> EnhancedReadingStats {
+        try await get("/api/stats/enhanced")
+    }
+
+    // MARK: - Goals
+
+    func fetchGoals() async throws -> [ReadingGoalProgress] {
+        try await get("/api/goals")
+    }
+
+    func setGoal(goalType: String, targetMins: Int, targetBooks: Int) async throws -> ReadingGoal {
+        let body = GoalSetRequest(goalType: goalType, targetMins: targetMins, targetBooks: targetBooks)
+        return try await post("/api/goals", body: body)
+    }
+
+    func deleteGoal(goalType: String) async throws {
+        let _: EmptyResponse = try await performRequest(path: "/api/goals?goalType=\(goalType)", method: "DELETE", body: EmptyBody())
+    }
+
+    // MARK: - Reading Status
+
+    func updateReadingStatus(comicId: String, status: String) async throws {
+        let body = ReadingStatusRequest(readingStatus: status)
+        let _: EmptyResponse = try await put("/api/comics/\(comicId)/reading-status", body: body)
+    }
+
     // MARK: - Tags & Categories
 
     func fetchTags() async throws -> [Tag] {

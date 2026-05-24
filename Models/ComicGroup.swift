@@ -1,5 +1,21 @@
 import Foundation
 
+struct ReadingGroupContext {
+    let groupId: Int
+    let volumeIds: [String]
+    let currentIndex: Int
+
+    var nextVolumeId: String? {
+        let next = currentIndex + 1
+        return next < volumeIds.count ? volumeIds[next] : nil
+    }
+
+    var previousVolumeId: String? {
+        let prev = currentIndex - 1
+        return prev >= 0 ? volumeIds[prev] : nil
+    }
+}
+
 struct ComicGroup: Codable, Identifiable, Hashable {
     let id: Int
     let name: String
@@ -8,6 +24,7 @@ struct ComicGroup: Codable, Identifiable, Hashable {
     let description: String?
     let comicCount: Int?
     let sortOrder: Int?
+    let firstComicId: String?
 }
 
 struct GroupListResponse: Codable {

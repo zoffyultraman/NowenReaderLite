@@ -327,23 +327,33 @@ struct GroupCardView: View {
     let group: ComicGroup
     let serverURL: String
 
+    private var coverImageURL: URL? {
+        if let cover = group.coverUrl, !cover.isEmpty {
+            return URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)")
+        }
+        if let firstId = group.firstComicId {
+            return URL(string: "\(serverURL)/api/comics/\(firstId)/thumbnail")
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .bottomTrailing) {
-                if let cover = group.coverUrl, !cover.isEmpty {
-                    AuthenticatedImage(url: URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)"))
+                if let url = coverImageURL {
+                    AuthenticatedImage(url: url)
                         .aspectRatio(contentMode: .fill)
                         .frame(height: 180)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 } else {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(Color(.systemGray6))
+                        .fill(Color(.systemGray5))
                         .frame(height: 180)
-                        .overlay(
-                            Image(systemName: "rectangle.stack.fill")
-                                .font(.title)
+                        .overlay {
+                            Image(systemName: "rectangle.stack")
+                                .font(.title2)
                                 .foregroundStyle(.tertiary)
-                        )
+                        }
                 }
 
                 HStack(spacing: 4) {
@@ -362,10 +372,13 @@ struct GroupCardView: View {
             Text(group.name)
                 .font(.caption.weight(.medium))
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
-}
+
 
 // MARK: - 合集行（列表）
 
@@ -373,18 +386,32 @@ struct GroupListRowView: View {
     let group: ComicGroup
     let serverURL: String
 
+    private var coverImageURL: URL? {
+        if let cover = group.coverUrl, !cover.isEmpty {
+            return URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)")
+        }
+        if let firstId = group.firstComicId {
+            return URL(string: "\(serverURL)/api/comics/\(firstId)/thumbnail")
+        }
+        return nil
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            if let cover = group.coverUrl, !cover.isEmpty {
-                AuthenticatedImage(url: URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)"))
+            if let url = coverImageURL {
+                AuthenticatedImage(url: url)
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 56, height: 80)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.systemGray6))
+                    .fill(Color(.systemGray5))
                     .frame(width: 56, height: 80)
-                    .overlay(Image(systemName: "rectangle.stack.fill").foregroundStyle(.tertiary))
+                    .overlay {
+                        Image(systemName: "rectangle.stack")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
             }
 
             VStack(alignment: .leading, spacing: 4) {

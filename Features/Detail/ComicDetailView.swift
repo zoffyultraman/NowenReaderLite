@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ComicDetailView: View {
     let comicId: String
+    var groupContext: ReadingGroupContext? = nil
     @StateObject private var viewModel = DetailViewModel()
 
     var body: some View {
@@ -170,9 +171,9 @@ struct ComicDetailView: View {
     @ViewBuilder
     private func readerView(for comic: Comic) -> some View {
         if comic.isNovel {
-            NovelReaderView(comicId: comic.id, initialChapter: comic.lastReadPage)
+            NovelReaderView(comicId: comic.id, initialChapter: comic.lastReadPage, groupContext: groupContext)
         } else {
-            ComicReaderView(comicId: comic.id, initialPage: comic.lastReadPage)
+            ComicReaderView(comicId: comic.id, initialPage: comic.lastReadPage, groupContext: groupContext)
         }
     }
 
