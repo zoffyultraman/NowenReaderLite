@@ -286,8 +286,8 @@ final class APIClient: ObservableObject {
         try validate(response: response, data: data)
 
         // 处理空响应
-        if data.isEmpty {
-            return EmptyResponse() as! T
+        if data.isEmpty, let empty = EmptyResponse() as? T {
+            return empty
         }
         return try JSONDecoder().decode(T.self, from: data)
     }

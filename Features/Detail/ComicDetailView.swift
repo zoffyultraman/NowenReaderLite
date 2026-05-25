@@ -12,6 +12,10 @@ struct ComicDetailView: View {
             } else if viewModel.isLoading {
                 ProgressView()
                     .padding(.top, 100)
+            } else if let error = viewModel.errorMessage {
+                errorState(message: error) {
+                    Task { await viewModel.load(id: comicId) }
+                }
             }
         }
         .navigationTitle("")
@@ -177,11 +181,23 @@ struct ComicDetailView: View {
         }
     }
 
-    private func formatFileSize(_ bytes: Int64) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
-        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }
-        return String(format: "%.1f GB", Double(bytes) / (1024 * 1024 * 1024))
+    private func errorState(message: String, retry: @escaping () -> Void) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            Button(action: retry) {
+                Label("重试", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.top, 100)
     }
 
 }
@@ -236,16 +252,18 @@ struct FlowLayout: Layout {
 final class DetailViewModel: ObservableObject {
     @Published var comic: Comic?
     @Published var isLoading = false
+    @Published var errorMessage: String?
 
     private let api = APIClient.shared
 
     func load(id: String) async {
         guard !isLoading else { return }
         isLoading = true
+        errorMessage = nil
         do {
             comic = try await api.fetchComic(id: id)
         } catch {
-            print("加载详情失败: \(error)")
+            errorMessage = error.localizedDescription
         }
         isLoading = false
     }

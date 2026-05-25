@@ -10,6 +10,7 @@ struct ComicReaderView: View {
 
     @StateObject private var viewModel = ComicReaderViewModel()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showOverlay = false
 
     var body: some View {
@@ -61,6 +62,14 @@ struct ComicReaderView: View {
             Task {
                 await viewModel.saveProgressAndWait()
                 await viewModel.endSessionAndWait()
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background || newPhase == .inactive {
+                Task {
+                    await viewModel.saveProgressAndWait()
+                    await viewModel.endSessionAndWait()
+                }
             }
         }
     }

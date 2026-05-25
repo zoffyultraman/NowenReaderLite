@@ -101,6 +101,7 @@ struct GroupDetailView: View {
                                     VolumeListRowView(comic: comic, serverURL: APIClient.shared.serverURL)
                                         .padding(.horizontal, 20)
                                 }
+                                .buttonStyle(.plain)
                                 Divider().padding(.leading, 80)
                             }
                         }
@@ -133,12 +134,6 @@ struct GroupDetailView: View {
         }
     }
 
-    private func formatFileSize(_ bytes: Int64) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
-        if bytes < 1024 * 1024 * 1024 { return String(format: "%.1f MB", Double(bytes) / (1024 * 1024)) }
-        return String(format: "%.1f GB", Double(bytes) / (1024 * 1024 * 1024))
-    }
 }
 
 // MARK: - 卷卡片
@@ -178,6 +173,7 @@ struct VolumeCardView: View {
 
             Text(comic.title)
                 .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
                 .lineLimit(2)
                 .padding(.top, 8)
         }
@@ -200,6 +196,7 @@ struct VolumeListRowView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(comic.title)
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 if comic.pageCount > 0 {
@@ -227,14 +224,16 @@ struct VolumeListRowView: View {
 final class GroupDetailViewModel: ObservableObject {
     @Published var detail: GroupDetailResponse?
     @Published var isLoading = false
+    @Published var errorMessage: String?
 
     func load(groupId: Int) async {
         guard !isLoading else { return }
         isLoading = true
+        errorMessage = nil
         do {
             detail = try await APIClient.shared.fetchGroupDetail(id: groupId)
         } catch {
-            print("加载合集失败: \(error)")
+            errorMessage = error.localizedDescription
         }
         isLoading = false
     }

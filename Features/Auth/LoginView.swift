@@ -12,6 +12,8 @@ struct LoginView: View {
     @ObservedObject private var api = APIClient.shared
     var onLoginSuccess: () -> Void
 
+    @State private var navigateToServerConfig = false
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -26,10 +28,19 @@ struct LoginView: View {
                     Text(isRegistering ? "创建账号" : "欢迎回来")
                         .font(.title2.weight(.bold))
 
-                    Text(api.serverURL)
+                    Button {
+                        navigateToServerConfig = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "server.rack")
+                            Text(api.serverURL)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                        }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    }
                 }
                 .padding(.bottom, 40)
 
@@ -109,6 +120,15 @@ struct LoginView: View {
                             .font(.subheadline)
                             .foregroundStyle(Color.accentColor)
                     }
+
+                    Button {
+                        navigateToServerConfig = true
+                    } label: {
+                        Label("切换服务器", systemImage: "server.rack")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 4)
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 40)
@@ -119,6 +139,11 @@ struct LoginView: View {
                 Button("确定", role: .cancel) {}
             } message: {
                 Text(errorMessage)
+            }
+            .navigationDestination(isPresented: $navigateToServerConfig) {
+                ServerConfigView(onConnected: {
+                    Task { await api.checkAuth() }
+                }, embedsInOwnStack: false)
             }
         }
     }

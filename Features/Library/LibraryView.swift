@@ -149,6 +149,7 @@ struct LibraryView: View {
             NavigationLink(value: comic.id) {
                 ComicListRowView(comic: comic, serverURL: api.serverURL)
             }
+            .buttonStyle(.plain)
             .onAppear {
                 if comic.id == viewModel.comics.last?.id {
                     Task { await viewModel.loadMore() }
@@ -246,6 +247,7 @@ struct ComicCardView: View {
             // 标题
             Text(comic.title)
                 .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
                 .lineLimit(2)
                 .padding(.top, 8)
         }
@@ -269,6 +271,7 @@ struct ComicListRowView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(comic.title)
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 if let author = comic.author, !author.isEmpty {

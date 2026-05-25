@@ -139,6 +139,7 @@ struct ContinueReadingCard: View {
 
             Text(comic.title)
                 .font(.caption2.weight(.medium))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .frame(width: cardWidth, alignment: .leading)
                 .padding(.top, 6)
@@ -289,6 +290,7 @@ struct LibraryContentView: View {
                         ComicListRowView(comic: comic, serverURL: APIClient.shared.serverURL)
                             .padding(.horizontal, 20)
                     }
+                    .buttonStyle(.plain)
                     .onAppear {
                         if comic.id == viewModel.comics.last?.id {
                             Task { await viewModel.loadMore() }
@@ -300,6 +302,7 @@ struct LibraryContentView: View {
                         GroupListRowView(group: group, serverURL: APIClient.shared.serverURL)
                             .padding(.horizontal, 20)
                     }
+                    .buttonStyle(.plain)
                     Divider().padding(.leading, 80)
                 }
             }
@@ -371,6 +374,7 @@ struct GroupCardView: View {
 
             Text(group.name)
                 .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
@@ -417,6 +421,7 @@ struct GroupListRowView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(group.name)
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 Text("\(group.comicCount ?? 0) 卷")

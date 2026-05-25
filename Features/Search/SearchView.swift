@@ -51,6 +51,7 @@ struct SearchView: View {
                     NavigationLink(value: comic.id) {
                         SearchResultRow(comic: comic)
                     }
+                    .buttonStyle(.plain)
                 }
                 .listStyle(.plain)
             }
@@ -75,6 +76,7 @@ struct SearchResultRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(comic.title)
                     .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 if let author = comic.author, !author.isEmpty {

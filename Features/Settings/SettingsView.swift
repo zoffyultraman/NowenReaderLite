@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject private var api = APIClient.shared
     @State private var showLogoutAlert = false
+    @State private var navigateToServerConfig = false
 
     var body: some View {
         List {
@@ -26,13 +27,29 @@ struct SettingsView: View {
 
             // 服务器
             Section("服务器") {
-                LabeledContent("地址", value: api.serverURL)
+                NavigationLink {
+                    ServerConfigView(onConnected: {
+                        Task { await api.checkAuth() }
+                    }, embedsInOwnStack: false)
+                } label: {
+                    HStack {
+                        Label("地址", systemImage: "server.rack")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(api.serverURL)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
             }
 
             // 关于
             Section("关于") {
                 LabeledContent("版本", value: "1.0.0")
-                Link("项目主页", destination: URL(string: "https://github.com/cropflre/nowen-reader")!)
+                if let url = URL(string: "https://github.com/cropflre/nowen-reader") {
+                    Link("项目主页", destination: url)
+                }
             }
 
             // 退出
