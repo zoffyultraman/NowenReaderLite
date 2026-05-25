@@ -258,16 +258,15 @@ struct LibraryContentView: View {
                         ComicCardView(comic: comic, serverURL: APIClient.shared.serverURL)
                     }
                     .buttonStyle(.plain)
-                    .onAppear {
-                        if comic.id == viewModel.comics.last?.id {
-                            Task { await viewModel.loadMore() }
-                        }
-                    }
                 case .group(let group):
                     NavigationLink(value: "group_\(group.id)") {
                         GroupCardView(group: group, serverURL: APIClient.shared.serverURL)
                     }
                     .buttonStyle(.plain)
+                }
+
+                if item.id == items.last?.id, !viewModel.isLoading {
+                    Color.clear.onAppear { Task { await viewModel.loadMore() } }
                 }
             }
 
@@ -291,11 +290,7 @@ struct LibraryContentView: View {
                             .padding(.horizontal, 20)
                     }
                     .buttonStyle(.plain)
-                    .onAppear {
-                        if comic.id == viewModel.comics.last?.id {
-                            Task { await viewModel.loadMore() }
-                        }
-                    }
+                    .contentShape(Rectangle())
                     Divider().padding(.leading, 80)
                 case .group(let group):
                     NavigationLink(value: "group_\(group.id)") {
@@ -303,7 +298,12 @@ struct LibraryContentView: View {
                             .padding(.horizontal, 20)
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     Divider().padding(.leading, 80)
+                }
+
+                if item.id == items.last?.id, !viewModel.isLoading {
+                    Color.clear.onAppear { Task { await viewModel.loadMore() } }
                 }
             }
 
