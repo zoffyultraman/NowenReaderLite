@@ -52,6 +52,7 @@ struct SearchView: View {
                         SearchResultRow(comic: comic)
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
                 .listStyle(.plain)
             }

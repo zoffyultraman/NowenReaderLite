@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct ServerConfigView: View {
     @State private var serverURL = ""
@@ -7,6 +8,7 @@ struct ServerConfigView: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @ObservedObject private var api = APIClient.shared
     var onConnected: () -> Void
@@ -158,9 +160,22 @@ struct ServerConfigView: View {
     }
 
     private func connectAndContinue() {
-        api.setServerURL(serverURL)
+        let trimmed = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        api.setServerURL(trimmed)
         Task {
             await api.checkAuth()
+            // Save or update server record in SwiftData
+            let descriptor = FetchDescriptor<ServerRecord>(
+                predicate: #Predicate<ServerRecord> { $0.url == trimmed }
+            )
+            if let existing = try? modelContext.fetch(descriptor).first {
+                existing.lastUsed = Date()
+                existing.username = api.currentUser?.username
+            } else {
+                let record = ServerRecord(url: trimmed, username: api.currentUser?.username)
+                modelContext.insert(record)
+            }
+            try? modelContext.save()
             dismiss()
             onConnected()
         }

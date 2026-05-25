@@ -141,9 +141,7 @@ struct LoginView: View {
                 Text(errorMessage)
             }
             .navigationDestination(isPresented: $navigateToServerConfig) {
-                ServerConfigView(onConnected: {
-                    Task { await api.checkAuth() }
-                }, embedsInOwnStack: false)
+                ServerListView()
             }
         }
     }

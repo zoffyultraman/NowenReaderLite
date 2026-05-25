@@ -150,6 +150,7 @@ struct LibraryView: View {
                 ComicListRowView(comic: comic, serverURL: api.serverURL)
             }
             .buttonStyle(.plain)
+            .contentShape(Rectangle())
             .onAppear {
                 if comic.id == viewModel.comics.last?.id {
                     Task { await viewModel.loadMore() }

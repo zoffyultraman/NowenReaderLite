@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject private var api = APIClient.shared
     @State private var showLogoutAlert = false
-    @State private var navigateToServerConfig = false
 
     var body: some View {
         List {
@@ -28,12 +27,10 @@ struct SettingsView: View {
             // 服务器
             Section("服务器") {
                 NavigationLink {
-                    ServerConfigView(onConnected: {
-                        Task { await api.checkAuth() }
-                    }, embedsInOwnStack: false)
+                    ServerListView()
                 } label: {
                     HStack {
-                        Label("地址", systemImage: "server.rack")
+                        Label("服务器", systemImage: "server.rack")
                             .foregroundStyle(.primary)
                         Spacer()
                         Text(api.serverURL)

@@ -102,6 +102,7 @@ struct GroupDetailView: View {
                                         .padding(.horizontal, 20)
                                 }
                                 .buttonStyle(.plain)
+                                .contentShape(Rectangle())
                                 Divider().padding(.leading, 80)
                             }
                         }

@@ -234,7 +234,35 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        onToggleOverlay()
+        let point = gesture.location(in: view)
+        let width = view.bounds.width
+        // 左右 1/3 区域翻页，中间 1/3 区域切换覆盖层
+        if point.x < width / 3 {
+            // 点击左侧：上一页
+            guard currentIdx > 0 else {
+                DispatchQueue.main.async { self.onSwipeToPrev?() }
+                return
+            }
+            currentIdx -= 1
+            if let vc = makePage(for: currentIdx) {
+                setViewControllers([vc], direction: .reverse, animated: true)
+                onPageChange(currentIdx)
+            }
+        } else if point.x > width * 2 / 3 {
+            // 点击右侧：下一页
+            guard currentIdx < totalPages - 1 else {
+                DispatchQueue.main.async { self.onReachEnd?() }
+                return
+            }
+            currentIdx += 1
+            if let vc = makePage(for: currentIdx) {
+                setViewControllers([vc], direction: .forward, animated: true)
+                onPageChange(currentIdx)
+            }
+        } else {
+            // 点击中间：切换覆盖层
+            onToggleOverlay()
+        }
     }
 
     func goToPage(_ page: Int) {
