@@ -7,12 +7,13 @@ struct ServerConfigView: View {
     @State private var connectionStatus: ConnectionStatus = .none
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var selectedAccountId: String? = nil
+    @State private var accounts: [SavedAccount] = []
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
     @ObservedObject private var api = APIClient.shared
     var onConnected: () -> Void
-    /// 是否嵌入自己的 NavigationStack（从 RootRouter 使用时为 true，从其他页面推入时为 false）
     var embedsInOwnStack: Bool = true
 
     enum ConnectionStatus {
@@ -50,7 +51,7 @@ struct ServerConfigView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            .padding(.bottom, 60)
+            .padding(.bottom, 40)
 
             // 输入区域
             VStack(spacing: 16) {
@@ -73,6 +74,42 @@ struct ServerConfigView: View {
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(borderColor, lineWidth: 1)
                 )
+
+                // 绑定账号选择
+                if !accounts.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("绑定账号（可选）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 10) {
+                                ForEach(accounts) { account in
+                                    Button {
+                                        selectedAccountId = selectedAccountId == account.id ? nil : account.id
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: selectedAccountId == account.id ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(selectedAccountId == account.id ? Color.accentColor : .secondary)
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(account.alias)
+                                                    .font(.subheadline)
+                                                    .foregroundStyle(.primary)
+                                                Text(account.username)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(selectedAccountId == account.id ? Color.accentColor.opacity(0.1) : Color(.systemGray6))
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // 连接状态
                 if connectionStatus == .testing {
@@ -139,6 +176,9 @@ struct ServerConfigView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 40)
         }
+        .onAppear {
+            loadAccounts()
+        }
     }
 
     private var borderColor: Color {
@@ -147,6 +187,10 @@ struct ServerConfigView: View {
         case .failure: return .red.opacity(0.5)
         default: return .gray.opacity(0.3)
         }
+    }
+
+    private func loadAccounts() {
+        accounts = api.fetchAllAccounts(context: modelContext)
     }
 
     private func testConnection() {
@@ -164,18 +208,29 @@ struct ServerConfigView: View {
         api.setServerURL(trimmed)
         Task {
             await api.checkAuth()
-            // Save or update server record in SwiftData
+            // Save or update server record
             let descriptor = FetchDescriptor<ServerRecord>(
                 predicate: #Predicate<ServerRecord> { $0.url == trimmed }
             )
             if let existing = try? modelContext.fetch(descriptor).first {
                 existing.lastUsed = Date()
                 existing.username = api.currentUser?.username
+                existing.boundAccountId = selectedAccountId
             } else {
                 let record = ServerRecord(url: trimmed, username: api.currentUser?.username)
+                record.boundAccountId = selectedAccountId
                 modelContext.insert(record)
             }
             try? modelContext.save()
+
+            // 如果选了绑定账号且当前未登录，尝试自动登录
+            if !api.isLoggedIn, let accountId = selectedAccountId {
+                let all = (try? modelContext.fetch(FetchDescriptor<SavedAccount>())) ?? []
+                if let account = all.first(where: { $0.id == accountId }) {
+                    _ = try? await api.quickLogin(account: account)
+                }
+            }
+
             dismiss()
             onConnected()
         }

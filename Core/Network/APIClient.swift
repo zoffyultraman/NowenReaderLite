@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import SwiftData
 
 // MARK: - 统一网络层
 
@@ -31,6 +32,18 @@ final class APIClient: ObservableObject {
 
     func setServerURL(_ url: String) {
         let trimmed = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        // Validate URL scheme — only allow http/https
+        guard let parsed = URL(string: trimmed),
+              let scheme = parsed.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              parsed.host != nil, !parsed.host!.isEmpty else {
+            return
+        }
+
+        // Reject URLs with embedded credentials (user:pass@host)
+        if parsed.user != nil { return }
+
         serverURL = trimmed
         UserDefaults.standard.set(trimmed, forKey: "server_url")
     }
@@ -88,6 +101,55 @@ final class APIClient: ObservableObject {
         isLoggedIn = false
         currentUser = nil
         cookieStorage.cookies?.forEach { cookieStorage.deleteCookie($0) }
+    }
+
+    // MARK: - Account Management
+
+    /// 新建账号（保存到 SwiftData + Keychain）
+    func createAccount(alias: String, username: String, password: String, context: ModelContext) -> SavedAccount {
+        let account = SavedAccount(alias: alias, username: username)
+        KeychainHelper.savePassword(password, for: account.id)
+        context.insert(account)
+        try? context.save()
+        return account
+    }
+
+    /// 更新账号信息
+    func updateAccount(_ account: SavedAccount, alias: String, username: String, password: String?, context: ModelContext) {
+        account.alias = alias
+        account.username = username
+        if let password = password {
+            KeychainHelper.savePassword(password, for: account.id)
+        }
+        try? context.save()
+    }
+
+    /// 删除账号
+    func deleteAccount(_ account: SavedAccount, context: ModelContext) {
+        KeychainHelper.deletePassword(for: account.id)
+        // 解绑引用此账号的服务器
+        let allServers = (try? context.fetch(FetchDescriptor<ServerRecord>())) ?? []
+        for server in allServers where server.boundAccountId == account.id {
+            server.boundAccountId = nil
+        }
+        context.delete(account)
+        try? context.save()
+    }
+
+    /// 获取所有已保存账号
+    func fetchAllAccounts(context: ModelContext) -> [SavedAccount] {
+        (try? context.fetch(FetchDescriptor<SavedAccount>())) ?? []
+    }
+
+    /// 快速登录：用指定账号的凭据登录当前服务器
+    func quickLogin(account: SavedAccount) async throws -> AuthUser {
+        guard var password = KeychainHelper.readPassword(for: account.id) else {
+            throw APIError.networkError
+        }
+        defer { password = "" }
+        let user = try await login(username: account.username, password: password)
+        account.lastUsed = Date()
+        return user
     }
 
     // MARK: - Comics
@@ -240,7 +302,9 @@ final class APIClient: ObservableObject {
         _ path: String,
         query: [String: String]? = nil
     ) async throws -> T {
-        var components = URLComponents(string: "\(serverURL)\(path)")!
+        guard var components = URLComponents(string: "\(serverURL)\(path)") else {
+            throw APIError.invalidURL
+        }
         if let query = query {
             components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         }

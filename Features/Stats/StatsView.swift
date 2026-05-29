@@ -447,7 +447,7 @@ final class StatsViewModel: ObservableObject {
             self.enhancedStats = stats
             self.goals = fetchedGoals
         } catch {
-            print("加载统计数据失败: \(error)")
+            AppLogger.error("加载统计数据失败: \(error)")
         }
         isLoading = false
     }
@@ -457,7 +457,7 @@ final class StatsViewModel: ObservableObject {
             _ = try await APIClient.shared.setGoal(goalType: goalType, targetMins: targetMins, targetBooks: targetBooks)
             await reloadGoals()
         } catch {
-            print("设定目标失败: \(error)")
+            AppLogger.error("设定目标失败: \(error)")
         }
     }
 
@@ -466,7 +466,7 @@ final class StatsViewModel: ObservableObject {
             try await APIClient.shared.deleteGoal(goalType: goalType)
             await reloadGoals()
         } catch {
-            print("删除目标失败: \(error)")
+            AppLogger.error("删除目标失败: \(error)")
         }
     }
 
@@ -474,7 +474,7 @@ final class StatsViewModel: ObservableObject {
         do {
             goals = try await APIClient.shared.fetchGoals()
         } catch {
-            print("刷新目标失败: \(error)")
+            AppLogger.error("刷新目标失败: \(error)")
         }
     }
 }

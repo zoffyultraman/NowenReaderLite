@@ -32,7 +32,9 @@ struct LoginView: View {
                         navigateToServerConfig = true
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "server.rack")
+                            let isHTTPS = api.serverURL.lowercased().hasPrefix("https://")
+                            Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
+                                .foregroundStyle(isHTTPS ? .green : .red)
                             Text(api.serverURL)
                                 .lineLimit(1)
                             Image(systemName: "chevron.right")
@@ -46,7 +48,6 @@ struct LoginView: View {
 
                 // 表单
                 VStack(spacing: 14) {
-                    // 用户名
                     HStack(spacing: 12) {
                         Image(systemName: "person")
                             .foregroundStyle(.secondary)
@@ -61,7 +62,6 @@ struct LoginView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1))
 
-                    // 密码
                     HStack(spacing: 12) {
                         Image(systemName: "lock")
                             .foregroundStyle(.secondary)
@@ -74,7 +74,6 @@ struct LoginView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1))
 
-                    // 昵称（仅注册时显示）
                     if isRegistering {
                         HStack(spacing: 12) {
                             Image(systemName: "text.quote")
@@ -143,6 +142,9 @@ struct LoginView: View {
             .navigationDestination(isPresented: $navigateToServerConfig) {
                 ServerListView()
             }
+            .onDisappear {
+                password = ""
+            }
         }
     }
 
@@ -162,6 +164,7 @@ struct LoginView: View {
                 } else {
                     _ = try await api.login(username: username, password: password)
                 }
+                password = ""
                 onLoginSuccess()
             } catch {
                 errorMessage = error.localizedDescription

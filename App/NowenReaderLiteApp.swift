@@ -8,6 +8,6 @@ struct NowenReaderLiteApp: App {
             RootRouter()
                 .preferredColorScheme(.none) // 跟随系统
         }
-        .modelContainer(for: [CachedComic.self, ServerRecord.self])
+        .modelContainer(for: [CachedComic.self, ServerRecord.self, SavedAccount.self])
     }
 }

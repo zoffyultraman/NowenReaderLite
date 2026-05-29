@@ -274,7 +274,7 @@ final class DetailViewModel: ObservableObject {
             let resp = try await api.toggleFavorite(comicId: comic.id)
             self.comic = comic.withFavorite(resp["isFavorite"] ?? !(comic.isFavorite))
         } catch {
-            print("收藏失败: \(error)")
+            AppLogger.error("收藏失败: \(error)")
         }
     }
 }

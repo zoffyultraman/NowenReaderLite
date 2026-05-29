@@ -346,7 +346,7 @@ final class LibraryViewModel: ObservableObject {
             }
             hasMore = currentPage < resp.totalPages
         } catch {
-            print("加载漫画失败: \(error)")
+            AppLogger.error("加载漫画失败: \(error)")
         }
     }
 
@@ -358,7 +358,7 @@ final class LibraryViewModel: ObservableObject {
         do {
             groups = try await api.fetchGroups(contentType: contentType)
         } catch {
-            print("加载合集失败: \(error)")
+            AppLogger.error("加载合集失败: \(error)")
         }
     }
 
@@ -370,7 +370,7 @@ final class LibraryViewModel: ObservableObject {
         do {
             groupedComicIds = try await api.fetchComicGroupMap()
         } catch {
-            print("加载分组映射失败: \(error)")
+            AppLogger.error("加载分组映射失败: \(error)")
         }
     }
 

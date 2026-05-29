@@ -455,7 +455,7 @@ final class ContinueReadingViewModel: ObservableObject {
             )
             items = resp.comics.filter { $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
         } catch {
-            print("加载继续观看失败: \(error)")
+            AppLogger.error("加载继续观看失败: \(error)")
         }
     }
 }

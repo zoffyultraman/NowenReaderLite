@@ -465,7 +465,7 @@ final class ComicReaderViewModel: ObservableObject {
             isLoading = false
             startSession()
         } catch {
-            print("加载页面列表失败: \(error)")
+            AppLogger.error("加载页面列表失败: \(error)")
             isLoading = false
         }
     }
@@ -494,7 +494,7 @@ final class ComicReaderViewModel: ObservableObject {
             isLoading = false
             startSession()
         } catch {
-            print("加载下一卷失败: \(error)")
+            AppLogger.error("加载下一卷失败: \(error)")
             isLoading = false
         }
     }

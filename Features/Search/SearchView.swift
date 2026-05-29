@@ -136,7 +136,7 @@ final class SearchViewModel: ObservableObject {
                 }
             } catch {
                 if !Task.isCancelled {
-                    print("搜索失败: \(error)")
+                    AppLogger.error("搜索失败: \(error)")
                 }
             }
             isLoading = false

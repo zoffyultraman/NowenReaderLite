@@ -60,14 +60,30 @@ final class CachedComic {
 }
 
 @Model
-final class ServerRecord {
+final class ServerRecord: Identifiable {
+    var id: String { url }
     @Attribute(.unique) var url: String
     var username: String?
     var lastUsed: Date
+    var boundAccountId: String?   // 绑定的账号 ID
 
     init(url: String, username: String? = nil) {
         self.url = url
         self.username = username
         self.lastUsed = Date()
+    }
+}
+
+@Model
+final class SavedAccount: Identifiable {
+    @Attribute(.unique) var id: String          // 自动生成的 UUID
+    var alias: String                           // 别名（用户自定义显示名）
+    var username: String
+    var lastUsed: Date?
+
+    init(alias: String, username: String) {
+        self.id = UUID().uuidString
+        self.alias = alias
+        self.username = username
     }
 }

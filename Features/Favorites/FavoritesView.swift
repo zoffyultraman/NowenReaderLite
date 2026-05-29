@@ -67,7 +67,7 @@ final class FavoritesViewModel: ObservableObject {
             let resp = try await APIClient.shared.fetchComics(page: 1, pageSize: 50, favorites: true)
             comics = resp.comics
         } catch {
-            print("加载收藏失败: \(error)")
+            AppLogger.error("加载收藏失败: \(error)")
         }
         isLoading = false
     }

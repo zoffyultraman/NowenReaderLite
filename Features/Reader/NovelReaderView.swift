@@ -432,7 +432,7 @@ final class NovelReaderViewModel: ObservableObject {
             chapterContent = try await api.fetchChapter(comicId: comicId, index: chapter)
             repaginate(fontSize: fontSize)
         } catch {
-            print("加载章节失败: \(error)")
+            AppLogger.error("加载章节失败: \(error)")
         }
         isLoading = false
     }
@@ -462,7 +462,7 @@ final class NovelReaderViewModel: ObservableObject {
             currentChapter = safeChapter
             repaginate(fontSize: fontSize)
         } catch {
-            print("加载卷失败: \(error)")
+            AppLogger.error("加载卷失败: \(error)")
         }
         isLoading = false
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct SettingsView: View {
     @ObservedObject private var api = APIClient.shared
@@ -30,6 +31,11 @@ struct SettingsView: View {
                     ServerListView()
                 } label: {
                     HStack {
+                        let isHTTPS = api.serverURL.lowercased().hasPrefix("https://")
+                        Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
+                            .foregroundStyle(isHTTPS ? .green : .red)
+                            .font(.caption)
+                            .frame(width: 16)
                         Label("服务器", systemImage: "server.rack")
                             .foregroundStyle(.primary)
                         Spacer()
@@ -39,11 +45,33 @@ struct SettingsView: View {
                             .lineLimit(1)
                     }
                 }
+
+                NavigationLink {
+                    AccountManagerView()
+                } label: {
+                    HStack {
+                        Color.clear
+                            .frame(width: 16)
+                        Label("账号管理", systemImage: "person.crop.circle.badge.plus")
+                            .foregroundStyle(.primary)
+                    }
+                }
+
+                if !api.serverURL.isEmpty && !api.serverURL.lowercased().hasPrefix("https://") {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                        Text("当前使用 HTTP 明文连接，数据（含密码）可能被截获")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
             }
 
             // 关于
             Section("关于") {
-                LabeledContent("版本", value: "1.0.0")
+                LabeledContent("版本", value: "1.0.1")
                 if let url = URL(string: "https://github.com/cropflre/nowen-reader") {
                     Link("项目主页", destination: url)
                 }
