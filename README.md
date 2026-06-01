@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../logo.png" width="120" alt="NowenReader Lite Logo">
+  <img src="logo.png" width="120" alt="NowenReader Lite Logo">
 </p>
 
 <h1 align="center">NowenReader Lite</h1>
