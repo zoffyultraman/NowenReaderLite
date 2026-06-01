@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
     @State private var cacheSize: Int = 0
+    @State private var novelCacheSize: Int = 0
 
     var body: some View {
         List {
@@ -82,6 +83,14 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                HStack {
+                    Label("小说章节缓存", systemImage: "text.book.closed")
+                    Spacer()
+                    Text(formatFileSize(Int64(novelCacheSize)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Button(role: .destructive) {
                     showClearCacheAlert = true
                 } label: {
@@ -92,12 +101,12 @@ struct SettingsView: View {
                         Spacer()
                     }
                 }
-                .disabled(cacheSize == 0)
+                .disabled(cacheSize == 0 && novelCacheSize == 0)
             }
 
             // 关于
             Section("关于") {
-                LabeledContent("版本", value: "1.0.2")
+                LabeledContent("版本", value: "1.0.3")
                 if let url = URL(string: "https://github.com/cropflre/nowen-reader") {
                     Link("项目主页", destination: url)
                 }
@@ -138,13 +147,14 @@ struct SettingsView: View {
                 clearCache()
             }
         } message: {
-            Text("将释放 \(formatFileSize(Int64(cacheSize))) 空间，不影响服务器数据。")
+            Text("将释放 \(formatFileSize(Int64(cacheSize + novelCacheSize))) 空间，不影响服务器数据。")
         }
     }
 
     private func loadCacheSize() {
         guard let comics = try? modelContext.fetch(FetchDescriptor<CachedComic>()) else {
             cacheSize = 0
+            novelCacheSize = NovelReaderViewModel.totalNovelCacheBytes
             return
         }
         cacheSize = comics.reduce(0) { total, comic in
@@ -156,11 +166,13 @@ struct SettingsView: View {
                 + (comic.type?.utf8.count ?? 0)
                 + 8 + 8 + 1 + 8 + 8 + 8 + 8
         }
+        novelCacheSize = NovelReaderViewModel.totalNovelCacheBytes
     }
 
     private func clearCache() {
         try? modelContext.delete(model: CachedComic.self)
         modelContext.saveOrLog()
         cacheSize = 0
+        NotificationCenter.default.post(name: .novelChapterCacheClear, object: nil)
     }
 }

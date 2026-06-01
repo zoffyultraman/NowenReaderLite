@@ -12,6 +12,7 @@ struct NovelReaderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var showOverlay = false
+    @State private var showChapterList = false
     @State private var fontSize: Double = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
     @State private var currentPage = 0
     private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
@@ -96,6 +97,19 @@ struct NovelReaderView: View {
         }
         .overlay(alignment: .bottom) {
             if showOverlay { bottomOverlay }
+        }
+        .sheet(isPresented: $showChapterList) {
+            ChapterListView(
+                totalChapters: viewModel.totalChapters,
+                currentChapter: viewModel.currentChapter,
+                onSelect: { index in
+                    showChapterList = false
+                    showOverlay = false
+                    saveRecord()
+                    currentPage = 0
+                    Task { await viewModel.load(comicId: viewModel.currentComicId, chapter: index, fontSize: fontSize) }
+                }
+            )
         }
     }
 
@@ -200,6 +214,15 @@ struct NovelReaderView: View {
 
                 Spacer()
 
+                Button {
+                    showChapterList = true
+                } label: {
+                    Label("目录", systemImage: "list.bullet")
+                        .font(.subheadline)
+                }
+
+                Spacer()
+
                 if currentPage >= viewModel.pages.count - 1 {
                     Button {
                         showOverlay = false
@@ -232,6 +255,47 @@ struct NovelReaderView: View {
         .padding(.vertical, 16)
         .padding(.bottom, 8)
         .background(.ultraThinMaterial.opacity(0.8))
+    }
+}
+
+// MARK: - 目录弹窗
+
+struct ChapterListView: View {
+    let totalChapters: Int
+    let currentChapter: Int
+    let onSelect: (Int) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(0..<totalChapters, id: \.self) { index in
+                    Button {
+                        onSelect(index)
+                    } label: {
+                        HStack {
+                            Text("第 \(index + 1) 章")
+                                .foregroundStyle(index == currentChapter ? Color.accentColor : .primary)
+                                .fontWeight(index == currentChapter ? .semibold : .regular)
+                            Spacer()
+                            if index == currentChapter {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor)
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("目录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -402,6 +466,12 @@ class NovelTextPageVC: UIViewController {
     }
 }
 
+// MARK: - 通知名称
+
+extension Notification.Name {
+    static let novelChapterCacheClear = Notification.Name("novelChapterCacheClear")
+}
+
 // MARK: - ViewModel
 
 @MainActor
@@ -409,13 +479,31 @@ final class NovelReaderViewModel: ObservableObject {
     @Published var chapterContent: ChapterContent?
     @Published var isLoading = false
     @Published var currentChapter = 0
+    @Published var totalChapters: Int = 0
     @Published var darkMode = false
     @Published var pages: [String] = []
     @Published var groupContext: ReadingGroupContext?
     @Published var currentComicId: String
 
+    private var cacheObserver: Any?
+
     init() {
         self.currentComicId = ""
+        cacheObserver = NotificationCenter.default.addObserver(
+            forName: .novelChapterCacheClear,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.clearCache()
+            }
+        }
+    }
+
+    deinit {
+        if let observer = cacheObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     var plainText: String { chapterContent?.content ?? "" }
@@ -423,19 +511,121 @@ final class NovelReaderViewModel: ObservableObject {
     private var comicId = ""
     private let api = APIClient.shared
 
+    // MARK: - 章节预缓存
+
+    private var chapterCache: [Int: ChapterContent] = [:]
+    private var chapterCacheBytes: Int = 0
+    private let cacheCapacity = 5 // 当前 ±2
+
+    /// 小说章节缓存总字节数（供设置页读取）
+    static var totalNovelCacheBytes: Int = 0
+
+    /// 从缓存中取出章节并应用，返回是否命中
+    private func applyFromCache(chapter: Int, fontSize: Double) -> Bool {
+        guard let cached = chapterCache[chapter] else { return false }
+        chapterContent = cached
+        currentChapter = chapter
+        repaginate(fontSize: fontSize)
+        return true
+    }
+
+    /// 预加载当前章节 ±2 的相邻章节
+    private func preloadAdjacentChapters(fontSize: Double) {
+        let center = currentChapter
+
+        for offset in [-2, -1, 1, 2] {
+            let target = center + offset
+            guard target >= 0 else { continue }
+            if totalChapters > 0 && target >= totalChapters { continue }
+            guard chapterCache[target] == nil else { continue }
+
+            Task {
+                do {
+                    let content = try await api.fetchChapter(comicId: comicId, index: target)
+                    cacheChapter(content, for: target)
+                    evictCache(keeping: center)
+                } catch {
+                    // 静默失败，不影响当前阅读
+                }
+            }
+        }
+    }
+
+    /// 淘汰距离当前章节最远的缓存，保留最多 cacheCapacity 条
+    private func evictCache(keeping center: Int) {
+        guard chapterCache.count > cacheCapacity else { return }
+        let sorted = chapterCache.keys.sorted { abs($0 - center) < abs($1 - center) }
+        for key in sorted.dropFirst(cacheCapacity) {
+            if let removed = chapterCache.removeValue(forKey: key) {
+                chapterCacheBytes -= Self.chapterByteSize(removed)
+            }
+        }
+        Self.totalNovelCacheBytes = chapterCacheBytes
+    }
+
+    /// 卷切换时清空缓存
+    private func clearCache() {
+        chapterCache.removeAll()
+        chapterCacheBytes = 0
+        Self.totalNovelCacheBytes = 0
+    }
+
+    /// 缓存一个章节并更新字节计数
+    private func cacheChapter(_ content: ChapterContent, for index: Int) {
+        if let old = chapterCache[index] {
+            chapterCacheBytes -= Self.chapterByteSize(old)
+        }
+        chapterCache[index] = content
+        chapterCacheBytes += Self.chapterByteSize(content)
+        Self.totalNovelCacheBytes = chapterCacheBytes
+    }
+
+    /// 估算单个章节的内存占用
+    private static func chapterByteSize(_ content: ChapterContent) -> Int {
+        var size = 0
+        if let title = content.title { size += title.utf8.count }
+        if let text = content.content { size += text.utf8.count }
+        return size
+    }
+
+    // MARK: - 加载
+
     func load(comicId: String, chapter: Int, fontSize: Double = 17, groupContext: ReadingGroupContext? = nil) async {
         self.comicId = comicId
         self.currentComicId = comicId
-        self.currentChapter = chapter
         self.groupContext = groupContext
+
+        // 优先从缓存读取
+        if applyFromCache(chapter: chapter, fontSize: fontSize) {
+            preloadAdjacentChapters(fontSize: fontSize)
+            return
+        }
+
+        // 缓存未命中，走网络
+        self.currentChapter = chapter
         isLoading = true
         do {
             chapterContent = try await api.fetchChapter(comicId: comicId, index: chapter)
+            if let content = chapterContent {
+                cacheChapter(content, for: chapter)
+            }
+            // 更新章节数
+            if let t = chapterContent?.totalChapters {
+                totalChapters = t
+            } else if totalChapters == 0 {
+                // 服务端未返回 totalChapters，通过 fetchPages 获取
+                if let pageList = try? await api.fetchPages(comicId: comicId) {
+                    totalChapters = pageList.totalPages
+                }
+            }
+            evictCache(keeping: chapter)
             repaginate(fontSize: fontSize)
         } catch {
             AppLogger.error("加载章节失败: \(error)")
         }
         isLoading = false
+
+        preloadAdjacentChapters(fontSize: fontSize)
     }
 
     func loadVolume(comicId: String, chapter: Int, fontSize: Double = 17) async {
@@ -453,54 +643,66 @@ final class NovelReaderViewModel: ObservableObject {
         self.currentComicId = comicId
         self.currentChapter = chapter
         isLoading = true
+        clearCache()
 
         do {
             let pageList = try await api.fetchPages(comicId: comicId)
             // For novels, totalPages from the API represents total chapters
-            let totalChapters = max(1, pageList.totalPages)
-            let safeChapter = min(chapter, totalChapters - 1)
+            self.totalChapters = max(1, pageList.totalPages)
+            let safeChapter = min(chapter, self.totalChapters - 1)
             chapterContent = try await api.fetchChapter(comicId: comicId, index: safeChapter)
+            if let content = chapterContent {
+                cacheChapter(content, for: safeChapter)
+            }
             currentChapter = safeChapter
             repaginate(fontSize: fontSize)
         } catch {
             AppLogger.error("加载卷失败: \(error)")
         }
         isLoading = false
+
+        preloadAdjacentChapters(fontSize: fontSize)
     }
 
     func nextChapter(fontSize: Double = 17) async {
-        // Try next chapter in current volume
-        let nextChapterIndex = currentChapter + 1
-        if let totalChapters = chapterContent?.totalChapters {
-            // Server reports total chapters — use it to check bounds
-            if nextChapterIndex < totalChapters {
-                await load(comicId: comicId, chapter: nextChapterIndex, fontSize: fontSize)
-                return
-            }
-            // At last chapter in volume — try next volume
-        } else {
-            // No totalChapters info — optimistically try next chapter
-            await load(comicId: comicId, chapter: nextChapterIndex, fontSize: fontSize)
+        let nextIndex = currentChapter + 1
+
+        // 检查是否超出当前卷
+        if totalChapters > 0 && nextIndex >= totalChapters {
+            guard let nextId = groupContext?.nextVolumeId else { return }
+            await loadVolume(comicId: nextId, chapter: 0, fontSize: fontSize)
             return
         }
-        // Try next volume
-        guard let nextId = groupContext?.nextVolumeId else { return }
-        await loadVolume(comicId: nextId, chapter: 0, fontSize: fontSize)
+
+        // 优先缓存
+        if applyFromCache(chapter: nextIndex, fontSize: fontSize) {
+            preloadAdjacentChapters(fontSize: fontSize)
+            return
+        }
+
+        await load(comicId: comicId, chapter: nextIndex, fontSize: fontSize)
     }
 
     func prevChapter(fontSize: Double = 17) async {
-        if currentChapter > 0 {
-            await load(comicId: comicId, chapter: currentChapter - 1, fontSize: fontSize)
+        guard currentChapter > 0 else {
+            // 第一章 — 尝试上一卷
+            guard let prevId = groupContext?.previousVolumeId else { return }
+            if let pageList = try? await api.fetchPages(comicId: prevId) {
+                let lastChapter = max(0, pageList.totalPages - 1)
+                await loadVolume(comicId: prevId, chapter: lastChapter, fontSize: fontSize)
+            }
             return
         }
-        // At chapter 0 — try previous volume
-        guard let prevId = groupContext?.previousVolumeId else { return }
-        // Load previous volume to find last chapter index
-        if let pageList = try? await api.fetchPages(comicId: prevId) {
-            // For novels, totalPages from the API represents total chapters
-            let lastChapter = max(0, pageList.totalPages - 1)
-            await loadVolume(comicId: prevId, chapter: lastChapter, fontSize: fontSize)
+
+        let prevIndex = currentChapter - 1
+
+        // 优先缓存
+        if applyFromCache(chapter: prevIndex, fontSize: fontSize) {
+            preloadAdjacentChapters(fontSize: fontSize)
+            return
         }
+
+        await load(comicId: comicId, chapter: prevIndex, fontSize: fontSize)
     }
 
     func saveProgress(currentPage: Int = 0) async {
