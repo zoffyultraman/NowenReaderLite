@@ -38,6 +38,21 @@ struct HomeView: View {
                 .padding(.top, 8)
             }
 
+            // 加载失败提示
+            if let error = continueReadingVM.errorMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+            }
+
             // 分类切换
             Picker("类型", selection: $selectedTab) {
                 ForEach(ContentType.allCases, id: \.self) { type in
@@ -67,9 +82,6 @@ struct HomeView: View {
         }
         .task {
             await continueReadingVM.load()
-        }
-        .onAppear {
-            Task { await continueReadingVM.load() }
         }
         .refreshable {
             await continueReadingVM.load()
@@ -184,16 +196,8 @@ struct LibraryContentView: View {
         }
     }
 
-    /// 合集和散本混在一起，已分组的漫画不重复显示
-    var items: [LibraryItem] {
-        if contentType == "comic" {
-            var result: [LibraryItem] = viewModel.groups.map { .group($0) }
-            let ungrouped = viewModel.comics.filter { !viewModel.groupedComicIds.contains($0.id) }
-            result.append(contentsOf: ungrouped.map { .comic($0) })
-            return result
-        }
-        return viewModel.comics.map { .comic($0) }
-    }
+    /// 合集和散本混在一起，已分组的漫画不重复显示（缓存在 viewModel.displayItems 中）
+    var items: [LibraryItem] { viewModel.displayItems }
 
     private var gridColumns: [GridItem] {
         let count = sizeClass == .regular ? 5 : 3
@@ -444,6 +448,7 @@ struct GroupListRowView: View {
 @MainActor
 final class ContinueReadingViewModel: ObservableObject {
     @Published var items: [Comic] = []
+    @Published var errorMessage: String?
 
     func load() async {
         do {
@@ -454,8 +459,10 @@ final class ContinueReadingViewModel: ObservableObject {
                 sortOrder: "desc"
             )
             items = resp.comics.filter { $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
+            errorMessage = nil
         } catch {
             AppLogger.error("加载继续观看失败: \(error)")
+            errorMessage = error.localizedDescription
         }
     }
 }

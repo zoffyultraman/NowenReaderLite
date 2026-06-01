@@ -122,8 +122,13 @@ struct ServerListView: View {
                 currentBoundId: server.boundAccountId,
                 accounts: allAccounts(),
                 onSave: { newBoundId in
-                    server.boundAccountId = newBoundId
-                    try? modelContext.save()
+                    if let id = newBoundId {
+                        let desc = FetchDescriptor<SavedAccount>(predicate: #Predicate { $0.id == id })
+                        server.boundAccount = try? modelContext.fetch(desc).first
+                    } else {
+                        server.boundAccount = nil
+                    }
+                    modelContext.saveOrLog()
                 }
             )
         }
@@ -151,8 +156,10 @@ struct ServerListView: View {
         switchingServerId = record.url
         record.lastUsed = Date()
 
-        // 清除旧 cookie
-        HTTPCookieStorage.shared.cookies?.forEach { HTTPCookieStorage.shared.deleteCookie($0) }
+        // 清除旧服务器的 cookie 和本地缓存
+        api.clearCookiesForCurrentServer()
+        try? modelContext.delete(model: CachedComic.self)
+        modelContext.saveOrLog()
 
         api.setServerURL(record.url)
 
@@ -190,14 +197,14 @@ struct ServerListView: View {
                 case .timeout:
                     timeoutServerURL = record.url
                     showTimeoutAlert = true
-                    HTTPCookieStorage.shared.cookies?.forEach { HTTPCookieStorage.shared.deleteCookie($0) }
+                    api.clearCookiesForCurrentServer()
                     api.setServerURL(previousURL)
                     api.currentUser = previousUser
                     api.isLoggedIn = previousUser != nil
                     Task { await api.checkAuth() }
                 case .failure:
                     // 操作完成但登录失败，回退到之前的服务器
-                    HTTPCookieStorage.shared.cookies?.forEach { HTTPCookieStorage.shared.deleteCookie($0) }
+                    api.clearCookiesForCurrentServer()
                     api.setServerURL(previousURL)
                     api.currentUser = previousUser
                     api.isLoggedIn = previousUser != nil
@@ -234,7 +241,7 @@ struct ServerListView: View {
             if server.url == api.serverURL { continue }
             modelContext.delete(server)
         }
-        try? modelContext.save()
+        modelContext.saveOrLog()
     }
 }
 

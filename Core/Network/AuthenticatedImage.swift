@@ -33,26 +33,26 @@ struct AuthenticatedImage: View {
 
     private func loadImage() async {
         guard let url else { return }
+        let urlString = url.absoluteString
         isLoading = true
-        defer { isLoading = false }
 
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15
-
-        // 添加 Cookie 认证
-        if let cookies = HTTPCookieStorage.shared.cookies(for: url) {
-            request.allHTTPHeaderFields = HTTPCookie.requestHeaderFields(with: cookies)
-        }
+        let request = APIClient.shared.authenticatedRequest(url: url)
 
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
+            // 仅当 URL 未变更时更新图片，避免闪烁
+            guard self.url?.absoluteString == urlString else { return }
             if let img = UIImage(data: data) {
                 withAnimation(.easeIn(duration: 0.15)) {
                     self.image = img
                 }
             }
         } catch {
-            // 静默失败，显示占位图
+            guard self.url?.absoluteString == urlString else { return }
+        }
+        // 仅当 URL 未变更时结束 loading
+        if self.url?.absoluteString == urlString {
+            isLoading = false
         }
     }
 }

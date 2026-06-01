@@ -12,9 +12,8 @@ struct RootRouter: View {
     var body: some View {
         Group {
             if api.serverURL.isEmpty {
-                ServerConfigView(onConnected: {
-                    Task { await api.checkAuth() }
-                })
+                ServerConfigView(onConnected: {})
+
             } else if !api.isLoggedIn {
                 LoginView(onLoginSuccess: {})
             } else {

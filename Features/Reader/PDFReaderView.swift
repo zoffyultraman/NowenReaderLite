@@ -4,12 +4,42 @@ import PDFKit
 struct PDFReaderView: View {
     let comicId: String
     @Environment(\.dismiss) private var dismiss
+    @State private var isLoading = false
+    @State private var loadError = false
+    @State private var reloadID = UUID()
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            PDFKitView(url: APIClient.shared.pdfURL(comicId: comicId))
-                .ignoresSafeArea()
+            PDFKitView(
+                url: APIClient.shared.pdfURL(comicId: comicId),
+                isLoading: $isLoading,
+                loadError: $loadError
+            )
+            .id(reloadID)
+            .ignoresSafeArea()
+
+            if isLoading {
+                ProgressView()
+                    .tint(.white)
+            }
+
+            if loadError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.white)
+                    Text("PDF 加载失败")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Button("重试") {
+                        loadError = false
+                        reloadID = UUID() // 强制重建 PDFKitView
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
         }
         .navigationBarHidden(true)
         .overlay(alignment: .topLeading) {
@@ -24,7 +54,6 @@ struct PDFReaderView: View {
                     .padding(8)
             }
         }
-
     }
 }
 
@@ -32,6 +61,14 @@ struct PDFReaderView: View {
 
 struct PDFKitView: UIViewRepresentable {
     let url: URL?
+    @Binding var isLoading: Bool
+    @Binding var loadError: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    class Coordinator {
+        var dataTask: URLSessionDataTask?
+    }
 
     func makeUIView(context: Context) -> PDFView {
         let pdfView = PDFView()
@@ -41,19 +78,21 @@ struct PDFKitView: UIViewRepresentable {
         pdfView.backgroundColor = .black
 
         if let url {
-            if let cookies = HTTPCookieStorage.shared.cookies(for: url) {
-                var request = URLRequest(url: url)
-                request.allHTTPHeaderFields = HTTPCookie.requestHeaderFields(with: cookies)
-                URLSession.shared.dataTask(with: request) { data, _, _ in
+            isLoading = true
+            loadError = false
+            let request = APIClient.shared.authenticatedRequest(url: url, timeout: 60)
+            let task = URLSession.shared.dataTask(with: request) { data, _, error in
+                DispatchQueue.main.async {
+                    isLoading = false
                     if let data, let doc = PDFDocument(data: data) {
-                        DispatchQueue.main.async {
-                            pdfView.document = doc
-                        }
+                        pdfView.document = doc
+                    } else {
+                        loadError = true
                     }
-                }.resume()
-            } else {
-                pdfView.document = PDFDocument(url: url)
+                }
             }
+            context.coordinator.dataTask = task
+            task.resume()
         }
 
         return pdfView

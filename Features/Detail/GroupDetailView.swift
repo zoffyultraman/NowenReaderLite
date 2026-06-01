@@ -18,7 +18,12 @@ struct GroupDetailView: View {
                         HStack(alignment: .top, spacing: 16) {
                             // 封面固定宽度，左对齐
                             Group {
-                                if let first = detail.comics.first {
+                                if let cover = detail.coverUrl, !cover.isEmpty {
+                                    let urlString = cover.hasPrefix("http") ? cover : "\(APIClient.shared.serverURL)\(cover)"
+                                    if let url = URL(string: urlString) {
+                                        AuthenticatedImage(url: url)
+                                    }
+                                } else if let first = detail.comics.first {
                                     AuthenticatedImage(
                                         serverURL: APIClient.shared.serverURL,
                                         comicId: first.id,

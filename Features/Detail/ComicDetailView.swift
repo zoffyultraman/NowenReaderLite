@@ -1,9 +1,11 @@
 import SwiftUI
+import SwiftData
 
 struct ComicDetailView: View {
     let comicId: String
     var groupContext: ReadingGroupContext? = nil
     @StateObject private var viewModel = DetailViewModel()
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         ScrollView {
@@ -21,6 +23,7 @@ struct ComicDetailView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .task {
+            viewModel.setModelContext(modelContext)
             await viewModel.load(id: comicId)
         }
     }
@@ -52,7 +55,7 @@ struct ComicDetailView: View {
                     }
 
                     if let size = comic.fileSize, size > 0 {
-                        Label(formatFileSize(Int64(size)), systemImage: "internaldrive")
+                        Label(formatFileSize(size), systemImage: "internaldrive")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -255,6 +258,11 @@ final class DetailViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let api = APIClient.shared
+    private var modelContext: ModelContext?
+
+    func setModelContext(_ context: ModelContext) {
+        self.modelContext = context
+    }
 
     func load(id: String) async {
         guard !isLoading else { return }
@@ -272,10 +280,22 @@ final class DetailViewModel: ObservableObject {
         guard let comic else { return }
         do {
             let resp = try await api.toggleFavorite(comicId: comic.id)
-            self.comic = comic.withFavorite(resp["isFavorite"] ?? !(comic.isFavorite))
+            let newFav = resp["isFavorite"] ?? !(comic.isFavorite)
+            self.comic = comic.withFavorite(newFav)
+            // 同步到本地缓存
+            syncFavoriteToCache(comicId: comic.id, isFavorite: newFav)
         } catch {
             AppLogger.error("收藏失败: \(error)")
         }
+    }
+
+    private func syncFavoriteToCache(comicId: String, isFavorite: Bool) {
+        guard let context = modelContext else { return }
+        let id = comicId
+        let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        guard let cached = try? context.fetch(descriptor), let first = cached.first else { return }
+        first.isFavorite = isFavorite
+        context.saveOrLog()
     }
 }
 

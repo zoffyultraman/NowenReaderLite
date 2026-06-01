@@ -1,6 +1,51 @@
 import Foundation
 import SwiftData
 
+// MARK: - Versioned Schema
+
+enum SchemaV1: VersionedSchema {
+    static var versionIdentifier = Schema.Version(1, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [CachedComic.self, ServerRecord.self, SavedAccount.self]
+    }
+}
+
+// MARK: - Migration Plan
+
+enum ReaderMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [SchemaV1.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [] // 当前仅 v1，后续版本在此添加迁移阶段
+    }
+}
+
+// MARK: - ModelContext 扩展
+
+extension ModelContext {
+    /// 安全保存，失败时记录日志
+    func saveOrLog(label: String = "") {
+        do {
+            try save()
+        } catch {
+            AppLogger.error("SwiftData 保存失败\(label.isEmpty ? "" : " (\(label))"): \(error)")
+        }
+    }
+}
+
+extension Date {
+    var iso8601String: String {
+        ISO8601DateFormatter().string(from: self)
+    }
+
+    static func fromISO8601(_ string: String) -> Date? {
+        ISO8601DateFormatter().date(from: string)
+    }
+}
+
 @Model
 final class CachedComic {
     @Attribute(.unique) var id: String
@@ -16,45 +61,60 @@ final class CachedComic {
     var lastReadAt: Date?
     var cachedAt: Date
 
-    init(
-        id: String,
-        title: String,
-        author: String? = nil,
-        coverUrl: String? = nil,
-        pageCount: Int = 0,
-        lastReadPage: Int = 0,
-        isFavorite: Bool = false,
-        rating: Double? = nil,
-        type: String? = nil,
-        progress: Int = 0,
-        lastReadAt: Date? = nil
-    ) {
-        self.id = id
-        self.title = title
-        self.author = author
-        self.coverUrl = coverUrl
-        self.pageCount = pageCount
-        self.lastReadPage = lastReadPage
-        self.isFavorite = isFavorite
-        self.rating = rating
-        self.type = type
-        self.progress = progress
-        self.lastReadAt = lastReadAt
+    init() {
+        self.id = ""
+        self.title = ""
+        self.pageCount = 0
+        self.lastReadPage = 0
+        self.isFavorite = false
+        self.progress = 0
         self.cachedAt = Date()
     }
 
-    convenience init(from comic: Comic) {
-        self.init(
-            id: comic.id,
-            title: comic.title,
-            author: comic.author,
-            coverUrl: comic.coverUrl,
-            pageCount: comic.pageCount,
-            lastReadPage: comic.lastReadPage,
-            isFavorite: comic.isFavorite,
-            rating: comic.rating,
-            type: comic.type,
-            progress: comic.progress
+    static func from(_ comic: Comic) -> CachedComic {
+        let c = CachedComic()
+        c.id = comic.id
+        c.title = comic.title
+        c.author = comic.author
+        c.coverUrl = comic.coverUrl
+        c.pageCount = comic.pageCount
+        c.lastReadPage = comic.lastReadPage
+        c.isFavorite = comic.isFavorite
+        c.rating = comic.rating
+        c.type = comic.type
+        c.progress = comic.progress
+        c.lastReadAt = comic.lastReadAt.flatMap { Date.fromISO8601($0) }
+        c.cachedAt = Date()
+        return c
+    }
+
+    /// 转换为 Comic 模型（部分字段使用默认值）
+    func toComic() -> Comic {
+        Comic(
+            id: id,
+            title: title,
+            author: author,
+            publisher: nil,
+            description: nil,
+            genre: nil,
+            language: nil,
+            year: nil,
+            pageCount: pageCount,
+            fileSize: nil,
+            lastReadPage: lastReadPage,
+            totalReadTime: nil,
+            readingStatus: nil,
+            lastReadAt: lastReadAt?.iso8601String,
+            metadataSource: nil,
+            coverUrl: coverUrl,
+            coverAspectRatio: nil,
+            rating: rating,
+            isFavorite: isFavorite,
+            type: type,
+            filename: nil,
+            sortOrder: nil,
+            tags: nil,
+            categories: nil
         )
     }
 }
@@ -65,7 +125,11 @@ final class ServerRecord: Identifiable {
     @Attribute(.unique) var url: String
     var username: String?
     var lastUsed: Date
-    var boundAccountId: String?   // 绑定的账号 ID
+    @Relationship(inverse: \SavedAccount.boundServers)
+    var boundAccount: SavedAccount?
+
+    /// 兼容旧代码的便捷访问
+    var boundAccountId: String? { boundAccount?.id }
 
     init(url: String, username: String? = nil) {
         self.url = url
@@ -76,10 +140,12 @@ final class ServerRecord: Identifiable {
 
 @Model
 final class SavedAccount: Identifiable {
-    @Attribute(.unique) var id: String          // 自动生成的 UUID
-    var alias: String                           // 别名（用户自定义显示名）
+    @Attribute(.unique) var id: String
+    var alias: String
     var username: String
     var lastUsed: Date?
+    @Relationship
+    var boundServers: [ServerRecord] = []
 
     init(alias: String, username: String) {
         self.id = UUID().uuidString

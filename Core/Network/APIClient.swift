@@ -8,7 +8,7 @@ import SwiftData
 final class APIClient: ObservableObject {
     static let shared = APIClient()
 
-    @Published var serverURL: String = UserDefaults.standard.string(forKey: "server_url") ?? ""
+    @Published var serverURL: String = UserDefaults.standard.string(forKey: UserDefaultsKey.serverURL) ?? ""
     @Published var isLoggedIn: Bool = false
     @Published var currentUser: AuthUser?
 
@@ -45,7 +45,7 @@ final class APIClient: ObservableObject {
         if parsed.user != nil { return }
 
         serverURL = trimmed
-        UserDefaults.standard.set(trimmed, forKey: "server_url")
+        UserDefaults.standard.set(trimmed, forKey: UserDefaultsKey.serverURL)
     }
 
     func testConnection(_ url: String) async -> Bool {
@@ -100,7 +100,17 @@ final class APIClient: ObservableObject {
         } catch {}
         isLoggedIn = false
         currentUser = nil
-        cookieStorage.cookies?.forEach { cookieStorage.deleteCookie($0) }
+        clearCookiesForCurrentServer()
+    }
+
+    /// 只清除当前服务器域名的 Cookie，不影响其他服务
+    func clearCookiesForCurrentServer() {
+        guard let host = URL(string: serverURL)?.host else { return }
+        cookieStorage.cookies?.forEach { cookie in
+            if cookie.domain == host || cookie.domain.hasSuffix(".\(host)") {
+                cookieStorage.deleteCookie(cookie)
+            }
+        }
     }
 
     // MARK: - Account Management
@@ -108,9 +118,11 @@ final class APIClient: ObservableObject {
     /// 新建账号（保存到 SwiftData + Keychain）
     func createAccount(alias: String, username: String, password: String, context: ModelContext) -> SavedAccount {
         let account = SavedAccount(alias: alias, username: username)
-        KeychainHelper.savePassword(password, for: account.id)
+        if !KeychainHelper.savePassword(password, for: account.id) {
+            AppLogger.error("Keychain 保存密码失败: \(account.username)")
+        }
         context.insert(account)
-        try? context.save()
+        context.saveOrLog()
         return account
     }
 
@@ -119,21 +131,25 @@ final class APIClient: ObservableObject {
         account.alias = alias
         account.username = username
         if let password = password {
-            KeychainHelper.savePassword(password, for: account.id)
+            if !KeychainHelper.savePassword(password, for: account.id) {
+                AppLogger.error("Keychain 更新密码失败: \(account.username)")
+            }
         }
-        try? context.save()
+        context.saveOrLog()
     }
 
     /// 删除账号
     func deleteAccount(_ account: SavedAccount, context: ModelContext) {
-        KeychainHelper.deletePassword(for: account.id)
-        // 解绑引用此账号的服务器
+        if !KeychainHelper.deletePassword(for: account.id) {
+            AppLogger.error("Keychain 删除密码失败: \(account.username)")
+        }
+        // 解绑引用此账号的服务器（@Relationship 会自动处理，但显式清理更安全）
         let allServers = (try? context.fetch(FetchDescriptor<ServerRecord>())) ?? []
-        for server in allServers where server.boundAccountId == account.id {
-            server.boundAccountId = nil
+        for server in allServers where server.boundAccount?.id == account.id {
+            server.boundAccount = nil
         }
         context.delete(account)
-        try? context.save()
+        context.saveOrLog()
     }
 
     /// 获取所有已保存账号
@@ -220,6 +236,16 @@ final class APIClient: ObservableObject {
         URL(string: "\(serverURL)/api/comics/\(comicId)/pdf")
     }
 
+    /// 创建带 Cookie 认证的 URLRequest，统一图片/PDF 加载的认证逻辑
+    func authenticatedRequest(url: URL, timeout: TimeInterval = 15) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        if let cookies = cookieStorage.cookies(for: url) {
+            request.allHTTPHeaderFields = HTTPCookie.requestHeaderFields(with: cookies)
+        }
+        return request
+    }
+
     // MARK: - Sessions
 
     func startSession(comicId: String, startPage: Int) async throws -> Int? {
@@ -255,7 +281,16 @@ final class APIClient: ObservableObject {
     }
 
     func deleteGoal(goalType: String) async throws {
-        let _: EmptyResponse = try await performRequest(path: "/api/goals?goalType=\(goalType)", method: "DELETE", body: EmptyBody())
+        guard var components = URLComponents(string: "\(serverURL)/api/goals") else {
+            throw APIError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "goalType", value: goalType)]
+        guard let url = components.url else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
     }
 
     // MARK: - Reading Status
@@ -315,7 +350,7 @@ final class APIClient: ObservableObject {
 
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
-        return try JSONDecoder().decode(T.self, from: data)
+        return try decode(T.self, from: data)
     }
 
     private func post<T: Decodable, B: Encodable>(
@@ -353,7 +388,15 @@ final class APIClient: ObservableObject {
         if data.isEmpty, let empty = EmptyResponse() as? T {
             return empty
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        return try decode(T.self, from: data)
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch is DecodingError {
+            throw APIError.dataFormat
+        }
     }
 
     private func validate(response: URLResponse, data: Data) throws {
@@ -418,6 +461,7 @@ enum APIError: LocalizedError {
     case networkError
     case unauthorized
     case serverError(Int, String)
+    case dataFormat
 
     var errorDescription: String? {
         switch self {
@@ -425,6 +469,7 @@ enum APIError: LocalizedError {
         case .networkError: return "网络连接失败"
         case .unauthorized: return "登录已过期，请重新登录"
         case .serverError(let code, let msg): return "服务器错误 (\(code)): \(msg)"
+        case .dataFormat: return "数据格式异常，请检查服务器版本"
         }
     }
 }

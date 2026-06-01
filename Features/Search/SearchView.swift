@@ -125,9 +125,6 @@ final class SearchViewModel: ObservableObject {
 
         searchTask = Task {
             isLoading = true
-            // debounce 300ms
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
 
             do {
                 let resp = try await api.fetchComics(page: 1, pageSize: 50, search: q)

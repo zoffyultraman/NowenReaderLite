@@ -1,7 +1,12 @@
 import SwiftUI
+import SwiftData
+
+// 注意：此 View 当前未被引用，MainTabView 使用 HomeView 中的 LibraryContentView。
+// LibraryViewModel 仍被 LibraryContentView 使用，不可删除。
 
 struct LibraryView: View {
     @StateObject private var viewModel = LibraryViewModel()
+    @Environment(\.modelContext) private var modelContext
     @State private var viewMode: ViewMode = .grid
     @State private var sortOption: SortOption = .addedAt
     @State private var filterType: FilterType = .all
@@ -95,6 +100,7 @@ struct LibraryView: View {
             await viewModel.loadComics(refresh: true)
         }
         .task {
+            viewModel.setModelContext(modelContext)
             if viewModel.comics.isEmpty {
                 await viewModel.loadComics()
             }
@@ -103,6 +109,20 @@ struct LibraryView: View {
             if viewModel.isLoading && viewModel.comics.isEmpty {
                 ProgressView()
                     .scaleEffect(1.2)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.bottom, 16)
+                    .onTapGesture { viewModel.errorMessage = nil }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .animation(.easeInOut, value: error)
             }
         }
     }
@@ -283,7 +303,7 @@ struct ComicListRowView: View {
                 }
 
                 if comic.pageCount > 0 {
-                    let sizeText = comic.fileSize.map { formatFileSize(Int64($0)) } ?? ""
+                    let sizeText = comic.fileSize.map { formatFileSize($0) } ?? ""
                     Text("\(comic.pageCount) 页 · \(comic.progress)% 已读\(sizeText.isEmpty ? "" : " · \(sizeText)")")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -312,12 +332,19 @@ final class LibraryViewModel: ObservableObject {
     @Published var groupedComicIds: Set<String> = []
     @Published var isLoading = false
     @Published var hasMore = true
+    @Published var errorMessage: String?
+    @Published var displayItems: [LibraryItem] = []
 
     private var currentPage = 1
     private var sortBy = "addedAt"
     private var sortOrder = "desc"
     private var contentType: String?
     private let api = APIClient.shared
+    private var modelContext: ModelContext?
+
+    func setModelContext(_ context: ModelContext) {
+        self.modelContext = context
+    }
 
     /// 同时加载合集、漫画列表和分组映射
     func loadAll(refresh: Bool = false) async {
@@ -327,10 +354,30 @@ final class LibraryViewModel: ObservableObject {
         async let m: () = loadGroupMap()
         _ = await (g, c, m)
         isLoading = false
+        updateDisplayItems()
+    }
+
+    func updateDisplayItems() {
+        if contentType == "comic" {
+            var result: [LibraryItem] = groups.map { .group($0) }
+            let ungrouped = comics.filter { !groupedComicIds.contains($0.id) }
+            result.append(contentsOf: ungrouped.map { .comic($0) })
+            displayItems = result
+        } else {
+            displayItems = comics.map { .comic($0) }
+        }
     }
 
     func loadComics(refresh: Bool = false) async {
         if refresh { currentPage = 1 }
+
+        // 首次加载时先显示缓存数据
+        if currentPage == 1, let context = modelContext {
+            let cached = loadFromCache(context: context)
+            if !cached.isEmpty && comics.isEmpty {
+                comics = cached
+            }
+        }
 
         do {
             let resp = try await api.fetchComics(
@@ -345,9 +392,52 @@ final class LibraryViewModel: ObservableObject {
                 comics.append(contentsOf: resp.comics)
             }
             hasMore = currentPage < resp.totalPages
+
+            // 更新缓存
+            if let context = modelContext, (refresh || currentPage == 1) {
+                saveToCache(resp.comics, context: context)
+            }
         } catch {
             AppLogger.error("加载漫画失败: \(error)")
+            errorMessage = error.localizedDescription
+            // API 失败时如果有缓存数据则保留，不显示空状态
+            if comics.isEmpty, let context = modelContext {
+                comics = loadFromCache(context: context)
+            }
         }
+    }
+
+    private func loadFromCache(context: ModelContext) -> [Comic] {
+        let descriptor = FetchDescriptor<CachedComic>(
+            sortBy: [SortDescriptor(\.lastReadAt, order: .reverse)]
+        )
+        guard let cached = try? context.fetch(descriptor) else { return [] }
+        return cached.map { $0.toComic() }
+    }
+
+    private func saveToCache(_ comics: [Comic], context: ModelContext) {
+        for comic in comics {
+            let id = comic.id
+            let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+            if let existing = try? context.fetch(descriptor), let first = existing.first {
+                // 更新已有记录
+                first.title = comic.title
+                first.author = comic.author
+                first.coverUrl = comic.coverUrl
+                first.pageCount = comic.pageCount
+                first.lastReadPage = comic.lastReadPage
+                first.isFavorite = comic.isFavorite
+                first.rating = comic.rating
+                first.type = comic.type
+                first.progress = comic.progress
+                first.lastReadAt = comic.lastReadAt.flatMap { Date.fromISO8601($0) }
+                first.cachedAt = Date()
+            } else {
+                // 插入新记录
+                context.insert(CachedComic.from(comic))
+            }
+        }
+        context.saveOrLog()
     }
 
     func loadGroups() async {
@@ -378,6 +468,7 @@ final class LibraryViewModel: ObservableObject {
         guard hasMore, !isLoading else { return }
         currentPage += 1
         await loadComics()
+        updateDisplayItems()
     }
 
     func updateSort(by: String, order: String) {

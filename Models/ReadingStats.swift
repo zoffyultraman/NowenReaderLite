@@ -28,7 +28,10 @@ struct RecentSession: Codable, Identifiable {
     let duration: Int?
     let startedAt: String?
 
-    var idValue: String { "\(id ?? 0)-\(startedAt ?? "")" }
+    var idValue: String {
+        if let id { return "\(id)" }
+        return "\(comicId ?? "")-\(startedAt ?? "")-\(UUID().uuidString)"
+    }
 }
 
 // MARK: - 增强统计
@@ -72,7 +75,10 @@ struct EnhancedSession: Codable, Identifiable {
     let duration: Int?
     let startPage: Int?
     let endPage: Int?
-    var idValue: String { "\(id ?? 0)-\(startedAt ?? "")" }
+    var idValue: String {
+        if let id { return "\(id)" }
+        return "\(comicId ?? "")-\(startedAt ?? "")-\(UUID().uuidString)"
+    }
 }
 
 struct GenreStat: Codable, Identifiable {

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import SwiftData
 
 // MARK: - 漫画阅读器（SwiftUI 入口）
 
@@ -11,6 +12,7 @@ struct ComicReaderView: View {
     @StateObject private var viewModel = ComicReaderViewModel()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.modelContext) private var modelContext
     @State private var showOverlay = false
 
     var body: some View {
@@ -56,6 +58,7 @@ struct ComicReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden(!showOverlay)
         .task {
+            viewModel.setModelContext(modelContext)
             await viewModel.load(comicId: comicId, initialPage: initialPage, groupContext: groupContext)
         }
         .onDisappear {
@@ -197,6 +200,15 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
     var onReachEnd: (() -> Void)?
     var onSwipeToPrev: (() -> Void)?
 
+    /// 页面图片内存缓存（限制 10 页，避免长时间阅读内存暴涨）
+    private let imageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 10
+        return cache
+    }()
+    /// 当前正在预加载的任务
+    private var preloadTasks: [Int: Task<Void, Never>] = [:]
+
     init(
         comicId: String,
         totalPages: Int,
@@ -247,6 +259,7 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
             if let vc = makePage(for: currentIdx) {
                 setViewControllers([vc], direction: .reverse, animated: true)
                 onPageChange(currentIdx)
+                preloadPages(around: currentIdx)
             }
         } else if point.x > width * 2 / 3 {
             // 点击右侧：下一页
@@ -258,6 +271,7 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
             if let vc = makePage(for: currentIdx) {
                 setViewControllers([vc], direction: .forward, animated: true)
                 onPageChange(currentIdx)
+                preloadPages(around: currentIdx)
             }
         } else {
             // 点击中间：切换覆盖层
@@ -302,13 +316,53 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
         guard completed, let vc = pvc.viewControllers?.first as? ZoomablePageVC else { return }
         currentIdx = vc.pageIndex
         onPageChange(vc.pageIndex)
+        preloadPages(around: vc.pageIndex)
     }
 
     // MARK: - Page Factory
 
     private func makePage(for index: Int) -> ZoomablePageVC? {
         guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: index) else { return nil }
-        return ZoomablePageVC(imageURL: url, pageIndex: index)
+        let cached = imageCache.object(forKey: cacheKey(for: index))
+        let vc = ZoomablePageVC(imageURL: url, pageIndex: index, cachedImage: cached)
+        vc.onImageLoaded = { [weak self] image in
+            guard let self else { return }
+            self.imageCache.setObject(image, forKey: self.cacheKey(for: index))
+        }
+        return vc
+    }
+
+    private func cacheKey(for page: Int) -> NSString {
+        "\(comicId)_\(page)" as NSString
+    }
+
+    // MARK: - Preloading
+
+    /// 预加载当前页前后各 2 页
+    func preloadPages(around current: Int) {
+        // 取消之前的预加载任务
+        preloadTasks.values.forEach { $0.cancel() }
+        preloadTasks.removeAll()
+
+        let range = max(0, current - 2)...min(totalPages - 1, current + 2)
+        for page in range {
+            guard page != current else { continue }
+            let key = cacheKey(for: page)
+            guard imageCache.object(forKey: key) == nil else { continue }
+            guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: page) else { continue }
+
+            preloadTasks[page] = Task { [weak self] in
+                guard let self else { return }
+                let request = APIClient.shared.authenticatedRequest(url: url)
+                do {
+                    let (data, _) = try await URLSession.shared.data(for: request)
+                    guard !Task.isCancelled, let image = UIImage(data: data) else { return }
+                    self.imageCache.setObject(image, forKey: key)
+                } catch {
+                    // 预加载失败静默忽略
+                }
+            }
+        }
     }
 }
 
@@ -317,13 +371,16 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
 class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     let imageURL: URL
     let pageIndex: Int
+    private let cachedImage: UIImage?
+    var onImageLoaded: ((UIImage) -> Void)?
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
-    init(imageURL: URL, pageIndex: Int) {
+    init(imageURL: URL, pageIndex: Int, cachedImage: UIImage? = nil) {
         self.imageURL = imageURL
         self.pageIndex = pageIndex
+        self.cachedImage = cachedImage
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -365,10 +422,15 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     }
 
     private func loadImage() {
-        var request = URLRequest(url: imageURL)
-        if let cookies = HTTPCookieStorage.shared.cookies(for: imageURL) {
-            request.allHTTPHeaderFields = HTTPCookie.requestHeaderFields(with: cookies)
+        // 优先使用缓存图片
+        if let cached = cachedImage {
+            activityIndicator.stopAnimating()
+            imageView.image = cached
+            fitImage()
+            return
         }
+
+        let request = APIClient.shared.authenticatedRequest(url: imageURL)
 
         URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
             guard let self, let data, let image = UIImage(data: data) else { return }
@@ -376,6 +438,7 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
                 self.activityIndicator.stopAnimating()
                 self.imageView.image = image
                 self.fitImage()
+                self.onImageLoaded?(image)
             }
         }.resume()
     }
@@ -449,10 +512,16 @@ final class ComicReaderViewModel: ObservableObject {
 
     private var sessionId: Int?
     private var sessionStart: Date?
+    private var hasEnded = false
     private let api = APIClient.shared
+    private var modelContext: ModelContext?
 
     init() {
         self.currentComicId = ""
+    }
+
+    func setModelContext(_ context: ModelContext) {
+        self.modelContext = context
     }
 
     func load(comicId: String, initialPage: Int, groupContext: ReadingGroupContext? = nil) async {
@@ -517,23 +586,58 @@ final class ComicReaderViewModel: ObservableObject {
         saveTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
-            try? await api.updateProgress(comicId: comicId, page: page)
+            do {
+                try await api.updateProgress(comicId: comicId, page: page)
+                // 服务器保存成功后才更新本地缓存
+                self.updateCachedProgress(comicId: comicId, page: page)
+            } catch {
+                AppLogger.error("保存进度失败: \(error)")
+            }
         }
+    }
+
+    private func updateCachedProgress(comicId: String, page: Int) {
+        guard let context = modelContext else { return }
+        let id = comicId
+        let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        let cached = try? context.fetch(descriptor)
+        if let first = cached?.first {
+            first.lastReadPage = page
+            if first.pageCount > 0 {
+                first.progress = min(100, Int(Double(page) / Double(first.pageCount) * 100))
+            }
+            first.lastReadAt = Date()
+        } else {
+            // 缓存中不存在，创建新记录
+            let comic = CachedComic()
+            comic.id = comicId
+            comic.title = comicId
+            comic.pageCount = totalPages
+            comic.lastReadPage = page
+            comic.cachedAt = Date()
+            comic.progress = totalPages > 0 ? min(100, Int(Double(page) / Double(totalPages) * 100)) : 0
+            comic.lastReadAt = Date()
+            context.insert(comic)
+        }
+        context.saveOrLog()
     }
 
     /// 等待完成版本，退出时调用
     func saveProgressAndWait() async {
         saveTask?.cancel()
         try? await api.updateProgress(comicId: currentComicId, page: currentPage)
+        updateCachedProgress(comicId: currentComicId, page: currentPage)
     }
 
     func endSessionAndWait() async {
-        guard let sessionId, let sessionStart else { return }
+        guard let sessionId, let sessionStart, !hasEnded else { return }
+        hasEnded = true
         let duration = Int(Date().timeIntervalSince(sessionStart))
         try? await api.endSession(sessionId: sessionId, endPage: currentPage, duration: duration)
     }
 
     private func startSession() {
+        hasEnded = false
         Task {
             sessionId = try? await api.startSession(comicId: currentComicId, startPage: currentPage)
             sessionStart = Date()

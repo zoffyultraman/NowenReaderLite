@@ -212,16 +212,23 @@ struct ServerConfigView: View {
             let descriptor = FetchDescriptor<ServerRecord>(
                 predicate: #Predicate<ServerRecord> { $0.url == trimmed }
             )
+            // 查找绑定的账号对象
+            var boundAccount: SavedAccount? = nil
+            if let selectedId = selectedAccountId {
+                let acctDesc = FetchDescriptor<SavedAccount>(predicate: #Predicate { $0.id == selectedId })
+                boundAccount = try? modelContext.fetch(acctDesc).first
+            }
+
             if let existing = try? modelContext.fetch(descriptor).first {
                 existing.lastUsed = Date()
                 existing.username = api.currentUser?.username
-                existing.boundAccountId = selectedAccountId
+                existing.boundAccount = boundAccount
             } else {
                 let record = ServerRecord(url: trimmed, username: api.currentUser?.username)
-                record.boundAccountId = selectedAccountId
+                record.boundAccount = boundAccount
                 modelContext.insert(record)
             }
-            try? modelContext.save()
+            modelContext.saveOrLog()
 
             // 如果选了绑定账号且当前未登录，尝试自动登录
             if !api.isLoggedIn, let accountId = selectedAccountId {

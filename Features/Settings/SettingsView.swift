@@ -3,7 +3,10 @@ import SwiftData
 
 struct SettingsView: View {
     @ObservedObject private var api = APIClient.shared
+    @Environment(\.modelContext) private var modelContext
     @State private var showLogoutAlert = false
+    @State private var showClearCacheAlert = false
+    @State private var cacheSize: Int = 0
 
     var body: some View {
         List {
@@ -69,9 +72,32 @@ struct SettingsView: View {
                 }
             }
 
+            // 缓存
+            Section("缓存") {
+                HStack {
+                    Label("漫画缓存", systemImage: "internaldrive")
+                    Spacer()
+                    Text(formatFileSize(Int64(cacheSize)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button(role: .destructive) {
+                    showClearCacheAlert = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("清空缓存")
+                            .fontWeight(.medium)
+                        Spacer()
+                    }
+                }
+                .disabled(cacheSize == 0)
+            }
+
             // 关于
             Section("关于") {
-                LabeledContent("版本", value: "1.0.1")
+                LabeledContent("版本", value: "1.0.2")
                 if let url = URL(string: "https://github.com/cropflre/nowen-reader") {
                     Link("项目主页", destination: url)
                 }
@@ -92,13 +118,49 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("设置")
+        .task {
+            loadCacheSize()
+        }
         .alert("退出登录", isPresented: $showLogoutAlert) {
             Button("取消", role: .cancel) {}
             Button("退出", role: .destructive) {
-                Task { await api.logout() }
+                Task {
+                    clearCache()
+                    await api.logout()
+                }
             }
         } message: {
             Text("确定要退出登录吗？")
         }
+        .alert("清空缓存", isPresented: $showClearCacheAlert) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) {
+                clearCache()
+            }
+        } message: {
+            Text("将释放 \(formatFileSize(Int64(cacheSize))) 空间，不影响服务器数据。")
+        }
+    }
+
+    private func loadCacheSize() {
+        guard let comics = try? modelContext.fetch(FetchDescriptor<CachedComic>()) else {
+            cacheSize = 0
+            return
+        }
+        cacheSize = comics.reduce(0) { total, comic in
+            total
+                + (comic.id.utf8.count)
+                + (comic.title.utf8.count)
+                + (comic.author?.utf8.count ?? 0)
+                + (comic.coverUrl?.utf8.count ?? 0)
+                + (comic.type?.utf8.count ?? 0)
+                + 8 + 8 + 1 + 8 + 8 + 8 + 8
+        }
+    }
+
+    private func clearCache() {
+        try? modelContext.delete(model: CachedComic.self)
+        modelContext.saveOrLog()
+        cacheSize = 0
     }
 }

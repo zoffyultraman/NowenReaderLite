@@ -37,6 +37,7 @@
 		CC0000000000000000000001 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000002 /* AppLogger.swift */; };
 		CC0000000000000000000003 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000004 /* KeychainHelper.swift */; };
 		CC0000000000000000000005 /* AccountManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000006 /* AccountManagerView.swift */; };
+		CC0000000000000000000007 /* ReadingRecordManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000008 /* ReadingRecordManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -72,6 +73,7 @@
 		CC0000000000000000000002 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		CC0000000000000000000004 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		CC0000000000000000000006 /* AccountManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountManagerView.swift; sourceTree = "<group>"; };
+		CC0000000000000000000008 /* ReadingRecordManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecordManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -151,6 +153,7 @@
 			children = (
 				C4FA75D9C8968D84B368F9A8 /* SwiftDataSchema.swift */,
 				CC0000000000000000000004 /* KeychainHelper.swift */,
+				CC0000000000000000000008 /* ReadingRecordManager.swift */,
 			);
 			path = Storage;
 			sourceTree = "<group>";
@@ -342,6 +345,7 @@
 				CC0000000000000000000001 /* AppLogger.swift in Sources */,
 				CC0000000000000000000003 /* KeychainHelper.swift in Sources */,
 				CC0000000000000000000005 /* AccountManagerView.swift in Sources */,
+				CC0000000000000000000007 /* ReadingRecordManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -416,7 +420,7 @@
 				);
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -471,7 +475,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;

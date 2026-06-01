@@ -12,7 +12,7 @@ struct NovelReaderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var showOverlay = false
-    @State private var fontSize: Double = UserDefaults.standard.double(forKey: "novel_font_size").clamped(to: 12...30, default: 17)
+    @State private var fontSize: Double = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
     @State private var currentPage = 0
     private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
     @State private var restoredChapter = -1
@@ -87,7 +87,7 @@ struct NovelReaderView: View {
             }
         }
         .onChange(of: fontSize) { _, newValue in
-            UserDefaults.standard.set(newValue, forKey: "novel_font_size")
+            UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelFontSize)
             viewModel.repaginate(fontSize: newValue)
         }
         .onTapGesture { showOverlay.toggle() }
@@ -265,6 +265,7 @@ struct NovelPager: UIViewControllerRepresentable {
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         let coord = context.coordinator
+        coord.parent = self
         guard !pages.isEmpty else { return }
 
         let pagesChanged = coord.cachedVCs.count != pages.count
@@ -291,7 +292,7 @@ struct NovelPager: UIViewControllerRepresentable {
     }
 
     class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
-        let parent: NovelPager
+        var parent: NovelPager
         var cachedVCs: [NovelTextPageVC] = []
         var currentIndex: Int = 0
 
@@ -578,44 +579,6 @@ final class NovelReaderViewModel: ObservableObject {
         }
 
         return pageText
-    }
-}
-
-// MARK: - 阅读记录管理器
-
-@MainActor
-
-final class ReadingRecordManager {
-    static let shared = ReadingRecordManager()
-    private let defaults = UserDefaults.standard
-    private let key = "reading_records"
-
-    struct Record: Codable {
-        let chapter: Int
-        let page: Int
-        let timestamp: Date
-    }
-
-    private init() {}
-
-    func save(comicId: String, chapter: Int, page: Int) {
-        var records = loadAll()
-        records[comicId] = Record(chapter: chapter, page: page, timestamp: Date())
-        if let data = try? JSONEncoder().encode(records) {
-            defaults.set(data, forKey: key)
-        }
-    }
-
-    func load(comicId: String) -> Record? {
-        return loadAll()[comicId]
-    }
-
-    private func loadAll() -> [String: Record] {
-        guard let data = defaults.data(forKey: key),
-              let records = try? JSONDecoder().decode([String: Record].self, from: data) else {
-            return [:]
-        }
-        return records
     }
 }
 

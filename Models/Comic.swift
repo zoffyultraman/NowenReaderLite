@@ -12,7 +12,7 @@ struct Comic: Codable, Identifiable, Hashable {
     let language: String?
     let year: Int?
     let pageCount: Int
-    let fileSize: Int?
+    let fileSize: Int64?
     let lastReadPage: Int
     let totalReadTime: Int?
     let readingStatus: String?
@@ -33,7 +33,16 @@ struct Comic: Codable, Identifiable, Hashable {
         return min(100, Int(Double(lastReadPage) / Double(pageCount) * 100))
     }
 
-    var isNovel: Bool { type == "novel" }
+    var isNovel: Bool { type?.lowercased() == "novel" }
+
+    enum ContentType: String {
+        case comic, novel
+    }
+
+    var contentType: ContentType? {
+        guard let type else { return nil }
+        return ContentType(rawValue: type.lowercased())
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, title, author, publisher, description, genre, language
@@ -45,13 +54,13 @@ struct Comic: Codable, Identifiable, Hashable {
 }
 
 struct TagItem: Codable, Hashable {
-    let id: Int?
+    let id: Int
     let name: String
     let color: String?
 }
 
 struct CategoryItem: Codable, Hashable {
-    let id: Int?
+    let id: Int
     let name: String
     let slug: String?
 }
