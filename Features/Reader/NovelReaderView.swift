@@ -71,6 +71,7 @@ struct NovelReaderView: View {
         }
         .onDisappear {
             saveRecord()
+            Task { await viewModel.saveProgress() }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background || newPhase == .inactive {

@@ -49,7 +49,7 @@ struct ComicDetailView: View {
                     }
 
                     if comic.pageCount > 0 {
-                        Label("\(comic.pageCount) 页", systemImage: "doc.text")
+                        Label("\(comic.pageCount) \(comic.isNovel ? "章" : "页")", systemImage: "doc.text")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -99,7 +99,7 @@ struct ComicDetailView: View {
                     readerView(for: comic)
                 } label: {
                     Label(
-                        comic.lastReadPage > 0 ? "继续阅读 (\(comic.lastReadPage + 1)/\(comic.pageCount))" : "开始阅读",
+                        comic.lastReadPage > 0 ? "继续阅读 \(comic.lastReadPage + 1)/\(comic.pageCount)\(comic.isNovel ? "章" : "页")" : "开始阅读",
                         systemImage: "book.fill"
                     )
                     .font(.subheadline.weight(.medium))

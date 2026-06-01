@@ -173,6 +173,8 @@ struct SettingsView: View {
         try? modelContext.delete(model: CachedComic.self)
         modelContext.saveOrLog()
         cacheSize = 0
+        novelCacheSize = 0
+        NovelReaderViewModel.totalNovelCacheBytes = 0
         NotificationCenter.default.post(name: .novelChapterCacheClear, object: nil)
     }
 }
