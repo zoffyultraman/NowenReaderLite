@@ -103,6 +103,7 @@ struct NovelReaderView: View {
             ChapterListView(
                 totalChapters: viewModel.totalChapters,
                 currentChapter: viewModel.currentChapter,
+                chapterTitles: viewModel.chapterTitles,
                 onSelect: { index in
                     showChapterList = false
                     showOverlay = false
@@ -264,6 +265,7 @@ struct NovelReaderView: View {
 struct ChapterListView: View {
     let totalChapters: Int
     let currentChapter: Int
+    let chapterTitles: [Int: String]
     let onSelect: (Int) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -276,9 +278,10 @@ struct ChapterListView: View {
                         onSelect(index)
                     } label: {
                         HStack {
-                            Text("第 \(index + 1) 章")
+                            Text(chapterTitles[index] ?? "第 \(index + 1) 章")
                                 .foregroundStyle(index == currentChapter ? Color.accentColor : .primary)
                                 .fontWeight(index == currentChapter ? .semibold : .regular)
+                                .lineLimit(1)
                             Spacer()
                             if index == currentChapter {
                                 Image(systemName: "checkmark")
@@ -521,6 +524,20 @@ final class NovelReaderViewModel: ObservableObject {
     /// 小说章节缓存总字节数（供设置页读取）
     static var totalNovelCacheBytes: Int = 0
 
+    // MARK: - 章节标题缓存
+
+    @Published var chapterTitles: [Int: String] = [:]
+
+    /// 从 PageList 中提取章节标题（服务端一次性返回）
+    private func extractTitles(from pageList: PageList) {
+        guard let pages = pageList.pages else { return }
+        for entry in pages {
+            if let title = entry.title, !title.isEmpty {
+                chapterTitles[entry.index] = title
+            }
+        }
+    }
+
     /// 从缓存中取出章节并应用，返回是否命中
     private func applyFromCache(chapter: Int, fontSize: Double) -> Bool {
         guard let cached = chapterCache[chapter] else { return false }
@@ -579,6 +596,10 @@ final class NovelReaderViewModel: ObservableObject {
         chapterCache[index] = content
         chapterCacheBytes += Self.chapterByteSize(content)
         Self.totalNovelCacheBytes = chapterCacheBytes
+        // 同步保存章节标题
+        if let title = content.title, !title.isEmpty {
+            chapterTitles[index] = title
+        }
     }
 
     /// 估算单个章节的内存占用
@@ -610,13 +631,14 @@ final class NovelReaderViewModel: ObservableObject {
             if let content = chapterContent {
                 cacheChapter(content, for: chapter)
             }
-            // 更新章节数
+            // 更新章节数和标题
             if let t = chapterContent?.totalChapters {
                 totalChapters = t
-            } else if totalChapters == 0 {
-                // 服务端未返回 totalChapters，通过 fetchPages 获取
+            }
+            if totalChapters == 0 || chapterTitles.isEmpty {
                 if let pageList = try? await api.fetchPages(comicId: comicId) {
                     totalChapters = pageList.totalPages
+                    extractTitles(from: pageList)
                 }
             }
             evictCache(keeping: chapter)
@@ -650,6 +672,7 @@ final class NovelReaderViewModel: ObservableObject {
             let pageList = try await api.fetchPages(comicId: comicId)
             // For novels, totalPages from the API represents total chapters
             self.totalChapters = max(1, pageList.totalPages)
+            extractTitles(from: pageList)
             let safeChapter = min(chapter, self.totalChapters - 1)
             chapterContent = try await api.fetchChapter(comicId: comicId, index: safeChapter)
             if let content = chapterContent {

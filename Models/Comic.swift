@@ -86,6 +86,13 @@ struct PageList: Codable {
     let totalPages: Int
     let isNovel: Bool?
     let isPdf: Bool?
+    let pages: [PageEntry]?
+}
+
+struct PageEntry: Codable {
+    let index: Int
+    let name: String?
+    let title: String?
 }
 
 // MARK: - 章节内容

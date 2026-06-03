@@ -106,7 +106,7 @@ struct SettingsView: View {
 
             // 关于
             Section("关于") {
-                LabeledContent("版本", value: "1.0.3")
+                LabeledContent("版本", value: "1.0.4")
                 if let url = URL(string: "https://github.com/cropflre/nowen-reader") {
                     Link("项目主页", destination: url)
                 }
