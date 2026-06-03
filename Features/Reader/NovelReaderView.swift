@@ -29,25 +29,31 @@ struct NovelReaderView: View {
                     pages: viewModel.pages,
                     fontSize: fontSize,
                     darkMode: viewModel.darkMode,
-                    chapterTitle: viewModel.chapterContent?.title,
+                    chapterTitle: viewModel.currentChapterTitle,
                     initialPage: currentPage,
                     onPageChanged: { page in
                         currentPage = page
-                        // 每次翻页保存记录
+                        // 尝试追加下一章（无缝翻页）
+                        viewModel.tryAppendNextChapter(currentPage: page, fontSize: fontSize)
+                        // 检测是否已翻入下一章
+                        viewModel.advanceToNextChapter(currentPage: page, fontSize: fontSize)
+
+                        // 保存记录（使用相对页码）
+                        let relPage = viewModel.relativePageInChapter(page)
                         recordManager.save(
                             comicId: viewModel.currentComicId,
                             chapter: viewModel.currentChapter,
-                            page: page
+                            page: relPage
                         )
                     },
                     onReachEnd: {
-                        showOverlay = false
-                        let saved = currentPage
-                        let currentComicId = viewModel.currentComicId
-                        let currentChapter = viewModel.currentChapter
-                        recordManager.save(comicId: currentComicId, chapter: currentChapter, page: saved)
-                        currentPage = 0
-                        Task { await viewModel.nextChapter(fontSize: fontSize) }
+                        // 兜底：如果追加还没完成，手动切章
+                        if !viewModel.nextChapterAppended {
+                            showOverlay = false
+                            saveRecord()
+                            currentPage = 0
+                            Task { await viewModel.nextChapter(fontSize: fontSize) }
+                        }
                     },
                     onSwipeToPrev: {
                         showOverlay = false
@@ -121,6 +127,13 @@ struct NovelReaderView: View {
         let count = viewModel.pages.count
         guard count > 0 else { return }
 
+        // 无缝章节切换时跳过位置恢复
+        if viewModel.isSeamlessTransition {
+            viewModel.isSeamlessTransition = false
+            restoredChapter = viewModel.currentChapter
+            return
+        }
+
         guard restoredChapter != viewModel.currentChapter else { return }
         restoredChapter = viewModel.currentChapter
 
@@ -135,10 +148,11 @@ struct NovelReaderView: View {
     // MARK: - 保存记录
 
     private func saveRecord() {
+        let relPage = viewModel.relativePageInChapter(currentPage)
         recordManager.save(
             comicId: viewModel.currentComicId,
             chapter: viewModel.currentChapter,
-            page: currentPage
+            page: relPage
         )
     }
 
@@ -163,7 +177,7 @@ struct NovelReaderView: View {
             VStack(spacing: 2) {
                 Text("第 \(viewModel.currentChapter + 1) 章")
                     .font(.callout.weight(.medium))
-                Text("\(currentPage + 1) / \(viewModel.pages.count)")
+                Text("\(viewModel.relativePageInChapter(currentPage)) / \(viewModel.currentChapterPageCount())")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -225,7 +239,8 @@ struct NovelReaderView: View {
 
                 Spacer()
 
-                if currentPage >= viewModel.pages.count - 1 {
+                let isAtChapterEnd = currentPage >= (viewModel.chapterPageOffsets[viewModel.currentChapter] ?? 0) + viewModel.currentChapterPageCount() - 1
+                if isAtChapterEnd {
                     Button {
                         showOverlay = false
                         saveRecord()
@@ -272,24 +287,29 @@ struct ChapterListView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(0..<totalChapters, id: \.self) { index in
-                    Button {
-                        onSelect(index)
-                    } label: {
-                        HStack {
-                            Text(chapterTitles[index] ?? "第 \(index + 1) 章")
-                                .foregroundStyle(index == currentChapter ? Color.accentColor : .primary)
-                                .fontWeight(index == currentChapter ? .semibold : .regular)
-                                .lineLimit(1)
-                            Spacer()
-                            if index == currentChapter {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(Color.accentColor)
-                                    .font(.subheadline.weight(.semibold))
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(0..<totalChapters, id: \.self) { index in
+                        Button {
+                            onSelect(index)
+                        } label: {
+                            HStack {
+                                Text(chapterTitles[index] ?? "第 \(index + 1) 章")
+                                    .foregroundStyle(index == currentChapter ? Color.accentColor : .primary)
+                                    .fontWeight(index == currentChapter ? .semibold : .regular)
+                                    .lineLimit(1)
+                                Spacer()
+                                if index == currentChapter {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(Color.accentColor)
+                                        .font(.subheadline.weight(.semibold))
+                                }
                             }
                         }
                     }
+                }
+                .onAppear {
+                    proxy.scrollTo(currentChapter)
                 }
             }
             .navigationTitle("目录")
@@ -336,25 +356,50 @@ struct NovelPager: UIViewControllerRepresentable {
         coord.parent = self
         guard !pages.isEmpty else { return }
 
-        let pagesChanged = coord.cachedVCs.count != pages.count
-            || coord.cachedVCs.first?.pageText != pages.first
-            || coord.cachedVCs.last?.pageText != pages.last
+        let oldCount = coord.cachedVCs.count
+        let newCount = pages.count
 
-        let pageJumped = initialPage != coord.currentIndex
+        // 检测是否为追加（新页面以旧页面开头，仅尾部新增）
+        let isAppend = newCount > oldCount
+            && oldCount > 0
+            && coord.cachedVCs.first?.pageText == pages.first
+            && coord.cachedVCs.last?.pageText == pages[oldCount - 1]
 
-        if pagesChanged {
-            coord.rebuildCache(pages: pages, fontSize: fontSize, darkMode: darkMode, title: chapterTitle)
-            let page = min(initialPage, coord.cachedVCs.count - 1)
-            if page >= 0, page < coord.cachedVCs.count {
-                pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
-                coord.currentIndex = page
+        if isAppend {
+            // 追加模式：只添加新页面的 VC，不重置当前位置
+            for i in oldCount..<newCount {
+                let title: String? = (i == 0) ? chapterTitle : nil
+                let vc = NovelTextPageVC(
+                    text: pages[i],
+                    index: i,
+                    fontSize: fontSize,
+                    darkMode: darkMode,
+                    title: title
+                )
+                coord.cachedVCs.append(vc)
             }
-        } else if pageJumped {
-            // initialPage 变了但 pages 没变（restorePosition）
-            let page = min(initialPage, coord.cachedVCs.count - 1)
-            if page >= 0, page < coord.cachedVCs.count {
-                pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
-                coord.currentIndex = page
+            // 不调用 setViewControllers，保持当前翻页位置
+        } else {
+            // 完全替换（切章、字号变化等）
+            let pagesChanged = oldCount != newCount
+                || coord.cachedVCs.first?.pageText != pages.first
+                || coord.cachedVCs.last?.pageText != pages.last
+
+            let pageJumped = initialPage != coord.currentIndex
+
+            if pagesChanged {
+                coord.rebuildCache(pages: pages, fontSize: fontSize, darkMode: darkMode, title: chapterTitle)
+                let page = min(initialPage, coord.cachedVCs.count - 1)
+                if page >= 0, page < coord.cachedVCs.count {
+                    pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
+                    coord.currentIndex = page
+                }
+            } else if pageJumped {
+                let page = min(initialPage, coord.cachedVCs.count - 1)
+                if page >= 0, page < coord.cachedVCs.count {
+                    pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
+                    coord.currentIndex = page
+                }
             }
         }
     }
@@ -484,10 +529,18 @@ final class NovelReaderViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var currentChapter = 0
     @Published var totalChapters: Int = 0
+    @Published var currentChapterTitle: String? = nil
     @Published var darkMode = false
     @Published var pages: [String] = []
     @Published var groupContext: ReadingGroupContext?
     @Published var currentComicId: String
+
+    /// 各章节的起始页索引 [章节号: 在 pages 中的起始位置]
+    private(set) var chapterPageOffsets: [Int: Int] = [:]
+    /// 下一章页面是否已追加
+    private(set) var nextChapterAppended = false
+    /// 是否正在进行无缝章节切换（跳过位置恢复）
+    var isSeamlessTransition = false
 
     private var cacheObserver: Any?
 
@@ -734,6 +787,7 @@ final class NovelReaderViewModel: ObservableObject {
     }
 
     func repaginate(fontSize: Double) {
+        currentChapterTitle = chapterContent?.title
         let screen = UIScreen.main.bounds
         let safeAreaTop = UIApplication.shared.connectedScenes
             .compactMap { ($0 as? UIWindowScene)?.keyWindow?.safeAreaInsets.top }
@@ -742,7 +796,102 @@ final class NovelReaderViewModel: ObservableObject {
         let maxH = screen.height - safeAreaTop - 40
         let titleHeight: CGFloat = (chapterContent?.title != nil) ? fontSize * 2.5 : 0
         let firstPageMaxH = maxH - titleHeight
-        pages = paginate(text: plainText, fontSize: fontSize, maxWidth: maxW, maxHeight: maxH, firstPageMaxH: firstPageMaxH)
+        let newPages = paginate(text: plainText, fontSize: fontSize, maxWidth: maxW, maxHeight: maxH, firstPageMaxH: firstPageMaxH)
+
+        // 重置显示窗口
+        chapterPageOffsets = [currentChapter: 0]
+        nextChapterAppended = false
+        pages = newPages
+    }
+
+    /// 获取当前页在当前章节中的相对页码（从 1 开始）
+    func relativePageInChapter(_ absolutePage: Int) -> Int {
+        let offset = chapterPageOffsets[currentChapter] ?? 0
+        return max(1, absolutePage - offset + 1)
+    }
+
+    /// 获取当前章节在 pages 中的总页数
+    func currentChapterPageCount() -> Int {
+        let offset = chapterPageOffsets[currentChapter] ?? 0
+        let nextOffset = chapterPageOffsets[currentChapter + 1] ?? pages.count
+        return max(1, nextOffset - offset)
+    }
+
+    /// 当用户接近当前章节末尾时，追加下一章页面实现无缝翻页
+    func tryAppendNextChapter(currentPage: Int, fontSize: Double) {
+        guard !nextChapterAppended else { return }
+        let chapterOffset = chapterPageOffsets[currentChapter] ?? 0
+        let chapterEnd = chapterPageOffsets[currentChapter + 1] ?? pages.count
+        let pagesRemaining = chapterEnd - currentPage
+
+        // 剩余 2 页时开始追加
+        guard pagesRemaining <= 2 else { return }
+
+        let nextIndex = currentChapter + 1
+
+        // 检查是否超出当前卷
+        if totalChapters > 0 && nextIndex >= totalChapters {
+            return // 没有下一章了
+        }
+
+        nextChapterAppended = true
+
+        Task {
+            // 从缓存获取下一章
+            if let nextContent = chapterCache[nextIndex] {
+                let nextPages = paginateFromContent(nextContent, fontSize: fontSize)
+                let startIdx = pages.count
+                chapterPageOffsets[nextIndex] = startIdx
+                pages.append(contentsOf: nextPages)
+                return
+            }
+
+            // 缓存没有，网络请求
+            do {
+                let content = try await api.fetchChapter(comicId: comicId, index: nextIndex)
+                cacheChapter(content, for: nextIndex)
+                let nextPages = paginateFromContent(content, fontSize: fontSize)
+                let startIdx = pages.count
+                chapterPageOffsets[nextIndex] = startIdx
+                pages.append(contentsOf: nextPages)
+            } catch {
+                AppLogger.error("追加下一章失败: \(error)")
+                nextChapterAppended = false // 允许重试
+            }
+        }
+    }
+
+    /// 用户已翻过当前章节时，裁剪旧章节页面并切换到下一章
+    /// 检测是否翻入下一章，更新当前章节（不裁剪页面，不触发视图重建）
+    func advanceToNextChapter(currentPage: Int, fontSize: Double) {
+        let nextIndex = currentChapter + 1
+        guard let nextOffset = chapterPageOffsets[nextIndex] else { return }
+        guard currentPage >= nextOffset else { return }
+
+        // 只更新轻量属性，不更新 chapterContent（避免触发视图重建）
+        if let cached = chapterCache[nextIndex] {
+            currentChapterTitle = cached.title
+        }
+        isSeamlessTransition = true
+        currentChapter = nextIndex
+        nextChapterAppended = false
+
+        // 预加载相邻章节
+        preloadAdjacentChapters(fontSize: fontSize)
+    }
+
+    /// 从 ChapterContent 分页（不更新 chapterContent 状态）
+    private func paginateFromContent(_ content: ChapterContent, fontSize: Double) -> [String] {
+        let screen = UIScreen.main.bounds
+        let safeAreaTop = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow?.safeAreaInsets.top }
+            .first ?? 0
+        let maxW = screen.width - 40
+        let maxH = screen.height - safeAreaTop - 40
+        let titleHeight: CGFloat = (content.title != nil) ? fontSize * 2.5 : 0
+        let firstPageMaxH = maxH - titleHeight
+        let text = content.content ?? ""
+        return paginate(text: text, fontSize: fontSize, maxWidth: maxW, maxHeight: maxH, firstPageMaxH: firstPageMaxH)
     }
 
     func paginate(text: String, fontSize: Double, maxWidth: CGFloat, maxHeight: CGFloat, firstPageMaxH: CGFloat? = nil) -> [String] {

@@ -10,8 +10,7 @@
 		0228C26BE452D04A047B2BEC /* ComicDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 800BA4DE21472DAEE9BD72A5 /* ComicDetailView.swift */; };
 		27452073BF7E16FFDA22C3D7 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD448C133F7E79A1106AC69D /* LoginView.swift */; };
 		2B782AD22E6F268347228108 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3A15C46BF0124D64A8C3C5F /* SearchView.swift */; };
-				EE3344556677889900BB02 /* FormatUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3344556677889900BB01 /* FormatUtils.swift */; };
-				33625400DAB4F8A6E2BB4F33 /* SwiftDataSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FA75D9C8968D84B368F9A8 /* SwiftDataSchema.swift */; };
+		33625400DAB4F8A6E2BB4F33 /* SwiftDataSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FA75D9C8968D84B368F9A8 /* SwiftDataSchema.swift */; };
 		3A4549693656ED1378391633 /* ReadingStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F3CF63A95EE284100F32221 /* ReadingStats.swift */; };
 		4312C00E3E754FF97B189E71 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCB28DBA10692EB6A3641686 /* LibraryView.swift */; };
 		43359D9B4B161C1AF2D3DFC0 /* AuthUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588B06BD00473D792D75DEA4 /* AuthUser.swift */; };
@@ -27,17 +26,18 @@
 		A8CB77540EE3B2CA7781AAEE /* PDFReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BE60152235EF1C13E85021D /* PDFReaderView.swift */; };
 		AA002233445566778800BB02 /* ComicGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA002233445566778800BB01 /* ComicGroup.swift */; };
 		AA002233445566778800BB04 /* GroupDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA002233445566778800BB03 /* GroupDetailView.swift */; };
-		BE27FFB197D2C1E2B8F11870 /* Comic.swift in Sources */ = {isa = PBXBuildFile; fileRef = D804FBE0A5F92DA8770C8FC7 /* Comic.swift */; };
-		DA7EA316D1A45103D7500886 /* ComicReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */; };
-		E5E727D0FEC62CDB10B018E9 /* NowenReaderLiteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68161902B8397ACA3CD6C4B6 /* NowenReaderLiteApp.swift */; };
-		E7853F900C8BA5EB70057CEB /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */; };
 		AABB00030000000000000001 /* ServerListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00040000000000000001 /* ServerListView.swift */; };
-		EAC5D9A804E4AC932916EE39 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B37C34C647049726BF3DEED /* SettingsView.swift */; };
-		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
+		BE27FFB197D2C1E2B8F11870 /* Comic.swift in Sources */ = {isa = PBXBuildFile; fileRef = D804FBE0A5F92DA8770C8FC7 /* Comic.swift */; };
 		CC0000000000000000000001 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000002 /* AppLogger.swift */; };
 		CC0000000000000000000003 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000004 /* KeychainHelper.swift */; };
 		CC0000000000000000000005 /* AccountManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000006 /* AccountManagerView.swift */; };
 		CC0000000000000000000007 /* ReadingRecordManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000008 /* ReadingRecordManager.swift */; };
+		DA7EA316D1A45103D7500886 /* ComicReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */; };
+		E5E727D0FEC62CDB10B018E9 /* NowenReaderLiteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68161902B8397ACA3CD6C4B6 /* NowenReaderLiteApp.swift */; };
+		E7853F900C8BA5EB70057CEB /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */; };
+		EAC5D9A804E4AC932916EE39 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B37C34C647049726BF3DEED /* SettingsView.swift */; };
+		EE3344556677889900BB02 /* FormatUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3344556677889900BB01 /* FormatUtils.swift */; };
+		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -59,21 +59,21 @@
 		91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicReaderView.swift; sourceTree = "<group>"; };
 		AA002233445566778800BB01 /* ComicGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicGroup.swift; sourceTree = "<group>"; };
 		AA002233445566778800BB03 /* GroupDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupDetailView.swift; sourceTree = "<group>"; };
-		B3A15C46BF0124D64A8C3C5F /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
-				EE3344556677889900BB01 /* FormatUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatUtils.swift; sourceTree = "<group>"; };
-				C4FA75D9C8968D84B368F9A8 /* SwiftDataSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftDataSchema.swift; sourceTree = "<group>"; };
-		D804FBE0A5F92DA8770C8FC7 /* Comic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Comic.swift; sourceTree = "<group>"; };
-		DC44AAB4CC664B62E2DDAD0D /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
-		E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
 		AABB00040000000000000001 /* ServerListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerListView.swift; sourceTree = "<group>"; };
-		EE112233445566778899AABB /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
-		F5318C1609DE58FD7D280D14 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
-		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
-		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		B3A15C46BF0124D64A8C3C5F /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		C4FA75D9C8968D84B368F9A8 /* SwiftDataSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftDataSchema.swift; sourceTree = "<group>"; };
 		CC0000000000000000000002 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		CC0000000000000000000004 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		CC0000000000000000000006 /* AccountManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountManagerView.swift; sourceTree = "<group>"; };
 		CC0000000000000000000008 /* ReadingRecordManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecordManager.swift; sourceTree = "<group>"; };
+		D804FBE0A5F92DA8770C8FC7 /* Comic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Comic.swift; sourceTree = "<group>"; };
+		DC44AAB4CC664B62E2DDAD0D /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
+		EE112233445566778899AABB /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		EE3344556677889900BB01 /* FormatUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatUtils.swift; sourceTree = "<group>"; };
+		F5318C1609DE58FD7D280D14 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -138,8 +138,7 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
-		FF3344556677889900BB01 /* Extensions */ = {isa = PBXGroup; children = (EE3344556677889900BB01 /* FormatUtils.swift */, CC0000000000000000000002 /* AppLogger.swift */,); path = Extensions; sourceTree = "<group>"; };
-				AABB00010000000000000001 /* Network */ = {
+		AABB00010000000000000001 /* Network */ = {
 			isa = PBXGroup;
 			children = (
 				F5318C1609DE58FD7D280D14 /* APIClient.swift */,
@@ -253,10 +252,19 @@
 			);
 			sourceTree = "<group>";
 		};
+		FF3344556677889900BB01 /* Extensions */ = {
+			isa = PBXGroup;
+			children = (
+				EE3344556677889900BB01 /* FormatUtils.swift */,
+				CC0000000000000000000002 /* AppLogger.swift */,
+			);
+			path = Extensions;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		D285CDD4DA0541B2D4FCD794 /* NowenReader */ = {
+		D285CDD4DA0541B2D4FCD794 /* NowenReaderLite */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 59FC96CADDB4BC661E976C05 /* Build configuration list for PBXNativeTarget "NowenReaderLite" */;
 			buildPhases = (
@@ -295,7 +303,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				D285CDD4DA0541B2D4FCD794 /* NowenReader */,
+				D285CDD4DA0541B2D4FCD794 /* NowenReaderLite */,
 			);
 		};
 /* End PBXProject section */
@@ -361,10 +369,19 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1.0.4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_NS_ASSERTIONS = NO;
+				INFOPLIST_KEY_CFBundleDisplayName = NowenReaderLite;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.4;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -418,9 +435,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.0.4;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
-				MARKETING_VERSION = 1.0.2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -474,8 +491,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
-				MARKETING_VERSION = 1.0.2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -493,10 +510,19 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1.0.4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_TESTABILITY = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NowenReaderLite;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.4;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
