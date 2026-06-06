@@ -199,8 +199,8 @@ final class ImageUpscaler {
         let scale = Int(scaleFactor)
 
         // ✅ 重叠区域大小
-        let overlap = 16
-        let stride = tileSize - overlap  // 实际步长 = 240
+        let overlap = 8
+        let stride = tileSize - overlap  // 实际步长 = 248
 
         // 步骤 1: 计算 tile 网格（带重叠）
         let tilesX = (imageWidth - overlap + stride - 1) / stride
