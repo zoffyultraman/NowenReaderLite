@@ -146,17 +146,12 @@ final class ImageUpscaler {
     func upscale(_ image: UIImage, mode: UpscaleMode, keepOriginalSize: Bool = false) throws -> UIImage {
         guard mode != .off else { return image }
 
-        print("🚀 [Upscale] 开始超分: \(mode.rawValue)")
-
         // ✅ 内存上限检查：防止大图像导致 OOM
         let maxDimension: CGFloat = 4096
         let imageWidth = image.size.width * image.scale
         let imageHeight = image.size.height * image.scale
 
-        print("   - 输入尺寸: \(imageWidth) x \(imageHeight)")
-
         if imageWidth > maxDimension || imageHeight > maxDimension {
-            print("❌ [Upscale] 图片尺寸超过限制")
             throw UpscaleError.preprocessingFailed
         }
 
@@ -173,22 +168,17 @@ final class ImageUpscaler {
             tileSize = tileSize4x
             scaleFactor = 4.0
         case .realesrganAnime4x:
-            print("   - 加载 RealESRGAN Anime 模型...")
             model = try loadModelRealESRGANAnime4x()
             tileSize = tileSizeRealESRGANAnime4x
             scaleFactor = 4.0
-            print("   - Tile Size: \(tileSize), Scale: \(scaleFactor)x")
         case .off:
             return image
         }
 
         // ✅ RealESRGAN 模型强制使用 TensorType 输入
         let forceTensorInput = (mode == .realesrganAnime4x)
-        print("   - Force Tensor Input: \(forceTensorInput)")
 
-        print("   - 开始 tile 推理...")
         let resultImage = try tileInference(image: image, model: model, tileSize: tileSize, scaleFactor: scaleFactor, forceTensorInput: forceTensorInput)
-        print("✅ [Upscale] 超分完成: \(resultImage.size.width) x \(resultImage.size.height)")
 
         // 直接返回超分结果，不缩放！
         if keepOriginalSize {
@@ -208,8 +198,6 @@ final class ImageUpscaler {
         let imageHeight = cgImage.height
         let scale = Int(scaleFactor)
 
-        print("🔍 [TileInference] 输入: \(imageWidth)x\(imageHeight), Scale: \(scale)")
-
         // ✅ 重叠区域大小
         let overlap = 16
         let stride = tileSize - overlap  // 实际步长 = 240
@@ -218,15 +206,10 @@ final class ImageUpscaler {
         let tilesX = (imageWidth - overlap + stride - 1) / stride
         let tilesY = (imageHeight - overlap + stride - 1) / stride
 
-        print("🔍 [TileInference] Overlap: \(overlap), Stride: \(stride)")
-        print("🔍 [TileInference] Tile 网格: \(tilesX) x \(tilesY) = \(tilesX * tilesY) 个")
-
         // 步骤 2: 创建输出缓冲区（Float 累加，用于加权合并）
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
         let pixelCount = finalWidth * finalHeight
-
-        print("🔍 [TileInference] 输出尺寸: \(finalWidth)x\(finalHeight)")
 
         // 输出累加缓冲区和权重缓冲区
         var outputR = [Float](repeating: 0, count: pixelCount)
@@ -258,9 +241,6 @@ final class ImageUpscaler {
 
         // 步骤 4: 处理每个 tile
         var failedTiles = 0
-        var successTiles = 0
-        print("🔍 [TileInference] 开始处理 tiles...")
-
         for gridY in 0..<tilesY {
             for gridX in 0..<tilesX {
 
@@ -301,15 +281,8 @@ final class ImageUpscaler {
                 let output: MLFeatureProvider
                 do {
                     output = try model.prediction(from: inputFeature)
-                    successTiles += 1
-                    if gridX == 0 && gridY == 0 {
-                        print("✅ [TileInference] 第一个 tile 推理成功")
-                    }
                 } catch {
                     failedTiles += 1
-                    if gridX == 0 && gridY == 0 {
-                        print("❌ [TileInference] 推理失败: \(error)")
-                    }
                     continue
                 }
 
@@ -350,13 +323,6 @@ final class ImageUpscaler {
                             imageWidth: finalWidth,
                             imageHeight: finalHeight
                         )
-                        if gridX == 0 && gridY == 0 {
-                            print("✅ [TileInference] 第一个 tile 累加成功")
-                        }
-                    } else {
-                        if gridX == 0 && gridY == 0 {
-                            print("❌ [TileInference] 输出转换失败")
-                        }
                     }
                 }
             }
@@ -364,15 +330,11 @@ final class ImageUpscaler {
 
         // ✅ 检查是否有太多 tile 失败
         let totalTiles = tilesX * tilesY
-        print("🔍 [TileInference] 处理完成: 成功 \(successTiles), 失败 \(failedTiles), 总计 \(totalTiles)")
-
         if failedTiles == totalTiles {
-            print("❌ [TileInference] 所有 tile 都失败了")
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))
         }
 
         // 步骤 5: 归一化并生成最终图像
-        print("🔍 [TileInference] 开始归一化...")
         var finalPixels = [UInt8](repeating: 0, count: pixelCount * 4)
         for i in 0..<pixelCount {
             let w = weightSum[i]
@@ -386,7 +348,6 @@ final class ImageUpscaler {
         }
 
         // 生成 CGImage
-        print("🔍 [TileInference] 生成最终图像...")
         guard let finalCGImage = finalPixels.withUnsafeMutableBytes({ buffer -> CGImage? in
             guard let baseAddress = buffer.baseAddress else { return nil }
             return CGContext(
@@ -399,11 +360,9 @@ final class ImageUpscaler {
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
             )?.makeImage()
         }) else {
-            print("❌ [TileInference] 生成 CGImage 失败")
             throw UpscaleError.preprocessingFailed
         }
 
-        print("✅ [TileInference] 完成")
         return UIImage(cgImage: finalCGImage)
     }
 

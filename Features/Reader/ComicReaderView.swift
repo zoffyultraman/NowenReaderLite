@@ -461,97 +461,53 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
 
     private func startUpscaleIfNeeded(for page: Int, image: UIImage, isPreload: Bool = false) {
         let mode = upscaleMode
-        print("🔍 [Upscale] startUpscaleIfNeeded: page \(page), mode \(mode.rawValue), isPreload \(isPreload)")
-        guard mode != .off else {
-            print("⚠️ [Upscale] 模式为 off，跳过")
-            return
-        }
+        guard mode != .off else { return }
         let key = upscaledCacheKey(for: page)
         let taskKey = upscaleTaskKey(for: page, mode: mode)
-        if upscaledCache.object(forKey: key) != nil {
-            print("⚠️ [Upscale] 已有缓存，跳过: page \(page)")
-            return
-        }
+        if upscaledCache.object(forKey: key) != nil { return }
         // ✅ 检查是否已有任务在运行（使用包含 mode 的 key）
-        if let existingTask = upscaleTasks[taskKey], !existingTask.isCancelled {
-            print("⚠️ [Upscale] 已有任务运行中，跳过: page \(page)")
-            return
-        }
-        print("✅ [Upscale] 开始超分任务: page \(page)")
+        if let existingTask = upscaleTasks[taskKey], !existingTask.isCancelled { return }
 
         // ✅ 当前页面使用更高优先级，预加载页面使用较低优先级
         let priority: TaskPriority = (page == currentIdx && !isPreload) ? .high : .medium
 
         upscaleTasks[taskKey] = Task { [weak self] in
-            guard let self else {
-                print("❌ [ComicReader] self 已释放，跳过: page \(page)")
-                return
-            }
-            print("🔍 [ComicReader] 开始执行超分任务: page \(page)")
+            guard let self else { return }
             let shouldKeepOriginalSize = self.keepOriginalSize
             let result: UIImage
             do {
                 // ✅ 使用 Task.detached 在后台执行，不继承 MainActor
                 result = try await Task.detached(priority: priority) {
-                    print("🔍 [ComicReader] Task.detached 开始: page \(page)")
-                    let r = try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
-                    print("🔍 [ComicReader] Task.detached 完成: page \(page)")
-                    return r
+                    try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
                 }.value
-                print("🔍 [ComicReader] 超分结果获取成功: page \(page)")
             } catch is CancellationError {
                 // ✅ 任务被取消，静默处理
-                print("⚠️ [ComicReader] 任务被取消: page \(page)")
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             } catch {
-                print("❌ [ComicReader] 超分失败: \(error.localizedDescription)")
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             }
-            print("🔍 [ComicReader] 检查任务取消状态: page \(page), isCancelled \(Task.isCancelled)")
             // ✅ 即使任务被取消，也要缓存结果（避免重复计算）
-            print("✅ [ComicReader] 超分结果已缓存: page \(page), size \(result.size.width)x\(result.size.height)")
             self.upscaledCache.setObject(result, forKey: key)
             self.upscaleTasks.removeValue(forKey: taskKey)
             // ✅ 如果是当前页面且任务未被取消，立即更新显示
             if !Task.isCancelled && page == self.currentIdx {
-                print("✅ [ComicReader] 更新当前页面显示: page \(page)")
                 self.updateCurrentPageImage(result)
-            } else if Task.isCancelled {
-                print("⚠️ [ComicReader] 任务已取消，但结果已缓存: page \(page)")
-            } else {
-                print("⚠️ [ComicReader] 超分完成但不是当前页面: page \(page), current \(self.currentIdx)")
             }
         }
     }
 
     private func updateCurrentPageImage(_ image: UIImage) {
-        guard let currentVC = viewControllers?.first as? ZoomablePageVC else {
-            print("❌ [ComicReader] 无法获取当前 ViewController")
-            return
-        }
-        print("✅ [ComicReader] 更新 VC 图片: \(image.size.width)x\(image.size.height)")
+        guard let currentVC = viewControllers?.first as? ZoomablePageVC else { return }
         currentVC.updateImage(image)
     }
 
     // ✅ 新增：检查并显示当前页面的超分结果
     private func checkAndShowUpscaledImage(for page: Int) {
         let upscaledKey = upscaledCacheKey(for: page)
-        print("🔍 [ComicReader] checkAndShowUpscaledImage: page \(page)")
         if let upscaled = upscaledCache.object(forKey: upscaledKey) {
-            print("✅ [ComicReader] 显示超分结果: page \(page), size \(upscaled.size.width)x\(upscaled.size.height)")
             updateCurrentPageImage(upscaled)
-        } else {
-            print("⚠️ [ComicReader] 无超分缓存: page \(page)")
-            // 检查是否有任务在运行
-            let mode = upscaleMode
-            let taskKey = upscaleTaskKey(for: page, mode: mode)
-            if let task = upscaleTasks[taskKey] {
-                print("🔍 [ComicReader] 任务状态: page \(page), isCancelled \(task.isCancelled)")
-            } else {
-                print("🔍 [ComicReader] 无任务: page \(page)")
-            }
         }
     }
 
@@ -576,9 +532,6 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 return !keepRange.contains(page)
             }
             return false
-        }
-        if !upscaleKeysToRemove.isEmpty {
-            print("⚠️ [Preload] 取消超分任务: \(upscaleKeysToRemove), 保留范围: \(keepRange)")
         }
         for taskKey in upscaleKeysToRemove {
             upscaleTasks[taskKey]?.cancel()
@@ -712,7 +665,6 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
 
     /// 更新图片（用于超分完成后替换）
     func updateImage(_ image: UIImage) {
-        print("✅ [ZoomablePageVC] updateImage: \(image.size.width)x\(image.size.height)")
         imageView.image = image
         fitImage()
     }
