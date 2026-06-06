@@ -422,20 +422,26 @@ private extension UIImage {
     }
 
     func toMLMultiArray(shape: [NSNumber], dataType: MLMultiArrayDataType) throws -> MLMultiArray {
-        // ✅ 验证形状：期望 [1, 3, H, W] (NCHW) 或 [1, H, W, 3] (NHWC)
+        // 支持 NCHW [1, C, H, W] 和 NHWC [1, H, W, C]，C 为 3 的倍数
         guard shape.count == 4 else {
             throw UpscaleError.preprocessingFailed
         }
+        let channels: Int
         let targetHeight: Int
         let targetWidth: Int
-        if shape[1].intValue == 3 {
-            // NCHW: [1, 3, H, W]
+        let isNCHW: Bool
+        if shape[1].intValue % 3 == 0 {
+            // NCHW: [1, C, H, W]
+            channels = shape[1].intValue
             targetHeight = shape[2].intValue
             targetWidth = shape[3].intValue
-        } else if shape[3].intValue == 3 {
-            // NHWC: [1, H, W, 3]
+            isNCHW = true
+        } else if shape[3].intValue % 3 == 0 {
+            // NHWC: [1, H, W, C]
+            channels = shape[3].intValue
             targetHeight = shape[1].intValue
             targetWidth = shape[2].intValue
+            isNCHW = false
         } else {
             throw UpscaleError.preprocessingFailed
         }
@@ -450,15 +456,23 @@ private extension UIImage {
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
 
         let channelSize = targetHeight * targetWidth
+        let rgbCopies = channels / 3  // 12通道 = 4组RGB
+
         switch dataType {
         case .float32:
             array.withUnsafeMutableBytes { buffer, _ in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float32.self) else { return }
                 for i in 0..<channelSize {
                     let p = i * 4
-                    ptr[i] = Float32(rawData[p]) / 255.0
-                    ptr[channelSize + i] = Float32(rawData[p + 1]) / 255.0
-                    ptr[2 * channelSize + i] = Float32(rawData[p + 2]) / 255.0
+                    let r = Float32(rawData[p]) / 255.0
+                    let g = Float32(rawData[p + 1]) / 255.0
+                    let b = Float32(rawData[p + 2]) / 255.0
+                    for copy in 0..<rgbCopies {
+                        let base = copy * 3 * channelSize
+                        ptr[base + i] = r
+                        ptr[base + channelSize + i] = g
+                        ptr[base + 2 * channelSize + i] = b
+                    }
                 }
             }
         case .float16:
@@ -466,9 +480,15 @@ private extension UIImage {
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float16.self) else { return }
                 for i in 0..<channelSize {
                     let p = i * 4
-                    ptr[i] = Float16(rawData[p]) / Float16(255.0)
-                    ptr[channelSize + i] = Float16(rawData[p + 1]) / Float16(255.0)
-                    ptr[2 * channelSize + i] = Float16(rawData[p + 2]) / Float16(255.0)
+                    let r = Float16(rawData[p]) / Float16(255.0)
+                    let g = Float16(rawData[p + 1]) / Float16(255.0)
+                    let b = Float16(rawData[p + 2]) / Float16(255.0)
+                    for copy in 0..<rgbCopies {
+                        let base = copy * 3 * channelSize
+                        ptr[base + i] = r
+                        ptr[base + channelSize + i] = g
+                        ptr[base + 2 * channelSize + i] = b
+                    }
                 }
             }
         default:
