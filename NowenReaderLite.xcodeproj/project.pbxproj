@@ -42,11 +42,9 @@
 		E7853F900C8BA5EB70057CEB /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */; };
 		EAC5D9A804E4AC932916EE39 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B37C34C647049726BF3DEED /* SettingsView.swift */; };
 		EE3344556677889900BB02 /* FormatUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3344556677889900BB01 /* FormatUtils.swift */; };
-		F5A74BBAAACB8D0184EF7BE2 /* anime4k-2x-a-hq.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE1 /* anime4k-2x-a-hq.mlpackage */; };
 		F5A74BBAAACB8D0184EF7BE4 /* anime4k-4x-a-hq.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */; };
 		F5A74BBAAACB8D0184EF7BE6 /* ImageUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */; };
 		F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */; };
-		F5A74BBAAACB8D0184EF7BEC /* MangaJaNai_1600p_x4.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BEB /* MangaJaNai_1600p_x4.mlpackage */; };
 		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
 /* End PBXBuildFile section */
 
@@ -87,11 +85,9 @@
 		EE112233445566778899AABB /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		EE3344556677889900BB01 /* FormatUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatUtils.swift; sourceTree = "<group>"; };
 		F5318C1609DE58FD7D280D14 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
-		F5A74BBAAACB8D0184EF7BE1 /* anime4k-2x-a-hq.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = "anime4k-2x-a-hq.mlpackage"; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = "anime4k-4x-a-hq.mlpackage"; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUpscaler.swift; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = RealESRGAN_x4plus_Anime.mlpackage; sourceTree = "<group>"; };
-		F5A74BBAAACB8D0184EF7BEB /* MangaJaNai_1600p_x4.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = MangaJaNai_1600p_x4.mlpackage; sourceTree = "<group>"; };
 		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -271,10 +267,8 @@
 				C5134298214FCDA52C4BC916 /* Models */,
 				2A5F6B3AC11518BEECED71CD /* Info.plist */,
 				0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D /* Assets.xcassets */,
-				F5A74BBAAACB8D0184EF7BE1 /* anime4k-2x-a-hq.mlpackage */,
 				F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */,
 				F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */,
-				F5A74BBAAACB8D0184EF7BEB /* MangaJaNai_1600p_x4.mlpackage */,
 			);
 			sourceTree = "<group>";
 		};
@@ -352,10 +346,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				91F1A3C2B8D4E5F607A8B9C0D1E2F3A4 /* Assets.xcassets in Resources */,
-				F5A74BBAAACB8D0184EF7BE2 /* anime4k-2x-a-hq.mlpackage in Resources */,
 				F5A74BBAAACB8D0184EF7BE4 /* anime4k-4x-a-hq.mlpackage in Resources */,
 				F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */,
-				F5A74BBAAACB8D0184EF7BEC /* MangaJaNai_1600p_x4.mlpackage in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
