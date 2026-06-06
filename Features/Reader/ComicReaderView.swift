@@ -461,12 +461,23 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
 
     private func startUpscaleIfNeeded(for page: Int, image: UIImage, isPreload: Bool = false) {
         let mode = upscaleMode
-        guard mode != .off else { return }
+        print("🔍 [Upscale] startUpscaleIfNeeded: page \(page), mode \(mode.rawValue), isPreload \(isPreload)")
+        guard mode != .off else {
+            print("⚠️ [Upscale] 模式为 off，跳过")
+            return
+        }
         let key = upscaledCacheKey(for: page)
         let taskKey = upscaleTaskKey(for: page, mode: mode)
-        guard upscaledCache.object(forKey: key) == nil else { return }
+        if upscaledCache.object(forKey: key) != nil {
+            print("⚠️ [Upscale] 已有缓存，跳过: page \(page)")
+            return
+        }
         // ✅ 检查是否已有任务在运行（使用包含 mode 的 key）
-        if let existingTask = upscaleTasks[taskKey], !existingTask.isCancelled { return }
+        if let existingTask = upscaleTasks[taskKey], !existingTask.isCancelled {
+            print("⚠️ [Upscale] 已有任务运行中，跳过: page \(page)")
+            return
+        }
+        print("✅ [Upscale] 开始超分任务: page \(page)")
 
         // ✅ 当前页面使用更高优先级，预加载页面使用较低优先级
         let priority: TaskPriority = (page == currentIdx && !isPreload) ? .high : .medium
