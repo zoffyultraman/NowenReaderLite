@@ -483,16 +483,25 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
         let priority: TaskPriority = (page == currentIdx && !isPreload) ? .high : .medium
 
         upscaleTasks[taskKey] = Task { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                print("❌ [ComicReader] self 已释放，跳过: page \(page)")
+                return
+            }
+            print("🔍 [ComicReader] 开始执行超分任务: page \(page)")
             let shouldKeepOriginalSize = self.keepOriginalSize
             let result: UIImage
             do {
                 // ✅ 使用 Task.detached 在后台执行，不继承 MainActor
                 result = try await Task.detached(priority: priority) {
-                    try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
+                    print("🔍 [ComicReader] Task.detached 开始: page \(page)")
+                    let r = try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
+                    print("🔍 [ComicReader] Task.detached 完成: page \(page)")
+                    return r
                 }.value
+                print("🔍 [ComicReader] 超分结果获取成功: page \(page)")
             } catch is CancellationError {
                 // ✅ 任务被取消，静默处理
+                print("⚠️ [ComicReader] 任务被取消: page \(page)")
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             } catch {
@@ -500,7 +509,11 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             }
-            guard !Task.isCancelled else { return }
+            print("🔍 [ComicReader] 检查任务取消状态: page \(page), isCancelled \(Task.isCancelled)")
+            guard !Task.isCancelled else {
+                print("⚠️ [ComicReader] 任务已取消，跳过缓存: page \(page)")
+                return
+            }
             print("✅ [ComicReader] 超分结果已缓存: page \(page), size \(result.size.width)x\(result.size.height)")
             self.upscaledCache.setObject(result, forKey: key)
             // ✅ 如果是当前页面，立即更新显示
