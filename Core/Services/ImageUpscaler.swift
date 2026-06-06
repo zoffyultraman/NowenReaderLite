@@ -209,10 +209,9 @@ final class ImageUpscaler {
         let tilesX = (imageWidth + stride - 1) / stride
         let tilesY = (imageHeight + stride - 1) / stride
 
-        // 步骤 2: 创建输出 CGContext（统一 UIKit top-left 坐标系）
+        // 步骤 2: 创建输出 CGContext（CG 坐标系，无变换）
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
-        let finalBytesPerRow = finalWidth * 4
         var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
 
         guard let outputCtx = CGContext(
@@ -220,16 +219,12 @@ final class ImageUpscaler {
             width: finalWidth,
             height: finalHeight,
             bitsPerComponent: 8,
-            bytesPerRow: finalBytesPerRow,
+            bytesPerRow: finalWidth * 4,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
         ) else {
             throw UpscaleError.preprocessingFailed
         }
-        // 唯一一次 y-flip：将 CG 底部原点翻转为 UIKit 顶部原点
-        // 此后所有 draw 坐标均为 UIKit 语义（y=0 在顶部）
-        outputCtx.translateBy(x: 0, y: CGFloat(finalHeight))
-        outputCtx.scaleBy(x: 1, y: -1)
 
         // 获取输入输出信息
         guard let inputName = model.modelDescription.inputDescriptionsByName.keys.first,
@@ -334,13 +329,10 @@ final class ImageUpscaler {
                         let cropOutH = effH * scale
 
                         if let croppedCG = outputCGImage.cropping(to: CGRect(x: cropOutX, y: cropOutY, width: cropOutW, height: cropOutH)) {
-                            // 写入坐标 = tile index × effectiveSize × scale
+                            // CG 坐标系：y=0 在底部，tile 底部对齐 buffer 底部
                             let dstX = gridX * stride * scale
-                            let dstY = gridY * stride * scale
-
-                            // outputCtx 有 y-flip CTM，CGImage 以 unflipped 方式绘制
-                            // 用负高度 rect 补偿：CG row 0（底部）→ UIKit y+H（下方），CG row H-1（顶部）→ UIKit y（上方）
-                            outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY + cropOutH, width: cropOutW, height: -cropOutH))
+                            let dstY = finalHeight - (gridY * stride * scale + cropOutH)
+                            outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY, width: cropOutW, height: cropOutH))
                         }
                     }
                 }
@@ -353,7 +345,7 @@ final class ImageUpscaler {
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))
         }
 
-        // 步骤 4: 生成最终图像（outputCtx 已统一 UIKit 坐标，直接 makeImage）
+        // 步骤 4: 生成最终图像
         guard let finalCGImage = outputCtx.makeImage() else {
             throw UpscaleError.preprocessingFailed
         }
