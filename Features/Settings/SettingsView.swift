@@ -91,6 +91,7 @@ struct SettingsView: View {
                         HStack {
                             Text(upscaleMode.rawValue)
                                 .foregroundColor(.primary)
+                                .animation(nil, value: upscaleMode)
                             Image(systemName: "chevron.down")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -131,6 +132,7 @@ struct SettingsView: View {
                         HStack {
                             Text(pageTransitionStyle)
                                 .foregroundColor(.primary)
+                                .animation(nil, value: pageTransitionStyle)
                             Image(systemName: "chevron.down")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
