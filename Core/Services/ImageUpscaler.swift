@@ -189,7 +189,7 @@ final class ImageUpscaler {
         return resultImage
     }
 
-    // MARK: - Tile 推理核心（带重叠合并）
+    // MARK: - Tile 推理核心（tilePad 上下文扩展）
 
     private func tileInference(image: UIImage, model: MLModel, tileSize: Int, scaleFactor: CGFloat, forceTensorInput: Bool = false) throws -> UIImage {
         guard let cgImage = image.cgImage else { throw UpscaleError.invalidImage }
@@ -198,24 +198,22 @@ final class ImageUpscaler {
         let imageHeight = cgImage.height
         let scale = Int(scaleFactor)
 
-        // ✅ 重叠区域大小
-        let overlap = 8
-        let stride = tileSize - overlap  // 实际步长 = 248
+        // tilePad: 每个 tile 内部的上下文扩展像素数
+        // 有效区域 = tileSize - 2 * tilePad = 256 - 32 = 224
+        // 模型始终接收 256×256 输入，但边缘 16px 是上下文，推理后裁剪掉
+        let tilePad = 16
+        let effectiveSize = tileSize - 2 * tilePad  // 224
+        let stride = effectiveSize
 
-        // 步骤 1: 计算 tile 网格（带重叠）
-        let tilesX = (imageWidth - overlap + stride - 1) / stride
-        let tilesY = (imageHeight - overlap + stride - 1) / stride
+        // 步骤 1: 计算 tile 网格（基于有效区域步进）
+        let tilesX = (imageWidth + stride - 1) / stride
+        let tilesY = (imageHeight + stride - 1) / stride
 
-        // 步骤 2: 创建输出缓冲区（Float 累加，用于加权合并）
+        // 步骤 2: 创建输出 pixel buffer
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
-        let pixelCount = finalWidth * finalHeight
 
-        // 输出累加缓冲区和权重缓冲区
-        var outputR = [Float](repeating: 0, count: pixelCount)
-        var outputG = [Float](repeating: 0, count: pixelCount)
-        var outputB = [Float](repeating: 0, count: pixelCount)
-        var weightSum = [Float](repeating: 0, count: pixelCount)
+        var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
 
         // 获取输入输出信息
         guard let inputName = model.modelDescription.inputDescriptionsByName.keys.first,
@@ -224,47 +222,52 @@ final class ImageUpscaler {
             throw UpscaleError.preprocessingFailed
         }
 
-        // ✅ 检查输入类型是否支持
         guard inputDesc.type == .multiArray || inputDesc.type == .image else {
             throw UpscaleError.preprocessingFailed
         }
 
-        // ✅ RealESRGAN 模型必须支持 TensorType
         if forceTensorInput && inputDesc.type != .multiArray {
             throw UpscaleError.preprocessingFailed
         }
 
-        // 步骤 3: 创建权重图（线性渐变，边缘 0 -> 中心 1）
-        let scaledTileSize = tileSize * scale
-        let scaledOverlap = overlap * scale
-        let weightMap = createWeightMap(tileSize: scaledTileSize, overlap: scaledOverlap)
-
-        // 步骤 4: 处理每个 tile
+        // 步骤 3: 处理每个 tile
+        let scaledTileSize = tileSize * scale      // 1024
+        let scaledPad = tilePad * scale            // 64
+        let scaledEffective = effectiveSize * scale // 896
         var failedTiles = 0
+
         for gridY in 0..<tilesY {
             for gridX in 0..<tilesX {
 
-                // 4a. 计算源坐标（带重叠）
-                let srcX = gridX * stride
-                let srcY = gridY * stride
-                let srcW = min(tileSize, imageWidth - srcX)
-                let srcH = min(tileSize, imageHeight - srcY)
+                // 3a. 有效区域在原图中的坐标
+                let effX = gridX * stride
+                let effY = gridY * stride
+                let effW = min(effectiveSize, imageWidth - effX)
+                let effH = min(effectiveSize, imageHeight - effY)
 
-                // 4b. 裁剪原图得到 tile
-                guard let tileCGImage = cgImage.cropping(to: CGRect(x: srcX, y: srcY, width: srcW, height: srcH)) else {
+                // 3b. 带上下文扩展的提取区域（有效区域 + 四周 tilePad）
+                let extractX = max(0, effX - tilePad)
+                let extractY = max(0, effY - tilePad)
+                let extractRight = min(imageWidth, effX + effW + tilePad)
+                let extractBottom = min(imageHeight, effY + effH + tilePad)
+                let extractW = extractRight - extractX
+                let extractH = extractBottom - extractY
+
+                // 3c. 裁剪原图得到带上下文的 tile
+                guard let tileCGImage = cgImage.cropping(to: CGRect(x: extractX, y: extractY, width: extractW, height: extractH)) else {
                     continue
                 }
                 let tileUIImage = UIImage(cgImage: tileCGImage)
 
-                // 4c. Edge tile padding（统一到 tileSize × tileSize）
+                // 3d. Pad 到 256×256（边缘 tile 可能不足，需要 pad）
                 let paddedImage: UIImage
-                if srcW != tileSize || srcH != tileSize {
+                if extractW != tileSize || extractH != tileSize {
                     paddedImage = tileUIImage.padToSize(targetSize: CGSize(width: tileSize, height: tileSize))
                 } else {
                     paddedImage = tileUIImage
                 }
 
-                // 4d. 创建输入
+                // 3e. 创建输入
                 let inputFeature: MLFeatureProvider
                 if inputDesc.type == .multiArray, let constraint = inputDesc.multiArrayConstraint {
                     let multiArray = try paddedImage.toMLMultiArray(shape: constraint.shape, dataType: constraint.dataType)
@@ -277,7 +280,7 @@ final class ImageUpscaler {
                     continue
                 }
 
-                // 4e. 推理
+                // 3f. 推理
                 let output: MLFeatureProvider
                 do {
                     output = try model.prediction(from: inputFeature)
@@ -286,7 +289,7 @@ final class ImageUpscaler {
                     continue
                 }
 
-                // 4f. 获取输出并累加到缓冲区
+                // 3g. 获取输出，裁剪掉上下文扩展区域，写入有效区域
                 if let outputValue = output.featureValue(for: outputName) {
                     let outputTile: UIImage?
                     if outputValue.type == .multiArray, let multiArray = outputValue.multiArrayValue {
@@ -304,25 +307,54 @@ final class ImageUpscaler {
                     }
 
                     if let outputTile = outputTile, let outputCGImage = outputTile.cgImage {
-                        // 4g. 提取像素并按权重累加
-                        let dstX = srcX * scale
-                        let dstY = srcY * scale
-                        accumulateTile(
-                            cgImage: outputCGImage,
-                            toR: &outputR,
-                            toG: &outputG,
-                            toB: &outputB,
-                            toWeight: &weightSum,
-                            weightMap: weightMap,
-                            dstX: dstX,
-                            dstY: dstY,
-                            tileWidth: scaledTileSize,
-                            tileHeight: scaledTileSize,
-                            canvasWidth: finalWidth,
-                            canvasHeight: finalHeight,
-                            imageWidth: finalWidth,
-                            imageHeight: finalHeight
-                        )
+                        // 读取输出像素
+                        let outW = outputCGImage.width
+                        let outH = outputCGImage.height
+                        var rawData = [UInt8](repeating: 0, count: outW * outH * 4)
+
+                        guard let ctx = CGContext(
+                            data: &rawData,
+                            width: outW,
+                            height: outH,
+                            bitsPerComponent: 8,
+                            bytesPerRow: outW * 4,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                        ) else { continue }
+                        ctx.draw(outputCGImage, in: CGRect(x: 0, y: 0, width: outW, height: outH))
+
+                        // 裁剪：跳过输出中对应上下文扩展的部分，只保留有效区域
+                        // 上下文在输入中占 tilePad，输出中占 tilePad * scale
+                        let cropX = (extractX > effX - tilePad) ? 0 : scaledPad  // 左侧是否有完整 pad
+                        let cropY = (extractY > effY - tilePad) ? 0 : scaledPad  // 上方是否有完整 pad
+
+                        // 实际输出的有效区域尺寸
+                        let actualEffW = effW * scale
+                        let actualEffH = effH * scale
+
+                        // 目标位置
+                        let dstX = effX * scale
+                        let dstY = effY * scale
+
+                        // 写入有效区域像素
+                        for y in 0..<actualEffH {
+                            for x in 0..<actualEffW {
+                                let srcX = cropX + x
+                                let srcY = cropY + y
+                                guard srcX < outW && srcY < outH else { continue }
+
+                                let canvasX = dstX + x
+                                let canvasY = dstY + y
+                                guard canvasX >= 0 && canvasX < finalWidth && canvasY >= 0 && canvasY < finalHeight else { continue }
+
+                                let srcIdx = (srcY * outW + srcX) * 4
+                                let dstIdx = (canvasY * finalWidth + canvasX) * 4
+                                finalPixels[dstIdx] = rawData[srcIdx]
+                                finalPixels[dstIdx + 1] = rawData[srcIdx + 1]
+                                finalPixels[dstIdx + 2] = rawData[srcIdx + 2]
+                                finalPixels[dstIdx + 3] = 255
+                            }
+                        }
                     }
                 }
             }
@@ -334,20 +366,7 @@ final class ImageUpscaler {
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))
         }
 
-        // 步骤 5: 归一化并生成最终图像
-        var finalPixels = [UInt8](repeating: 0, count: pixelCount * 4)
-        for i in 0..<pixelCount {
-            let w = weightSum[i]
-            if w > 0 {
-                let p = i * 4
-                finalPixels[p] = UInt8(max(0, min(255, outputR[i] / w * 255.0)))
-                finalPixels[p + 1] = UInt8(max(0, min(255, outputG[i] / w * 255.0)))
-                finalPixels[p + 2] = UInt8(max(0, min(255, outputB[i] / w * 255.0)))
-                finalPixels[p + 3] = 255
-            }
-        }
-
-        // 生成 CGImage
+        // 步骤 4: 生成最终图像
         guard let finalCGImage = finalPixels.withUnsafeMutableBytes({ buffer -> CGImage? in
             guard let baseAddress = buffer.baseAddress else { return nil }
             return CGContext(
@@ -364,100 +383,6 @@ final class ImageUpscaler {
         }
 
         return UIImage(cgImage: finalCGImage)
-    }
-
-    // MARK: - 创建权重图
-
-    /// 创建线性渐变权重图：边缘 0 -> 中心 1
-    private func createWeightMap(tileSize: Int, overlap: Int) -> [Float] {
-        var weights = [Float](repeating: 1.0, count: tileSize * tileSize)
-        let halfOverlap = overlap / 2
-
-        for y in 0..<tileSize {
-            for x in 0..<tileSize {
-                // 到各边缘的距离
-                let distLeft = x
-                let distRight = tileSize - 1 - x
-                let distTop = y
-                let distBottom = tileSize - 1 - y
-
-                // 计算边缘权重（取最小距离）
-                let distToEdge = min(distLeft, distRight, distTop, distBottom)
-
-                // 线性渐变：边缘 0 -> halfOverlap 处达到 1
-                let weight = Float(min(distToEdge, halfOverlap)) / Float(halfOverlap)
-                weights[y * tileSize + x] = weight
-            }
-        }
-
-        return weights
-    }
-
-    // MARK: - 累加 Tile 像素
-
-    /// 将 tile 像素按权重累加到输出缓冲区
-    private func accumulateTile(
-        cgImage: CGImage,
-        toR: inout [Float],
-        toG: inout [Float],
-        toB: inout [Float],
-        toWeight: inout [Float],
-        weightMap: [Float],
-        dstX: Int,
-        dstY: Int,
-        tileWidth: Int,
-        tileHeight: Int,
-        canvasWidth: Int,
-        canvasHeight: Int,
-        imageWidth: Int,
-        imageHeight: Int
-    ) {
-        // 读取 tile 像素
-        let width = cgImage.width
-        let height = cgImage.height
-        var rawData = [UInt8](repeating: 0, count: width * height * 4)
-
-        guard let context = CGContext(
-            data: &rawData,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-        ) else { return }
-
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-        // 累加像素
-        for y in 0..<min(tileHeight, height) {
-            for x in 0..<min(tileWidth, width) {
-                let canvasX = dstX + x
-                let canvasY = dstY + y
-
-                // 边界检查
-                guard canvasX >= 0 && canvasX < imageWidth && canvasY >= 0 && canvasY < imageHeight else {
-                    continue
-                }
-
-                let srcIdx = (y * width + x) * 4
-                let dstIdx = canvasY * canvasWidth + canvasX
-
-                // 从 tile 读取 RGB
-                let r = Float(rawData[srcIdx]) / 255.0
-                let g = Float(rawData[srcIdx + 1]) / 255.0
-                let b = Float(rawData[srcIdx + 2]) / 255.0
-
-                // 获取权重
-                let weight = weightMap[y * tileWidth + x]
-
-                // 累加
-                toR[dstIdx] += r * weight
-                toG[dstIdx] += g * weight
-                toB[dstIdx] += b * weight
-                toWeight[dstIdx] += weight
-            }
-        }
     }
 
     // MARK: - 重置

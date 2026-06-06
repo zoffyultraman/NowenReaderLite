@@ -32,21 +32,21 @@
 		CC0000000000000000000003 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000004 /* KeychainHelper.swift */; };
 		CC0000000000000000000005 /* AccountManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000006 /* AccountManagerView.swift */; };
 		CC0000000000000000000007 /* ReadingRecordManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000008 /* ReadingRecordManager.swift */; };
+		CC000000000000000000000A /* ImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000B /* ImageCache.swift */; };
+		CC000000000000000000000C /* PaginationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000D /* PaginationService.swift */; };
+		CC000000000000000000000E /* ChapterCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000F /* ChapterCache.swift */; };
+		CC0000000000000000000010 /* ComicReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* ComicReaderViewModel.swift */; };
+		CC0000000000000000000012 /* Comic+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* Comic+ReaderView.swift */; };
 		DA7EA316D1A45103D7500886 /* ComicReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */; };
 		E5E727D0FEC62CDB10B018E9 /* NowenReaderLiteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68161902B8397ACA3CD6C4B6 /* NowenReaderLiteApp.swift */; };
 		E7853F900C8BA5EB70057CEB /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */; };
 		EAC5D9A804E4AC932916EE39 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B37C34C647049726BF3DEED /* SettingsView.swift */; };
 		EE3344556677889900BB02 /* FormatUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3344556677889900BB01 /* FormatUtils.swift */; };
-		CC0000000000000000000012 /* Comic+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* Comic+ReaderView.swift */; };
 		F5A74BBAAACB8D0184EF7BE2 /* anime4k-2x-a-hq.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE1 /* anime4k-2x-a-hq.mlpackage */; };
 		F5A74BBAAACB8D0184EF7BE4 /* anime4k-4x-a-hq.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */; };
 		F5A74BBAAACB8D0184EF7BE6 /* ImageUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */; };
 		F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */; };
 		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
-		CC000000000000000000000A /* ImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000B /* ImageCache.swift */; };
-		CC000000000000000000000C /* PaginationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000D /* PaginationService.swift */; };
-		CC000000000000000000000E /* ChapterCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000F /* ChapterCache.swift */; };
-		CC0000000000000000000010 /* ComicReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* ComicReaderViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -75,23 +75,23 @@
 		CC0000000000000000000004 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		CC0000000000000000000006 /* AccountManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountManagerView.swift; sourceTree = "<group>"; };
 		CC0000000000000000000008 /* ReadingRecordManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecordManager.swift; sourceTree = "<group>"; };
+		CC000000000000000000000B /* ImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageCache.swift; sourceTree = "<group>"; };
+		CC000000000000000000000D /* PaginationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaginationService.swift; sourceTree = "<group>"; };
+		CC000000000000000000000F /* ChapterCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterCache.swift; sourceTree = "<group>"; };
+		CC0000000000000000000011 /* ComicReaderViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicReaderViewModel.swift; sourceTree = "<group>"; };
+		CC0000000000000000000013 /* Comic+ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Comic+ReaderView.swift"; sourceTree = "<group>"; };
 		D804FBE0A5F92DA8770C8FC7 /* Comic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Comic.swift; sourceTree = "<group>"; };
 		DC44AAB4CC664B62E2DDAD0D /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
 		EE112233445566778899AABB /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		EE3344556677889900BB01 /* FormatUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatUtils.swift; sourceTree = "<group>"; };
-		CC0000000000000000000013 /* Comic+ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Comic+ReaderView.swift"; sourceTree = "<group>"; };
 		F5318C1609DE58FD7D280D14 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE1 /* anime4k-2x-a-hq.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = "anime4k-2x-a-hq.mlpackage"; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = "anime4k-4x-a-hq.mlpackage"; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUpscaler.swift; sourceTree = "<group>"; };
-		F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = "RealESRGAN_x4plus_Anime.mlpackage"; sourceTree = "<group>"; };
+		F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = RealESRGAN_x4plus_Anime.mlpackage; sourceTree = "<group>"; };
 		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
-		CC000000000000000000000B /* ImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageCache.swift; sourceTree = "<group>"; };
-		CC000000000000000000000D /* PaginationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaginationService.swift; sourceTree = "<group>"; };
-		CC000000000000000000000F /* ChapterCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterCache.swift; sourceTree = "<group>"; };
-		CC0000000000000000000011 /* ComicReaderViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicReaderViewModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -413,7 +413,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.0.5;
+				CURRENT_PROJECT_VERSION = 1.0.6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -425,7 +425,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0.5;
+				MARKETING_VERSION = 1.0.6;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -554,7 +554,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.0.5;
+				CURRENT_PROJECT_VERSION = 1.0.6;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_TESTABILITY = YES;
@@ -566,7 +566,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0.5;
+				MARKETING_VERSION = 1.0.6;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
