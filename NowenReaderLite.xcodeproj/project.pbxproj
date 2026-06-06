@@ -46,6 +46,7 @@
 		F5A74BBAAACB8D0184EF7BE4 /* anime4k-4x-a-hq.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */; };
 		F5A74BBAAACB8D0184EF7BE6 /* ImageUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */; };
 		F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */; };
+		F5A74BBAAACB8D0184EF7BEC /* MangaJaNai_1600p_x4.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BEB /* MangaJaNai_1600p_x4.mlpackage */; };
 		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
 /* End PBXBuildFile section */
 
@@ -90,6 +91,7 @@
 		F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = "anime4k-4x-a-hq.mlpackage"; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUpscaler.swift; sourceTree = "<group>"; };
 		F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = RealESRGAN_x4plus_Anime.mlpackage; sourceTree = "<group>"; };
+		F5A74BBAAACB8D0184EF7BEB /* MangaJaNai_1600p_x4.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = MangaJaNai_1600p_x4.mlpackage; sourceTree = "<group>"; };
 		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -272,6 +274,7 @@
 				F5A74BBAAACB8D0184EF7BE1 /* anime4k-2x-a-hq.mlpackage */,
 				F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */,
 				F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */,
+				F5A74BBAAACB8D0184EF7BEB /* MangaJaNai_1600p_x4.mlpackage */,
 			);
 			sourceTree = "<group>";
 		};
@@ -352,6 +355,7 @@
 				F5A74BBAAACB8D0184EF7BE2 /* anime4k-2x-a-hq.mlpackage in Resources */,
 				F5A74BBAAACB8D0184EF7BE4 /* anime4k-4x-a-hq.mlpackage in Resources */,
 				F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */,
+				F5A74BBAAACB8D0184EF7BEC /* MangaJaNai_1600p_x4.mlpackage in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

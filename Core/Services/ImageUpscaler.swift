@@ -8,6 +8,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable {
     case x2 = "Anime4K-A-HQ x2"
     case x4 = "Anime4K-A-HQ x4"
     case realesrganAnime4x = "RealESRGAN Anime 4x"
+    case mangaJaNai4x = "MangaJaNai 4x"
     var id: String { rawValue }
 }
 
@@ -53,12 +54,15 @@ final class ImageUpscaler {
     private var model2x: MLModel?
     private var model4x: MLModel?
     private var modelRealESRGANAnime4x: MLModel?
+    private var modelMangaJaNai4x: MLModel?
     private var model2xLoadFailed = false
     private var model4xLoadFailed = false
     private var modelRealESRGANAnime4xLoadFailed = false
+    private var modelMangaJaNai4xLoadFailed = false
     private var tileSize2x: Int = 128
     private var tileSize4x: Int = 128
     private var tileSizeRealESRGANAnime4x: Int = 256
+    private var tileSizeMangaJaNai4x: Int = 256
 
     private init() {}
 
@@ -129,6 +133,29 @@ final class ImageUpscaler {
         }
     }
 
+    private func loadModelMangaJaNai4x() throws -> MLModel {
+        if let model = modelMangaJaNai4x { return model }
+        if modelMangaJaNai4xLoadFailed { throw UpscaleError.modelNotFound("MangaJaNai_1600p_x4") }
+
+        guard let modelURL = Bundle.main.url(forResource: "MangaJaNai_1600p_x4", withExtension: "mlmodelc") ??
+                Bundle.main.url(forResource: "MangaJaNai_1600p_x4", withExtension: "mlpackage") else {
+            modelMangaJaNai4xLoadFailed = true
+            throw UpscaleError.modelNotFound("MangaJaNai_1600p_x4")
+        }
+
+        do {
+            let config = MLModelConfiguration()
+            config.computeUnits = .all
+            let model = try MLModel(contentsOf: modelURL, configuration: config)
+            self.modelMangaJaNai4x = model
+            detectTileSize(model: model, name: "MangaJaNai 4x")
+            return model
+        } catch {
+            modelMangaJaNai4xLoadFailed = true
+            throw UpscaleError.modelLoadFailed(error)
+        }
+    }
+
     private func detectTileSize(model: MLModel, name: String) {
         guard let inputDesc = model.modelDescription.inputDescriptionsByName.values.first,
               let constraint = inputDesc.multiArrayConstraint else { return }
@@ -138,6 +165,7 @@ final class ImageUpscaler {
             if name == "2x" { tileSize2x = detectedSize }
             else if name == "4x" { tileSize4x = detectedSize }
             else if name == "RealESRGAN Anime 4x" { tileSizeRealESRGANAnime4x = detectedSize }
+            else if name == "MangaJaNai 4x" { tileSizeMangaJaNai4x = detectedSize }
         }
     }
 
@@ -171,12 +199,16 @@ final class ImageUpscaler {
             model = try loadModelRealESRGANAnime4x()
             tileSize = tileSizeRealESRGANAnime4x
             scaleFactor = 4.0
+        case .mangaJaNai4x:
+            model = try loadModelMangaJaNai4x()
+            tileSize = tileSizeMangaJaNai4x
+            scaleFactor = 4.0
         case .off:
             return image
         }
 
-        // ✅ RealESRGAN 模型强制使用 TensorType 输入
-        let forceTensorInput = (mode == .realesrganAnime4x)
+        // ✅ RealESRGAN / MangaJaNai 模型强制使用 TensorType 输入
+        let forceTensorInput = (mode == .realesrganAnime4x || mode == .mangaJaNai4x)
 
         let resultImage = try tileInference(image: image, model: model, tileSize: tileSize, scaleFactor: scaleFactor, forceTensorInput: forceTensorInput)
 
@@ -361,12 +393,15 @@ final class ImageUpscaler {
         model2x = nil
         model4x = nil
         modelRealESRGANAnime4x = nil
+        modelMangaJaNai4x = nil
         model2xLoadFailed = false
         model4xLoadFailed = false
         modelRealESRGANAnime4xLoadFailed = false
+        modelMangaJaNai4xLoadFailed = false
         tileSize2x = 128
         tileSize4x = 128
         tileSizeRealESRGANAnime4x = 256
+        tileSizeMangaJaNai4x = 256
     }
 }
 
