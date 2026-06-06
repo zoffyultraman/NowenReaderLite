@@ -323,16 +323,18 @@ final class ImageUpscaler {
                     }
 
                     if let outputTile = outputTile, let outputCGImage = outputTile.cgImage {
-                        let cropOutX = padLeft * scale
-                        let cropOutY = padTop * scale
-                        let cropOutW = effW * scale
-                        let cropOutH = effH * scale
-
-                        if let croppedCG = outputCGImage.cropping(to: CGRect(x: cropOutX, y: cropOutY, width: cropOutW, height: cropOutH)) {
-                            // CG 坐标系：y=0 在底部，tile 底部对齐 buffer 底部
-                            let dstX = gridX * stride * scale
-                            let dstY = finalHeight - (gridY * stride * scale + cropOutH)
-                            outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY, width: cropOutW, height: cropOutH))
+                        // 固定 center crop：从 1024×1024 中心裁出 896×896
+                        // 去除上下文扩展区域（tilePad * scale = 64px 每侧）
+                        let scaledPad = tilePad * scale
+                        let fixedCropSize = effectiveSize * scale  // 896
+                        if let croppedCG = outputCGImage.cropping(to: CGRect(
+                            x: scaledPad, y: scaledPad,
+                            width: fixedCropSize, height: fixedCropSize
+                        )) {
+                            // 固定 stride 写入，edge 溢出靠 buffer 边界裁剪
+                            let dstX = gridX * fixedCropSize
+                            let dstY = finalHeight - (gridY * fixedCropSize + fixedCropSize)
+                            outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY, width: fixedCropSize, height: fixedCropSize))
                         }
                     }
                 }
