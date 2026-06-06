@@ -510,20 +510,19 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 return
             }
             print("🔍 [ComicReader] 检查任务取消状态: page \(page), isCancelled \(Task.isCancelled)")
-            guard !Task.isCancelled else {
-                print("⚠️ [ComicReader] 任务已取消，跳过缓存: page \(page)")
-                return
-            }
+            // ✅ 即使任务被取消，也要缓存结果（避免重复计算）
             print("✅ [ComicReader] 超分结果已缓存: page \(page), size \(result.size.width)x\(result.size.height)")
             self.upscaledCache.setObject(result, forKey: key)
-            // ✅ 如果是当前页面，立即更新显示
-            if page == self.currentIdx {
+            self.upscaleTasks.removeValue(forKey: taskKey)
+            // ✅ 如果是当前页面且任务未被取消，立即更新显示
+            if !Task.isCancelled && page == self.currentIdx {
                 print("✅ [ComicReader] 更新当前页面显示: page \(page)")
                 self.updateCurrentPageImage(result)
+            } else if Task.isCancelled {
+                print("⚠️ [ComicReader] 任务已取消，但结果已缓存: page \(page)")
             } else {
                 print("⚠️ [ComicReader] 超分完成但不是当前页面: page \(page), current \(self.currentIdx)")
             }
-            self.upscaleTasks.removeValue(forKey: taskKey)
         }
     }
 
