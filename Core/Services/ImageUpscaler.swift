@@ -209,11 +209,27 @@ final class ImageUpscaler {
         let tilesX = (imageWidth + stride - 1) / stride
         let tilesY = (imageHeight + stride - 1) / stride
 
-        // 步骤 2: 创建输出像素缓冲区（无坐标变换，直接行级写入）
+        // 步骤 2: 创建输出 CGContext（统一 UIKit top-left 坐标系）
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
         let finalBytesPerRow = finalWidth * 4
         var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
+
+        guard let outputCtx = CGContext(
+            data: &finalPixels,
+            width: finalWidth,
+            height: finalHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: finalBytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else {
+            throw UpscaleError.preprocessingFailed
+        }
+        // 唯一一次 y-flip：将 CG 底部原点翻转为 UIKit 顶部原点
+        // 此后所有 draw 坐标均为 UIKit 语义（y=0 在顶部）
+        outputCtx.translateBy(x: 0, y: CGFloat(finalHeight))
+        outputCtx.scaleBy(x: 1, y: -1)
 
         // 获取输入输出信息
         guard let inputName = model.modelDescription.inputDescriptionsByName.keys.first,
@@ -294,7 +310,7 @@ final class ImageUpscaler {
                     continue
                 }
 
-                // 3g. 获取输出，裁剪上下文区域，直接绘制到输出 CGContext
+                // 3g. 获取输出，裁剪上下文区域，绘制到输出 CGContext
                 if let outputValue = output.featureValue(for: outputName) {
                     let outputTile: UIImage?
                     if outputValue.type == .multiArray, let multiArray = outputValue.multiArrayValue {
@@ -318,35 +334,15 @@ final class ImageUpscaler {
                         let cropOutH = effH * scale
 
                         if let croppedCG = outputCGImage.cropping(to: CGRect(x: cropOutX, y: cropOutY, width: cropOutW, height: cropOutH)) {
-                            // 直接读取像素并行级写入（无坐标变换，无翻转风险）
-                            let cW = croppedCG.width
-                            let cH = croppedCG.height
-                            let cBPR = cW * 4
-                            var tilePixels = [UInt8](repeating: 0, count: cW * cH * 4)
+                            // CGImage 以 CG 坐标存储（底部原点），outputCtx 用 UIKit 坐标（顶部原点）
+                            // 需要先将 tile 翻转为 UIKit 坐标，再绘制到 outputCtx
+                            // outputCtx 的 y-flip 会再次翻转，两次翻转抵消 → 图像方向正确
+                            let flippedTile = croppedCG.flipVertically()
 
-                            if let tileCtx = CGContext(
-                                data: &tilePixels, width: cW, height: cH,
-                                bitsPerComponent: 8, bytesPerRow: cBPR,
-                                space: CGColorSpaceCreateDeviceRGB(),
-                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-                            ) {
-                                tileCtx.draw(croppedCG, in: CGRect(x: 0, y: 0, width: cW, height: cH))
-
-                                let dstX = effX * scale
-                                let dstY = effY * scale
-                                let copyBytes = min(cW, finalWidth - dstX) * 4
-                                let copyRows = min(cH, finalHeight - dstY)
-
-                                tilePixels.withUnsafeBufferPointer { src in
-                                    finalPixels.withUnsafeMutableBufferPointer { dst in
-                                        for row in 0..<copyRows {
-                                            let srcOff = row * cBPR
-                                            let dstOff = (dstY + row) * finalBytesPerRow + dstX * 4
-                                            memcpy(dst.baseAddress! + dstOff, src.baseAddress! + srcOff, copyBytes)
-                                        }
-                                    }
-                                }
-                            }
+                            // 绘制到 outputCtx（UIKit 坐标，y=0 在顶部）
+                            let dstX = effX * scale
+                            let dstY = effY * scale
+                            outputCtx.draw(flippedTile, in: CGRect(x: dstX, y: dstY, width: cropOutW, height: cropOutH))
                         }
                     }
                 }
@@ -359,19 +355,8 @@ final class ImageUpscaler {
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))
         }
 
-        // 步骤 4: 生成最终图像（像素已按 CG 顺序存储，无需翻转）
-        guard let finalCGImage = finalPixels.withUnsafeMutableBytes({ buffer -> CGImage? in
-            guard let baseAddress = buffer.baseAddress else { return nil }
-            return CGContext(
-                data: baseAddress,
-                width: finalWidth,
-                height: finalHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: finalBytesPerRow,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-            )?.makeImage()
-        }) else {
+        // 步骤 4: 生成最终图像（outputCtx 已统一 UIKit 坐标，直接 makeImage）
+        guard let finalCGImage = outputCtx.makeImage() else {
             throw UpscaleError.preprocessingFailed
         }
 
@@ -390,6 +375,45 @@ final class ImageUpscaler {
         tileSize2x = 128
         tileSize4x = 128
         tileSizeRealESRGANAnime4x = 256
+    }
+}
+
+// MARK: - CGImage 扩展
+
+private extension CGImage {
+    /// 垂直翻转：CG 底部原点 → UIKit 顶部原点
+    func flipVertically() -> CGImage {
+        let w = width
+        let h = height
+        let bpr = bytesPerRow
+        var pixels = [UInt8](repeating: 0, count: h * bpr)
+
+        guard let srcCtx = CGContext(
+            data: &pixels, width: w, height: h,
+            bitsPerComponent: bitsPerComponent,
+            bytesPerRow: bpr,
+            space: colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo.rawValue
+        ) else { return self }
+
+        // 翻转 y 轴后绘制
+        srcCtx.translateBy(x: 0, y: CGFloat(h))
+        srcCtx.scaleBy(x: 1, y: -1)
+        srcCtx.draw(self, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        return pixels.withUnsafeBufferPointer { ptr -> CGImage in
+            guard let base = ptr.baseAddress,
+                  let ctx = CGContext(
+                    data: UnsafeMutableRawPointer(mutating: base),
+                    width: w, height: h,
+                    bitsPerComponent: bitsPerComponent,
+                    bytesPerRow: bpr,
+                    space: colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: bitmapInfo.rawValue
+                  ),
+                  let img = ctx.makeImage() else { return self }
+            return img
+        }
     }
 }
 
