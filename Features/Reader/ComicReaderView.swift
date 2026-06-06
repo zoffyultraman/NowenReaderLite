@@ -490,17 +490,25 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 return
             }
             guard !Task.isCancelled else { return }
+            print("✅ [ComicReader] 超分结果已缓存: page \(page), size \(result.size.width)x\(result.size.height)")
             self.upscaledCache.setObject(result, forKey: key)
             // ✅ 如果是当前页面，立即更新显示
             if page == self.currentIdx {
+                print("✅ [ComicReader] 更新当前页面显示: page \(page)")
                 self.updateCurrentPageImage(result)
+            } else {
+                print("⚠️ [ComicReader] 超分完成但不是当前页面: page \(page), current \(self.currentIdx)")
             }
             self.upscaleTasks.removeValue(forKey: taskKey)
         }
     }
 
     private func updateCurrentPageImage(_ image: UIImage) {
-        guard let currentVC = viewControllers?.first as? ZoomablePageVC else { return }
+        guard let currentVC = viewControllers?.first as? ZoomablePageVC else {
+            print("❌ [ComicReader] 无法获取当前 ViewController")
+            return
+        }
+        print("✅ [ComicReader] 更新 VC 图片: \(image.size.width)x\(image.size.height)")
         currentVC.updateImage(image)
     }
 
@@ -508,7 +516,10 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
     private func checkAndShowUpscaledImage(for page: Int) {
         let upscaledKey = upscaledCacheKey(for: page)
         if let upscaled = upscaledCache.object(forKey: upscaledKey) {
+            print("✅ [ComicReader] 显示超分结果: page \(page), size \(upscaled.size.width)x\(upscaled.size.height)")
             updateCurrentPageImage(upscaled)
+        } else {
+            print("⚠️ [ComicReader] 无超分缓存: page \(page)")
         }
     }
 
@@ -666,6 +677,7 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
 
     /// 更新图片（用于超分完成后替换）
     func updateImage(_ image: UIImage) {
+        print("✅ [ZoomablePageVC] updateImage: \(image.size.width)x\(image.size.height)")
         imageView.image = image
         fitImage()
     }
