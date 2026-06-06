@@ -485,6 +485,7 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             } catch {
+                print("❌ [ComicReader] 超分失败: \(error.localizedDescription)")
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             }
