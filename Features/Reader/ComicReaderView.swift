@@ -513,10 +513,10 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
 
     // MARK: - Preloading
 
-    /// 预加载：前 2 页，后 4 页（共 7 页）
+    /// 预加载：前 1 页，后 4 页（共 5 页）
     func preloadPages(around current: Int) {
         // ✅ 只取消范围外的预加载任务，保留范围内的
-        let keepRange = max(0, current - 2)...min(totalPages - 1, current + 4)
+        let keepRange = max(0, current - 1)...min(totalPages - 1, current + 4)
 
         // 先收集要删除的 key，再删除（避免迭代时修改字典）
         let preloadKeysToRemove = preloadTasks.keys.filter { !keepRange.contains($0) }
