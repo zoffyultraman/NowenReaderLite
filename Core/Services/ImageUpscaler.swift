@@ -209,26 +209,11 @@ final class ImageUpscaler {
         let tilesX = (imageWidth + stride - 1) / stride
         let tilesY = (imageHeight + stride - 1) / stride
 
-        // 步骤 2: 创建输出 CGContext（y-flip，统一 UIKit 坐标系）
+        // 步骤 2: 创建输出像素缓冲区（无坐标变换，直接行级写入）
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
         let finalBytesPerRow = finalWidth * 4
         var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
-
-        guard let outputCtx = CGContext(
-            data: &finalPixels,
-            width: finalWidth,
-            height: finalHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: finalBytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-        ) else {
-            throw UpscaleError.preprocessingFailed
-        }
-        // 翻转为 UIKit 坐标系：y=0 在顶部，draw 直接用 UIKit 坐标
-        outputCtx.translateBy(x: 0, y: CGFloat(finalHeight))
-        outputCtx.scaleBy(x: 1, y: -1)
 
         // 获取输入输出信息
         guard let inputName = model.modelDescription.inputDescriptionsByName.keys.first,
@@ -333,10 +318,35 @@ final class ImageUpscaler {
                         let cropOutH = effH * scale
 
                         if let croppedCG = outputCGImage.cropping(to: CGRect(x: cropOutX, y: cropOutY, width: cropOutW, height: cropOutH)) {
-                            // 直接绘制（outputCtx 已翻转为 UIKit 坐标，无需额外处理）
-                            let dstX = effX * scale
-                            let dstY = effY * scale
-                            outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY, width: cropOutW, height: cropOutH))
+                            // 直接读取像素并行级写入（无坐标变换，无翻转风险）
+                            let cW = croppedCG.width
+                            let cH = croppedCG.height
+                            let cBPR = cW * 4
+                            var tilePixels = [UInt8](repeating: 0, count: cW * cH * 4)
+
+                            if let tileCtx = CGContext(
+                                data: &tilePixels, width: cW, height: cH,
+                                bitsPerComponent: 8, bytesPerRow: cBPR,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                            ) {
+                                tileCtx.draw(croppedCG, in: CGRect(x: 0, y: 0, width: cW, height: cH))
+
+                                let dstX = effX * scale
+                                let dstY = effY * scale
+                                let copyBytes = min(cW, finalWidth - dstX) * 4
+                                let copyRows = min(cH, finalHeight - dstY)
+
+                                tilePixels.withUnsafeBufferPointer { src in
+                                    finalPixels.withUnsafeMutableBufferPointer { dst in
+                                        for row in 0..<copyRows {
+                                            let srcOff = row * cBPR
+                                            let dstOff = (dstY + row) * finalBytesPerRow + dstX * 4
+                                            memcpy(dst.baseAddress! + dstOff, src.baseAddress! + srcOff, copyBytes)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -349,21 +359,8 @@ final class ImageUpscaler {
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))
         }
 
-        // 步骤 4: 生成最终图像
-        // outputCtx 用了 y-flip，像素按 UIKit 顺序存储（顶部在前）
-        // CGImage 期望 CG 顺序（底部在前），需要翻转行序
-        var flippedPixels = [UInt8](repeating: 0, count: finalPixels.count)
-        finalPixels.withUnsafeBufferPointer { src in
-            flippedPixels.withUnsafeMutableBufferPointer { dst in
-                for row in 0..<finalHeight {
-                    let srcOffset = row * finalBytesPerRow
-                    let dstOffset = (finalHeight - 1 - row) * finalBytesPerRow
-                    memcpy(dst.baseAddress! + dstOffset, src.baseAddress! + srcOffset, finalBytesPerRow)
-                }
-            }
-        }
-
-        guard let finalCGImage = flippedPixels.withUnsafeMutableBytes({ buffer -> CGImage? in
+        // 步骤 4: 生成最终图像（像素已按 CG 顺序存储，无需翻转）
+        guard let finalCGImage = finalPixels.withUnsafeMutableBytes({ buffer -> CGImage? in
             guard let baseAddress = buffer.baseAddress else { return nil }
             return CGContext(
                 data: baseAddress,
