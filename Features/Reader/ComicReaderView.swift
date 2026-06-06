@@ -538,11 +538,20 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
     // ✅ 新增：检查并显示当前页面的超分结果
     private func checkAndShowUpscaledImage(for page: Int) {
         let upscaledKey = upscaledCacheKey(for: page)
+        print("🔍 [ComicReader] checkAndShowUpscaledImage: page \(page)")
         if let upscaled = upscaledCache.object(forKey: upscaledKey) {
             print("✅ [ComicReader] 显示超分结果: page \(page), size \(upscaled.size.width)x\(upscaled.size.height)")
             updateCurrentPageImage(upscaled)
         } else {
             print("⚠️ [ComicReader] 无超分缓存: page \(page)")
+            // 检查是否有任务在运行
+            let mode = upscaleMode
+            let taskKey = upscaleTaskKey(for: page, mode: mode)
+            if let task = upscaleTasks[taskKey] {
+                print("🔍 [ComicReader] 任务状态: page \(page), isCancelled \(task.isCancelled)")
+            } else {
+                print("🔍 [ComicReader] 无任务: page \(page)")
+            }
         }
     }
 
