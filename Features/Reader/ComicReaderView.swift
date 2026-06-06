@@ -568,6 +568,9 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
             }
             return false
         }
+        if !upscaleKeysToRemove.isEmpty {
+            print("⚠️ [Preload] 取消超分任务: \(upscaleKeysToRemove), 保留范围: \(keepRange)")
+        }
         for taskKey in upscaleKeysToRemove {
             upscaleTasks[taskKey]?.cancel()
             upscaleTasks.removeValue(forKey: taskKey)
