@@ -228,7 +228,10 @@ struct ServerListView: View {
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 return .timeout
             }
-            let first = await group.next()!
+            guard let first = await group.next() else {
+                group.cancelAll()
+                return .timeout
+            }
             group.cancelAll()
             return first
         }

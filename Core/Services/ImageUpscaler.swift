@@ -120,27 +120,32 @@ final class ImageUpscaler {
     func upscale(_ image: UIImage, mode: UpscaleMode, keepOriginalSize: Bool = false) throws -> UIImage {
         guard mode != .off else { return image }
 
-        // ✅ 内存上限检查：防止大图像导致 OOM
-        let maxDimension: CGFloat = 4096
+        // 内存上限检查：2048px 以下用 4x，以上降为 2x 防止 OOM
+        // 2048*4=8192 → 8192²*4B ≈ 256MB（可控）
+        // 4096*4=16384 → 16384²*4B ≈ 1GB（OOM）
+        let safeMax4x: CGFloat = 2048
+        let absoluteMax: CGFloat = 4096
         let imageWidth = image.size.width * image.scale
         let imageHeight = image.size.height * image.scale
 
-        if imageWidth > maxDimension || imageHeight > maxDimension {
+        if imageWidth > absoluteMax || imageHeight > absoluteMax {
             throw UpscaleError.preprocessingFailed
         }
 
         let model: MLModel
         let tileSize: Int
         let scaleFactor: CGFloat
+        let needsLargeImage = max(imageWidth, imageHeight) > safeMax4x
+
         switch mode {
         case .x4:
             model = try loadModel4x()
             tileSize = tileSize4x
-            scaleFactor = 4.0
+            scaleFactor = needsLargeImage ? 2.0 : 4.0
         case .realesrganAnime4x:
             model = try loadModelRealESRGANAnime4x()
             tileSize = tileSizeRealESRGANAnime4x
-            scaleFactor = 4.0
+            scaleFactor = needsLargeImage ? 2.0 : 4.0
         case .off:
             return image
         }
@@ -180,12 +185,12 @@ final class ImageUpscaler {
         let tilesY = (imageHeight + stride - 1) / stride
 
         // 步骤 2: 创建输出 CGContext（CG 坐标系，无变换）
+        // data: nil 让 CGContext 自行管理缓冲区，避免 Swift Array 预分配 OOM
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
-        var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
 
         guard let outputCtx = CGContext(
-            data: &finalPixels,
+            data: nil,
             width: finalWidth,
             height: finalHeight,
             bitsPerComponent: 8,
