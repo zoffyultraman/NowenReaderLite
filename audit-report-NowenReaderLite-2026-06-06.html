@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NowenReaderLite 审计报告</title>
+<style>
+  :root {
+    --sidebar-bg: #1a1f2e;
+    --sidebar-hover: #242a3d;
+    --sidebar-active: #2d3555;
+    --bg: #f0f3f7;
+    --card-bg: #ffffff;
+    --border: #e6eaef;
+    --text: #1e2233;
+    --text-secondary: #6b7394;
+    --accent: #3370ff;
+    --accent-light: #e8f0ff;
+    --success: #34c759;
+    --warning: #ff9500;
+    --danger: #ff3b30;
+    --info: #5ac8fa;
+    --badge-critical: #ff3b30;
+    --badge-high: #ff9500;
+    --badge-medium: #3370ff;
+    --badge-low: #8e8e93;
+    --badge-info: #5ac8fa;
+    --bar-bg: #e8eaed;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    display: flex;
+    min-height: 100vh;
+    font-size: 15px;
+  }
+  .sidebar { width: 240px; background: var(--sidebar-bg); color: #fff; flex-shrink: 0; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+  .sidebar-header { padding: 20px 20px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .sidebar-header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  .sidebar-header .sub { font-size: 12px; color: rgba(255,255,255,.4); margin-top: 4px; }
+  .sidebar-nav { padding: 8px 0; flex: 1; }
+  .sidebar-nav a { display: flex; align-items: center; gap: 12px; padding: 14px 20px; color: rgba(255,255,255,.6); text-decoration: none; font-size: 14px; transition: all .15s; border-left: 3px solid transparent; }
+  .sidebar-nav a:hover { background: var(--sidebar-hover); color: #fff; }
+  .sidebar-nav a.active { background: var(--sidebar-active); color: #fff; border-left-color: var(--accent); }
+  .sidebar-nav a .icon { width: 18px; text-align: center; font-size: 14px; }
+  .sidebar-footer { padding: 12px 20px; border-top: 1px solid rgba(255,255,255,.06); font-size: 11px; color: rgba(255,255,255,.3); }
+  .main { flex: 1; min-width: 0; padding: 32px 40px 80px; }
+  .page-header { margin-bottom: 32px; }
+  .page-header h2 { font-size: 26px; font-weight: 700; }
+  .page-header .meta { font-size: 14px; color: var(--text-secondary); margin-top: 6px; display: flex; gap: 20px; flex-wrap: wrap; }
+  .page-header .meta span { display: flex; align-items: center; gap: 4px; }
+  .card { background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 24px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 15px; }
+  .card-body { padding: 24px; }
+  .score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .score-item { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; background: #f8fafc; border-radius: 8px; border: 1px solid var(--border); }
+  .score-item .label { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .4px; }
+  .score-item .bar-row { display: flex; align-items: center; gap: 12px; }
+  .score-item .bar-track { flex: 1; height: 10px; background: var(--bar-bg); border-radius: 5px; overflow: hidden; }
+  .score-item .bar-fill { height: 100%; border-radius: 5px; transition: width .6s ease; }
+  .score-item .value { font-size: 22px; font-weight: 700; min-width: 52px; text-align: right; }
+  .score-item .grade { font-size: 15px; font-weight: 700; min-width: 22px; text-align: center; }
+  .bar-fill.s { background: linear-gradient(90deg, #34c759, #30d158); }
+  .bar-fill.a { background: linear-gradient(90deg, #3370ff, #5e8cff); }
+  .bar-fill.b { background: linear-gradient(90deg, #ff9500, #ffb340); }
+  .bar-fill.c { background: linear-gradient(90deg, #ff3b30, #ff6b61); }
+  .bar-fill.d { background: linear-gradient(90deg, #ff6b61, #ff9f91); }
+  .bar-fill.f { background: linear-gradient(90deg, #9b1d1a, #d63031); }
+  .grade-s { color: #34c759; } .grade-a { color: #3370ff; }
+  .grade-b { color: #ff9500; } .grade-c { color: #ff3b30; }
+  .grade-d { color: #ff6b61; } .grade-f { color: #9b1d1a; }
+  .overall-row { grid-column: 1 / -1; background: linear-gradient(135deg, #1a1f2e, #2d3555); border-color: transparent; }
+  .overall-row .label { color: rgba(255,255,255,.6); }
+  .overall-row .value { color: #fff; }
+  .overall-row .grade { color: #ff9500; }
+  .overall-row .bar-fill { background: linear-gradient(90deg, #ff9500, #ffb340); }
+  .stats-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .stat-card { flex: 1; min-width: 140px; padding: 20px 24px; background: var(--card-bg); border-radius: 10px; border: 1px solid var(--border); text-align: center; }
+  .stat-card .num { font-size: 32px; font-weight: 700; line-height: 1.3; }
+  .stat-card .desc { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+  .finding { border-left: 4px solid var(--border); margin-bottom: 20px; padding: 20px 24px; border-radius: 0 10px 10px 0; background: #fafbfc; border: 1px solid var(--border); border-left-width: 4px; }
+  .finding.severity-critical { border-left-color: var(--badge-critical); }
+  .finding.severity-high { border-left-color: var(--badge-high); }
+  .finding.severity-medium { border-left-color: var(--badge-medium); }
+  .finding.severity-low { border-left-color: var(--badge-low); }
+  .finding.severity-info { border-left-color: var(--badge-info); }
+  .finding-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .finding-header h4 { font-size: 16px; font-weight: 600; flex: 1; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; line-height: 1.6; }
+  .badge-critical { background: #ffeae9; color: var(--badge-critical); }
+  .badge-high { background: #fff3e0; color: var(--badge-high); }
+  .badge-medium { background: var(--accent-light); color: var(--badge-medium); }
+  .badge-low { background: #f2f2f5; color: var(--badge-low); }
+  .badge-info { background: #e4f5ff; color: #007aff; }
+  .badge-confirmed { background: #e8ffe8; color: #248a3d; }
+  .badge-suspected { background: #fff8e1; color: #b8860b; }
+  .badge-s { background: #e8ffe8; color: #248a3d; }
+  .badge-a { background: var(--accent-light); color: var(--accent); }
+  .badge-b { background: #fff3e0; color: var(--warning); }
+  .badge-c { background: #ffeae9; color: var(--danger); }
+  .finding-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+  .finding-meta span { display: flex; align-items: center; gap: 4px; }
+  .finding .evidence { margin: 12px 0; padding: 14px 18px; background: #f0f2f5; border-radius: 8px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; line-height: 1.8; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .finding .problem { font-size: 14px; margin: 12px 0; color: var(--text); line-height: 1.8; }
+  .finding .fix-box { margin-top: 12px; padding: 14px 18px; background: #f0f7ff; border-radius: 8px; border: 1px solid #d6e4ff; font-size: 13px; }
+  .finding .fix-box code { display: block; margin-top: 6px; padding: 12px 16px; background: #1e2233; color: #cdd6f4; border-radius: 6px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+  .fix-label { font-weight: 600; font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: .3px; }
+  .section-title { font-size: 20px; font-weight: 700; margin: 36px 0 20px; padding-bottom: 10px; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; padding: 12px 16px; font-weight: 600; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 2px solid var(--border); background: #f8fafc; }
+  td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .check-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px; }
+  .check-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 14px; line-height: 1.6; }
+  .check-item .check { color: var(--success); font-weight: 700; }
+  .check-item .cross { color: var(--danger); font-weight: 700; }
+  .win-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .win-card { padding: 16px; background: linear-gradient(135deg, #f0f7ff, #e8f0ff); border-radius: 8px; border: 1px solid #d6e4ff; }
+  .win-card .win-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .win-card .win-meta { font-size: 11px; color: var(--text-secondary); }
+  .small { font-size: 13px; color: var(--text-secondary); }
+  .code-block { margin: 8px 0; padding: 14px 18px; background: #1e2233; color: #cdd6f4; border-radius: 6px; font-family: "SF Mono","Fira Code","Consolas",monospace; font-size: 13px; overflow-x: auto; white-space: pre; line-height: 1.7; }
+  .hl { color: #f7768e; font-weight: 600; } .cm { color: #565f89; }
+  .kw { color: #bb9af7; } .fn { color: #7aa2f7; }
+  .ty { color: #ff9e64; } .op { color: #89ddff; }
+  .str { color: #9ece6a; } .nu { color: #ff9e64; }
+  @media (max-width: 768px) { .sidebar { display: none; } .main { padding: 16px; } .score-grid { grid-template-columns: 1fr; } .stats-row { flex-direction: column; } .check-list { grid-template-columns: 1fr; } .win-grid { grid-template-columns: 1fr; } }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #c1c7d0; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #a8adb8; }
+</style>
+</head>
+<body>
+
+<nav class="sidebar">
+  <div class="sidebar-header">
+    <h1>NowenReaderLite</h1>
+    <div class="sub">Full 审计 · 2026-06-06</div>
+  </div>
+  <div class="sidebar-nav">
+    <a href="#summary"><span class="icon">📊</span> 评分面板</a>
+    <a href="#executive-summary"><span class="icon">📝</span> 总体评估</a>
+    <a href="#findings"><span class="icon">🔍</span> 详细发现</a>
+    <a href="#security"><span class="icon">🔒</span> 安全性</a>
+    <a href="#stability"><span class="icon">⚡</span> 稳定性</a>
+    <a href="#performance"><span class="icon">🚀</span> 性能</a>
+    <a href="#testing"><span class="icon">🧪</span> 测试质量</a>
+    <a href="#maintainability"><span class="icon">📐</span> 可维护性</a>
+    <a href="#design"><span class="icon">🏗️</span> 设计</a>
+    <a href="#release"><span class="icon">📦</span> 发布就绪</a>
+    <a href="#architecture"><span class="icon">🏛️</span> 架构</a>
+    <a href="#frontend-state"><span class="icon">🎯</span> 前端状态</a>
+    <a href="#code-consistency"><span class="icon">🔤</span> 代码一致性</a>
+    <a href="#comment-coverage"><span class="icon">💬</span> 注释覆盖</a>
+    <a href="#principles"><span class="icon">📋</span> 设计原则</a>
+    <a href="#fix-order"><span class="icon">🎯</span> 修复顺序</a>
+  </div>
+  <div class="sidebar-footer">Fuck My Shit Mountain v1.0</div>
+</nav>
+
+<div class="main">
+
+  <!-- PAGE HEADER -->
+  <div class="page-header" id="summary">
+    <h2>NowenReaderLite 审计报告</h2>
+    <div class="meta">
+      <span>📅 2026-06-06</span>
+      <span>🔍 Full（全维度审计）</span>
+      <span>🛠 Claude Code</span>
+    </div>
+  </div>
+
+  <!-- SCORE DASHBOARD -->
+  <div class="card">
+    <div class="card-header">📊 评分面板</div>
+    <div class="card-body">
+      <div class="score-grid">
+
+        <div class="score-item">
+          <div class="label">Security 安全性</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill b" style="width:55%"></div></div>
+            <span class="value grade-b">5.5</span>
+            <span class="grade grade-b">B</span>
+          </div>
+          <div class="small">ATS 完全禁用，凭据可通过 HTTP 明文传输</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Stability 稳定性</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill b" style="width:60%"></div></div>
+            <span class="value grade-b">6.0</span>
+            <span class="grade grade-b">B</span>
+          </div>
+          <div class="small">ImageUpscaler OOM 风险，TaskGroup 强制解包，多处 try? 静默吞错</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Performance 性能</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill a" style="width:70%"></div></div>
+            <span class="value grade-a">7.0</span>
+            <span class="grade grade-a">A</span>
+          </div>
+          <div class="small">tile 推理架构合理，但大图 OOM 和无界集合是隐患</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Testing 测试质量</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill f" style="width:10%"></div></div>
+            <span class="value grade-f">1.0</span>
+            <span class="grade grade-f">F</span>
+          </div>
+          <div class="small">零测试文件、零 CI/CD，完全无自动化验证</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Maintainability 可维护性</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill c" style="width:45%"></div></div>
+            <span class="value grade-c">4.5</span>
+            <span class="grade grade-c">C</span>
+          </div>
+          <div class="small">6 个文件违反 SRP，god object 模式，DRY 违反遍布</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Design 设计</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill b" style="width:50%"></div></div>
+            <span class="value grade-b">5.0</span>
+            <span class="grade grade-b">B</span>
+          </div>
+          <div class="small">无依赖注入，singleton 耦合全局，boolean trap，魔法字符串</div>
+        </div>
+
+        <div class="score-item">
+          <div class="label">Release 发布就绪</div>
+          <div class="bar-row">
+            <div class="bar-track"><div class="bar-fill c" style="width:30%"></div></div>
+            <span class="value grade-c">3.0</span>
+            <span class="grade grade-c">C</span>
+          </div>
+          <div class="small">无 CI/CD、无自动化测试、无版本管理自动化</div>
+        </div>
+
+        <div class="score-item overall-row">
+          <div class="label">Overall 综合</div>
+          <div class="bar-row">
+            <div class="bar-track" style="background:rgba(255,255,255,.12)"><div class="bar-fill" style="width:46%;background:linear-gradient(90deg,#ff9500,#ffb340)"></div></div>
+            <span class="value" style="color:#fff">4.6</span>
+            <span class="grade" style="color:#ff9500">C</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- EXECUTIVE SUMMARY -->
+  <h3 class="section-title" id="executive-summary">📝 总体评估</h3>
+  <div class="card">
+    <div class="card-header">📋 总体评估</div>
+    <div class="card-body">
+      <p><strong>项目概况：</strong>NowenReaderLite 是一款 iOS 漫画/小说阅读器，支持 AI 超分辨率（CoreML tile 推理）、自托管服务器连接、阅读统计等功能。Swift/SwiftUI 技术栈，36 个 Swift 文件共 7,220 行代码。架构为 Feature-based 分层（App/Core/Features/Models）。</p>
+      <p style="margin-top:12px"><strong>主要风险：</strong>① 测试覆盖率为零——没有任何测试文件、测试目标或 CI/CD 流水线，所有变更完全依赖人工验证；② ImageUpscaler 在处理大图时可能分配 1GB+ 内存导致 OOM 崩溃；③ ATS 完全禁用且允许 HTTP 连接，凭据可被中间人截获；④ APIClient 是全局 singleton 且无依赖注入，所有 ViewModel 直接耦合，无法进行单元测试。</p>
+      <p style="margin-top:12px"><strong>亮点：</strong>① Keychain 存储密码（kSecAttrAccessibleWhenUnlockedThisDeviceOnly）；② tile 推理架构设计合理（固定 stride + center crop）；③ 日志统一通过 AppLogger；④ 图片缓存使用 SHA-256 哈希防止路径遍历；⑤ URL 验证逻辑完整（拒绝嵌入凭据、校验 scheme/host）。</p>
+      <p style="margin-top:12px"><strong>优先修复：</strong>① 添加基础单元测试（至少覆盖 APIClient、ImageUpscaler、PaginationService）；② 修复 ImageUpscaler OOM 风险（增量写入输出缓冲区）；③ 为 APIClient 引入协议抽象和依赖注入；④ 拆分超大文件（ComicReaderView 727 行、NovelReaderView 779 行）。</p>
+      <p style="margin-top:12px"><strong>总评：</strong>C（4.6 分）——项目功能基本可用，但工程基础设施严重缺失。零测试覆盖 + 零 CI/CD 意味着每次发布都是赌博。代码质量中等，存在明显的架构债务（singleton 耦合、god object、DRY 违反）。在投入新功能之前，应优先建立测试基础设施和修复高风险稳定性问题。</p>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="stats-row">
+    <div class="stat-card"><div class="num">47</div><div class="desc">总发现</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-high)">7</div><div class="desc">High</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-medium)">22</div><div class="desc">Medium</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-low)">16</div><div class="desc">Low</div></div>
+    <div class="stat-card"><div class="num" style="color:var(--badge-info)">2</div><div class="desc">Info</div></div>
+  </div>
+
+  <!-- TOP RISKS -->
+  <h3 class="section-title" id="top-risks">⚠️ 高风险发现</h3>
+
+  <div class="card">
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th style="width:60px">#</th><th>发现</th><th style="width:100px">严重程度</th><th style="width:80px">类别</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>ImageUpscaler 大图输出缓冲区 OOM 崩溃</td><td><span class="badge badge-high">High</span></td><td>稳定性</td></tr>
+            <tr><td>2</td><td>ATS 完全禁用 + HTTP 凭据明文传输</td><td><span class="badge badge-high">High</span></td><td>安全</td></tr>
+            <tr><td>3</td><td>零测试覆盖、零 CI/CD</td><td><span class="badge badge-high">High</span></td><td>测试</td></tr>
+            <tr><td>4</td><td>APIClient singleton 全局耦合，无法注入测试</td><td><span class="badge badge-high">High</span></td><td>设计</td></tr>
+            <tr><td>5</td><td>TaskGroup.next()! 强制解包可崩溃</td><td><span class="badge badge-high">High</span></td><td>稳定性</td></tr>
+            <tr><td>6</td><td>NovelReaderView .onChange 链含 500ms sleep 延时 hack</td><td><span class="badge badge-high">High</span></td><td>前端状态</td></tr>
+            <tr><td>7</td><td>View 层直接调用 APIClient 绕过 ViewModel</td><td><span class="badge badge-high">High</span></td><td>架构</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- DETAILED FINDINGS -->
+  <h3 class="section-title" id="findings">🔍 详细发现</h3>
+
+  <!-- Finding 1: OOM -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>1. ImageUpscaler 大图输出缓冲区 OOM 崩溃</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 稳定性</span>
+      <span>📍 ImageUpscaler.swift:185</span>
+      <span>🎯 tileInference</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>输出像素缓冲区按完整 4x 放大尺寸分配。对于 4096×4096 输入（maxDimension 上限），输出为 16384×16384，分配 16384×16384×4 = 1,073,741,824 字节（1GB）。在 4GB RAM 设备上将触发 OOM kill。
+    </div>
+    <div class="evidence">
+ImageUpscaler.swift:185
+var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
+// finalWidth = inputWidth * 4, finalHeight = inputHeight * 4
+// 4096 * 4 = 16384 → 16384 * 16384 * 4 = 1GB
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>// 方案 A：降低 maxDimension 上限（如 2048）
+// 方案 B：改为逐 tile 写入 CGContext，不预分配全量缓冲区
+// 方案 C：使用 CGContext 直接绘制 tile，避免中间像素数组</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 2-4 小时 &nbsp;·&nbsp; <strong>回归测试：</strong> 用 3000px+ 图片测试 upscale，监控内存峰值
+    </div>
+  </div>
+
+  <!-- Finding 2: ATS + HTTP -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>2. ATS 完全禁用 + HTTP 凭据明文传输</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 安全性</span>
+      <span>📍 Info.plist:27-28, APIClient.swift:33-49</span>
+      <span>🎯 setServerURL / Info.plist</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>NSAllowsArbitraryLoads=true 完全禁用 ATS，允许所有 HTTP 明文连接。setServerURL 同时接受 http:// 和 https://。登录注册通过 JSON POST 发送用户名密码，HTTP 下凭据以明文传输，可被网络嗅探或中间人攻击截获。
+    </div>
+    <div class="evidence">
+Info.plist:
+&lt;key&gt;NSAllowsArbitraryLoads&lt;/key&gt;
+&lt;true/&gt;
+
+APIClient.swift:37-38:
+guard let parsed = URL(string: trimmed),
+      parsed.scheme == "http" || parsed.scheme == "https"
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>// 1. 移除 NSAllowsArbitraryLoads，改用 NSExceptionDomains
+// 2. setServerURL 中对 HTTP 连接显示安全警告
+// 3. 登录/注册前检查 scheme，HTTP 下弹窗提醒用户</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 1-2 小时 &nbsp;·&nbsp; <strong>回归测试：</strong> 验证 HTTPS 连接正常，HTTP 下显示警告
+    </div>
+  </div>
+
+  <!-- Finding 3: Zero tests -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>3. 零测试覆盖、零 CI/CD</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 测试</span>
+      <span>📍 整个项目</span>
+      <span>🎯 全局</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>项目中没有任何测试文件、测试目标或测试目录。没有 CI/CD 配置（无 .github/workflows、无 Fastfile、无 Makefile）。所有变更完全依赖人工验证，无法自动化检测回归。
+    </div>
+    <div class="evidence">
+# 搜索结果：
+find . -name "*Test*" -o -name "*test*" -o -name "*Spec*"
+# → 无结果
+
+find . -name "*.yml" -o -name "*.yaml" -o -name "Fastfile" -o -name "Makefile"
+# → 无结果
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>// 1. 添加 XCTest target
+// 2. 优先为 APIClient、ImageUpscaler、PaginationService 添加单元测试
+// 3. 配置 GitHub Actions 或 Xcode Cloud CI</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 2-3 天 &nbsp;·&nbsp; <strong>回归测试：</strong> CI 绿灯即为验证
+    </div>
+  </div>
+
+  <!-- Finding 4: APIClient singleton -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>4. APIClient singleton 全局耦合，无法注入测试</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 设计</span>
+      <span>📍 所有 ViewModel（7 处）</span>
+      <span>🎯 APIClient.shared</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>所有 ViewModel 直接持有 APIClient.shared（ComicReaderViewModel、NovelReaderViewModel、LibraryViewModel、StatsViewModel、ContinueReadingViewModel、FavoritesViewModel、DetailViewModel）。无协议抽象、无初始化注入，使得所有 ViewModel 无法在不访问真实网络的情况下进行单元测试。同时 6 个 View 通过 @ObservedObject 监听 singleton，任意 @Published 属性变化都会触发全部 6 个 View 重绘。
+    </div>
+    <div class="evidence">
+ComicReaderViewModel.swift:15:   private let api = APIClient.shared
+NovelReaderView.swift:548:       private let api = APIClient.shared
+LibraryView.swift:139:           private let api = APIClient.shared
+StatsView.swift:443:             private let api = APIClient.shared
+HomeView.swift:447:              private let api = APIClient.shared
+FavoritesView.swift:67:          private let api = APIClient.shared
+ComicDetailView.swift:251:       private let api = APIClient.shared
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>// 1. 定义 protocol APIServiceProtocol
+// 2. APIClient 遵循该协议
+// 3. ViewModel init 接受 APIServiceProtocol 参数
+// 4. Preview 和测试中注入 mock 实现</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 1 天 &nbsp;·&nbsp; <strong>回归测试：</strong> 所有 ViewModel 可独立单元测试
+    </div>
+  </div>
+
+  <!-- Finding 5: TaskGroup force unwrap -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>5. TaskGroup.next()! 强制解包可崩溃</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 稳定性</span>
+      <span>📍 ServerListView.swift:231</span>
+      <span>🎯 服务器切换逻辑</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>TaskGroup.next() 返回 Optional，强制解包在 group 被提前取消时会崩溃。快速点击服务器切换按钮可能触发此路径。
+    </div>
+    <div class="evidence">
+ServerListView.swift:231:
+let first = await group.next()!
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>guard let first = await group.next() else { return .timeout }</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 5 分钟 &nbsp;·&nbsp; <strong>回归测试：</strong> 快速连续点击服务器切换按钮
+    </div>
+  </div>
+
+  <!-- Finding 6: onChange chain -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>6. NovelReaderView .onChange 链含 500ms sleep 延时 hack</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 前端状态</span>
+      <span>📍 NovelReaderView.swift:87-100</span>
+      <span>🎯 章节切换恢复逻辑</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>三个 .onChange 处理器级联触发：pages.count 变化 → restorePosition()；currentChapter 变化 → Task.sleep(500ms) → restorePosition()；fontSize 变化 → UserDefaults 写入 + repaginate()。500ms sleep 是脆弱的时序 hack，页面加载快慢不同时行为不确定。
+    </div>
+    <div class="evidence">
+.onChange(of: viewModel.currentChapter) { _, _ in
+    Task {
+        try? await Task.sleep(nanoseconds: 500_000_000)  // fragile!
+        restorePosition()
+    }
+}
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>// 用 Combine publisher 的 .debounce 或 .removeDuplicates 替代
+// 或用单一状态机统一处理章节/页面/字体变化</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 2-4 小时 &nbsp;·&nbsp; <strong>回归测试：</strong> 快速连续翻章，验证位置恢复正确
+    </div>
+  </div>
+
+  <!-- Finding 7: View bypasses ViewModel -->
+  <div class="finding severity-high">
+    <div class="finding-header">
+      <h4>7. View 层直接调用 APIClient 绕过 ViewModel</h4>
+      <span class="badge badge-high">High</span>
+      <span class="badge badge-confirmed">Confirmed</span>
+    </div>
+    <div class="finding-meta">
+      <span>📁 架构</span>
+      <span>📍 ComicReaderView.swift:44, 430, 561, 653</span>
+      <span>🎯 PageViewControllerImpl / ZoomablePageVC</span>
+    </div>
+    <div class="problem">
+      <strong>问题：</strong>SwiftUI View 和 UIKit Controller 直接调用 APIClient.shared 进行网络请求（fetchPages、pageImageURL、authenticatedRequest）。网络层与 UI 层零隔离，无法 mock 测试。
+    </div>
+    <div class="evidence">
+ComicReaderView.swift:44:
+let pages = try? await APIClient.shared.fetchPages(comicId: prevId)
+
+ComicReaderView.swift:561:
+guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: page)
+
+ComicReaderView.swift:653:
+let request = APIClient.shared.authenticatedRequest(url: url)
+    </div>
+    <div class="fix-box">
+      <div class="fix-label">最小修复</div>
+      <code>// 通过 ViewModel 或 Representable 的闭包传递 URL 和 Request
+// UIKit 层不应直接访问网络 singleton</code>
+    </div>
+    <div class="fix-box" style="margin-top:6px;background:#fff8e1;border-color:#ffe082">
+      <strong>⏱ 预估工时：</strong> 4-8 小时 &nbsp;·&nbsp; <strong>回归测试：</strong> 漫画阅读器图片加载、翻页、预加载功能回归
+    </div>
+  </div>
+
+  <!-- PER-DIMENSION SECTIONS -->
+
+  <!-- Security -->
+  <h3 class="section-title" id="security">🔒 安全性</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 6 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>ATS 完全禁用（NSAllowsArbitraryLoads=true）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>HTTP 下凭据明文传输</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>URLSession.shared 与自定义 session 不一致</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>coverUrl 未验证域名，可指向任意 URL</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>服务器错误信息直接暴露给用户</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>登录无客户端限速</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 已验证安全</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> Keychain 存储密码（kSecAttrAccessibleWhenUnlockedThisDeviceOnly）</div>
+        <div class="check-item"><span class="check">✓</span> URL 验证拒绝嵌入凭据（user:pass@host）</div>
+        <div class="check-item"><span class="check">✓</span> 服务器域名级 Cookie 清除</div>
+        <div class="check-item"><span class="check">✓</span> 密码在 defer 中清除内存</div>
+        <div class="check-item"><span class="check">✓</span> 无硬编码 API Key 或 Secret</div>
+        <div class="check-item"><span class="check">✓</span> 图片缓存文件名使用 SHA-256 哈希</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stability -->
+  <h3 class="section-title" id="stability">⚡ 稳定性</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 8 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>ImageUpscaler 大图输出缓冲区 1GB+ OOM</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>TaskGroup.next()! 强制解包</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>NovelReaderView pages 数组无界增长</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>tileInference 循环无 Task.isCancelled 检查</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>ImageUpscaler 无同步保护的并发模型加载</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>try? 静默吞错：进度保存、页面获取、快速登录</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>onDisappear fire-and-forget Task 未追踪</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>ChapterCache 预加载 Task 无取消追踪</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 已验证稳健</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> URLSession 配置 15s 请求超时 / 60s 资源超时</div>
+        <div class="check-item"><span class="check">✓</span> 无 try! 使用</div>
+        <div class="check-item"><span class="check">✓</span> 所有 catch 块均有 AppLogger.error 或恢复逻辑</div>
+        <div class="check-item"><span class="check">✓</span> imageCache/upscaledCache 有 countLimit 限制</div>
+        <div class="check-item"><span class="check">✓</span> preloadTasks/upscaleTasks 在 preloadPages 中清理</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Performance -->
+  <h3 class="section-title" id="performance">🚀 性能</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>大图 upscale 输出缓冲区 OOM（同稳定性 #1）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>pages 数组无界增长（连续阅读 30+ 章节）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>SettingsView.loadCacheSize() 主线程 SwiftData 查询</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 已验证性能</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> tile 推理架构合理（固定 stride + center crop）</div>
+        <div class="check-item"><span class="check">✓</span> NSCache 用于图片内存缓存（自动 eviction）</div>
+        <div class="check-item"><span class="check">✓</span> 异步预加载相邻页面</div>
+        <div class="check-item"><span class="check">✓</span> 图片缓存 SHA-256 文件名，磁盘缓存独立于内存</div>
+        <div class="check-item"><span class="check">✓</span> CoreML 模型延迟加载</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Testing -->
+  <h3 class="section-title" id="testing">🧪 测试质量</h3>
+
+  <div class="card">
+    <div class="card-header">⚠️ 严重缺失</div>
+    <div class="card-body">
+      <p>项目中<strong>零测试文件</strong>。没有 XCTest target、没有单元测试、没有 UI 测试、没有快照测试。所有变更完全依赖手动验证。</p>
+      <p style="margin-top:12px"><strong>最低要求（Must add）：</strong></p>
+      <ul style="margin-top:8px;padding-left:20px">
+        <li>APIClient 单元测试（mock URLSession，验证请求构造、错误处理）</li>
+        <li>ImageUpscaler 单元测试（验证 tile 计算、边界条件、OOM 防护）</li>
+        <li>PaginationService 单元测试（纯函数，易测）</li>
+        <li>ChapterCache 单元测试（淘汰逻辑、并发安全）</li>
+      </ul>
+      <p style="margin-top:12px"><strong>建议添加（Should add）：</strong></p>
+      <ul style="margin-top:8px;padding-left:20px">
+        <li>ComicReaderView UI 测试（翻页、超分切换）</li>
+        <li>NovelReaderView UI 测试（章节切换、字体调整）</li>
+        <li>登录流程集成测试</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Maintainability -->
+  <h3 class="section-title" id="maintainability">📐 可维护性</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 12 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>ComicReaderView.swift 727 行，3 个类合一（SRP 违反）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>NovelReaderView.swift 779 行，View+ViewModel+VC 合一</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>APIClient.swift 477 行，God Object（auth+account+CRUD+HTTP）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>tileInference 函数 163 行，7 层嵌套</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>fetchComics 10 个参数</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>进度条 UI 在 4 个文件中重复（DRY 违反）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>Card/Row 视图在 6 处重复（DRY 违反）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>forceTensorInput boolean trap</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>"翻书"/"平移" 魔法字符串应为 enum</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>"daily"/"weekly" 魔法字符串应为 enum</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>"comic"/"novel" 魔法字符串（已有 ContentType enum 未使用）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>saveProgress(currentPage:) 参数未使用</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 已验证可维护</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> Feature-based 目录结构清晰（App/Core/Features/Models）</div>
+        <div class="check-item"><span class="check">✓</span> MARK 注释基本一致（中英混用但结构化）</div>
+        <div class="check-item"><span class="check">✓</span> ImageCache/ChapterCache/PaginationService 有良好文档</div>
+        <div class="check-item"><span class="check">✓</span> KeychainHelper 每个方法都有 doc comment</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Design -->
+  <h3 class="section-title" id="design">🏗️ 设计</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 5 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>APIClient singleton 全局耦合，无 DI</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>View 层直接访问 APIClient.shared（6+ 处）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>@ObservedObject 监听 singleton 导致不必要重绘</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>UserDefaults 高级设置手动缓存 vs @AppStorage 不一致</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>ReadingStats 中 DailyStat/EnhancedDailyStat 字段重复</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- Release -->
+  <h3 class="section-title" id="release">📦 发布就绪</h3>
+
+  <div class="card">
+    <div class="card-header">⚠️ 严重缺失</div>
+    <div class="card-body">
+      <p><strong>CI/CD：</strong>无。没有 GitHub Actions、Xcode Cloud、Fastlane 或任何自动化构建/测试/发布流程。</p>
+      <p style="margin-top:8px"><strong>版本管理：</strong>Info.plist 中手动管理版本号（当前 1.0.6）。无自动 bump、无 changelog 生成。</p>
+      <p style="margin-top:8px"><strong>测试门禁：</strong>无。发布前无自动化验证。</p>
+      <p style="margin-top:8px"><strong>回滚能力：</strong>依赖 App Store 版本管理，无内部回滚机制。</p>
+      <p style="margin-top:12px"><strong>建议：</strong></p>
+      <ul style="margin-top:8px;padding-left:20px">
+        <li>配置 Xcode Cloud 或 GitHub Actions（build + test + archive）</li>
+        <li>添加 Fastlane 自动化 TestFlight 分发</li>
+        <li>使用 agvtool 或自定义脚本自动化版本号管理</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Architecture -->
+  <h3 class="section-title" id="architecture">🏛️ 架构</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 3 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>View 层直接调用网络层（违反分层架构）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>UIKit Controller 直接访问 APIClient（ComicReaderView）</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>ComicGroup.swift 混合 API 响应模型与 UI 上下文模型</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 已验证架构</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> App/Core/Features/Models 分层基本合理</div>
+        <div class="check-item"><span class="check">✓</span> 网络层集中在 Core/Network/</div>
+        <div class="check-item"><span class="check">✓</span> 存储层集中在 Core/Storage/</div>
+        <div class="check-item"><span class="check">✓</span> 服务层集中在 Core/Services/</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Frontend State -->
+  <h3 class="section-title" id="frontend-state">🎯 前端状态</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 8 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>.onChange 链含 500ms sleep 延时 hack</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>View 直接调用 APIClient 绕过 ViewModel</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>currentPage 双源真相（View @State vs Coordinator）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>fontSize 手动 UserDefaults 同步（应用 @AppStorage）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>PageViewControllerImpl 380 行承担过多职责</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>upscaleMode 双重访问机制（UserDefaults 手动缓存 vs @AppStorage）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>currentPage = 99999 魔法数字（5 处）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>darkMode @Published 未持久化</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- Code Consistency -->
+  <h3 class="section-title" id="code-consistency">🔤 代码一致性</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 5 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>MARK 注释中英文混用（无统一规范）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>错误处理模式不一致（do/catch vs try? vs 设 errorMessage）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>缩写不一致（idx vs index，仅 Reader 层用 idx）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>import 顺序不一致（SwiftUI vs Foundation 打头）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>23 处 ✅ emoji 注释残留在生产代码中</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- Comment Coverage -->
+  <h3 class="section-title" id="comment-coverage">💬 注释覆盖</h3>
+
+  <div class="card">
+    <div class="card-header">已确认 <span style="font-weight:400;font-size:13px;color:var(--text-secondary)">· 4 个发现</span></div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap"><table>
+        <thead><tr><th>发现</th><th style="width:100px">严重程度</th><th style="width:100px">状态</th></tr></thead>
+        <tbody>
+          <tr><td>所有 Model 文件零 doc comment（5 个文件 26+ 个 struct）</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>APIClient 20+ 个公开方法无 doc comment</td><td><span class="badge badge-medium">Medium</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>17/35 Swift 文件无模块级 doc comment</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+          <tr><td>5 处过时/误导注释（"替代 Kingfisher"、"新增"、"移除延迟"）</td><td><span class="badge badge-low">Low</span></td><td><span class="badge badge-confirmed">Confirmed</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 良好注释示例</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> ImageCache.swift — 模块级 + 属性级 doc comment</div>
+        <div class="check-item"><span class="check">✓</span> ChapterCache.swift — 模块级 + 属性级 doc comment</div>
+        <div class="check-item"><span class="check">✓</span> KeychainHelper.swift — 每个方法都有 doc comment</div>
+        <div class="check-item"><span class="check">✓</span> PaginationService.swift — 每个公开方法都有 doc comment</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DESIGN PRINCIPLES -->
+  <h3 class="section-title" id="principles">📋 设计原则违反</h3>
+
+  <div class="card">
+    <div class="card-header">违反清单</div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>原则</th><th>违反数</th><th style="width:100px">严重程度</th><th>涉及区域</th></tr></thead>
+          <tbody>
+            <tr><td>SRP（单一职责）</td><td>6</td><td><span class="badge badge-high">High</span></td><td>ComicReaderView, NovelReaderView, APIClient, HomeView, StatsView, ImageUpscaler</td></tr>
+            <tr><td>DRY（不要重复）</td><td>7</td><td><span class="badge badge-medium">Medium</span></td><td>进度条×4, Card/Row×6, modelLoading×2, idValue×2</td></tr>
+            <tr><td>Fail-Fast</td><td>3</td><td><span class="badge badge-medium">Medium</span></td><td>try? 静默吞错, coverUrl 未验证</td></tr>
+            <tr><td>依赖反转（DIP）</td><td>7</td><td><span class="badge badge-high">High</span></td><td>所有 ViewModel 直接引用 APIClient.shared</td></tr>
+            <tr><td>命令-查询分离（CQS）</td><td>1</td><td><span class="badge badge-medium">Medium</span></td><td>saveProgress 参数未使用</td></tr>
+            <tr><td>参数对象</td><td>1</td><td><span class="badge badge-high">High</span></td><td>fetchComics 10 参数</td></tr>
+            <tr><td>Boolean Trap</td><td>5</td><td><span class="badge badge-low">Low</span></td><td>forceTensorInput, isPreload, refresh, thumbnail, embedsInOwnStack</td></tr>
+            <tr><td>文件大小（>500 行）</td><td>6</td><td><span class="badge badge-high">High</span></td><td>NovelReaderView 779, ComicReaderView 727, ImageUpscaler 557, StatsView 507, APIClient 477, HomeView 460</td></tr>
+            <tr><td>函数大小（>50 行）</td><td>7</td><td><span class="badge badge-medium">Medium</span></td><td>tileInference 163, detailContent 146, image(from:) 86, toMLMultiArray 74, preloadPages 70, updateUIViewController 51</td></tr>
+            <tr><td>嵌套深度（>4 层）</td><td>4</td><td><span class="badge badge-medium">Medium</span></td><td>tileInference 7层, preloadPages 6层, toMLMultiArray 6层</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">✅ 遵循的原则</div>
+    <div class="card-body">
+      <div class="check-list">
+        <div class="check-item"><span class="check">✓</span> 分层架构 — App/Core/Features/Models 目录分离</div>
+        <div class="check-item"><span class="check">✓</span> 最小特权 — Keychain 使用最严格的 accessibility level</div>
+        <div class="check-item"><span class="check">✓</span> 日志统一 — 所有日志通过 AppLogger.error()</div>
+        <div class="check-item"><span class="check">✓</span> 缓存有界 — NSCache 设置 countLimit</div>
+        <div class="check-item"><span class="check">✓</span> 密码安全 — defer 清除、Keychain 存储</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FIX ORDER -->
+  <h3 class="section-title" id="fix-order">🎯 修复顺序</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span>⚡ 立即修复（P0）</span>
+      <span class="badge badge-high">紧急</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>修复内容</th><th>预估工时</th><th>风险</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>修复 ImageUpscaler OOM：降低 maxDimension 或改为增量写入</td><td>2-4h</td><td>大图 upscale 崩溃</td></tr>
+            <tr><td>2</td><td>修复 TaskGroup.next()! → guard let</td><td>5min</td><td>快速切换服务器崩溃</td></tr>
+            <tr><td>3</td><td>ImageUpscaler 改为 actor 或加锁保护模型加载</td><td>1-2h</td><td>并发 upscale 数据竞争</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span>📅 短期修复（P1）</span>
+      <span class="badge badge-medium">1-2 周</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>修复内容</th><th>预估工时</th></tr></thead>
+          <tbody>
+            <tr><td>4</td><td>添加 XCTest target + APIClient/PaginationService 基础单元测试</td><td>2-3 天</td></tr>
+            <tr><td>5</td><td>APIClient 引入协议抽象 + ViewModel 依赖注入</td><td>1 天</td></tr>
+            <tr><td>6</td><td>拆分 ComicReaderView.swift（提取 PageViewControllerImpl、ZoomablePageVC）</td><td>4-8h</td></tr>
+            <tr><td>7</td><td>拆分 NovelReaderView.swift（提取 ViewModel、NovelPager）</td><td>4-8h</td></tr>
+            <tr><td>8</td><td>NovelReaderView .onChange 链替换 500ms sleep</td><td>2-4h</td></tr>
+            <tr><td>9</td><td>移除 ATS blanket disable，添加 HTTP 安全警告</td><td>1-2h</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span>📆 中期改进（P2）</span>
+      <span class="badge badge-low">1-2 月</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>修复内容</th><th>预估工时</th></tr></thead>
+          <tbody>
+            <tr><td>10</td><td>提取共享 UI 组件（ProgressOverlayView, CoverCardView）</td><td>1 天</td></tr>
+            <tr><td>11</td><td>创建 enum 替换魔法字符串（PageTransitionStyle, GoalType）</td><td>2-4h</td></tr>
+            <tr><td>12</td><td>fetchComics 参数对象化（ComicQueryOptions）</td><td>2-4h</td></tr>
+            <tr><td>13</td><td>配置 CI/CD（Xcode Cloud 或 GitHub Actions）</td><td>1 天</td></tr>
+            <tr><td>14</td><td>Model 文件添加 doc comment</td><td>2-4h</td></tr>
+            <tr><td>15</td><td>清理 ✅ emoji 注释和过时注释</td><td>1h</td></tr>
+            <tr><td>16</td><td>统一 MARK 注释语言（全中文或全英文）</td><td>1-2h</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- QUICK WINS -->
+  <h3 class="section-title">⚡ 快速修复</h3>
+
+  <div class="win-grid">
+    <div class="win-card">
+      <div class="win-title">TaskGroup.next()! → guard let</div>
+      <div class="win-meta">5 分钟 · ServerListView.swift:231 · 消除一个崩溃路径</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">saveProgress 移除未用参数</div>
+      <div class="win-meta">5 分钟 · NovelReaderView.swift:698 · 消除误导 API</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">fontSize 改用 @AppStorage</div>
+      <div class="win-meta">10 分钟 · NovelReaderView.swift:16 · 消除手动同步</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">currentPage = 99999 → .max</div>
+      <div class="win-meta">10 分钟 · NovelReaderView.swift 5处 · 消除魔法数字</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">移除 AppLogger.log() 死代码</div>
+      <div class="win-meta">2 分钟 · AppLogger.swift:5 · 清理未使用代码</div>
+    </div>
+    <div class="win-card">
+      <div class="win-title">移除 padToSize/cropToSize 死代码</div>
+      <div class="win-meta">5 分钟 · ImageUpscaler.swift:527-550 · 清理未使用扩展</div>
+    </div>
+  </div>
+
+  <div style="text-align:center;padding:40px 0 20px;color:var(--text-secondary);font-size:12px">
+    Generated by Fuck My Shit Mountain v1.0 · NowenReaderLite · 2026-06-06 · Full Audit
+  </div>
+
+</div>
+
+<script>
+  const sections = document.querySelectorAll('[id]');
+  const navLinks = document.querySelectorAll('.sidebar-nav a');
+
+  const observer = new IntersectionObserver((entries) => {
+    let activeId = null;
+    entries.forEach(entry => {
+      if (entry.isIntersecting) activeId = entry.target.id;
+    });
+    if (activeId) {
+      navLinks.forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + activeId);
+      });
+    }
+  }, { rootMargin: '-10% 0px -60% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+
+  navLinks.forEach(a => {
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      const target = document.querySelector(this.getAttribute('href'));
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+</script>
+
+</body>
+</html>
