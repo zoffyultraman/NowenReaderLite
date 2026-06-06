@@ -216,10 +216,10 @@ struct ServerConfigView: View {
             var boundAccount: SavedAccount? = nil
             if let selectedId = selectedAccountId {
                 let acctDesc = FetchDescriptor<SavedAccount>(predicate: #Predicate { $0.id == selectedId })
-                boundAccount = try? modelContext.fetch(acctDesc).first
+                boundAccount = modelContext.fetchOrLog(acctDesc, label: "查找绑定账号").first
             }
 
-            if let existing = try? modelContext.fetch(descriptor).first {
+            if let existing = modelContext.fetchOrLog(descriptor, label: "查找已有服务器记录").first {
                 existing.lastUsed = Date()
                 existing.username = api.currentUser?.username
                 existing.boundAccount = boundAccount
@@ -232,7 +232,7 @@ struct ServerConfigView: View {
 
             // 如果选了绑定账号且当前未登录，尝试自动登录
             if !api.isLoggedIn, let accountId = selectedAccountId {
-                let all = (try? modelContext.fetch(FetchDescriptor<SavedAccount>())) ?? []
+                let all = modelContext.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "自动登录查询账号")
                 if let account = all.first(where: { $0.id == accountId }) {
                     _ = try? await api.quickLogin(account: account)
                 }

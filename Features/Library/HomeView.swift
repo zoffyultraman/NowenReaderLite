@@ -24,7 +24,7 @@ struct HomeView: View {
                         LazyHStack(spacing: 14) {
                             ForEach(continueReadingVM.items) { comic in
                                 NavigationLink {
-                                    readerView(for: comic)
+                                    comic.readerView()
                                 } label: {
                                     ContinueReadingCard(comic: comic, serverURL: APIClient.shared.serverURL)
                                 }
@@ -88,14 +88,6 @@ struct HomeView: View {
         }
     }
 
-    @ViewBuilder
-    private func readerView(for comic: Comic) -> some View {
-        if comic.isNovel {
-            NovelReaderView(comicId: comic.id, initialChapter: comic.lastReadPage)
-        } else {
-            ComicReaderView(comicId: comic.id, initialPage: comic.lastReadPage)
-        }
-    }
 }
 
 // MARK: - 继续观看卡片

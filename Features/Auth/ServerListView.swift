@@ -124,7 +124,7 @@ struct ServerListView: View {
                 onSave: { newBoundId in
                     if let id = newBoundId {
                         let desc = FetchDescriptor<SavedAccount>(predicate: #Predicate { $0.id == id })
-                        server.boundAccount = try? modelContext.fetch(desc).first
+                        server.boundAccount = modelContext.fetchOrLog(desc, label: "绑定账号").first
                     } else {
                         server.boundAccount = nil
                     }
@@ -137,12 +137,11 @@ struct ServerListView: View {
     // MARK: - Helpers
 
     private func findAccount(id: String) -> SavedAccount? {
-        let all = (try? modelContext.fetch(FetchDescriptor<SavedAccount>())) ?? []
-        return all.first { $0.id == id }
+        return modelContext.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "查找账号").first { $0.id == id }
     }
 
     private func allAccounts() -> [SavedAccount] {
-        (try? modelContext.fetch(FetchDescriptor<SavedAccount>())) ?? []
+        modelContext.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "allAccounts")
     }
 
     private func switchToServer(_ record: ServerRecord) {
@@ -174,7 +173,7 @@ struct ServerListView: View {
                         await MainActor.run {
                             record.username = account.username
                         }
-                        try? self.modelContext.save()
+                        self.modelContext.saveOrLog(label: "自动登录成功后保存")
                         return true
                     } catch {
                         AppLogger.error("自动登录失败: \(error)")
@@ -186,7 +185,7 @@ struct ServerListView: View {
                 await MainActor.run {
                     record.username = self.api.currentUser?.username
                 }
-                try? self.modelContext.save()
+                self.modelContext.saveOrLog(label: "更新服务器用户名")
                 return true
             }
 

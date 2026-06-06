@@ -34,6 +34,16 @@ extension ModelContext {
             AppLogger.error("SwiftData 保存失败\(label.isEmpty ? "" : " (\(label))"): \(error)")
         }
     }
+
+    /// 安全 fetch，失败时记录日志并返回空数组
+    func fetchOrLog<T>(_ descriptor: FetchDescriptor<T>, label: String = "") -> [T] {
+        do {
+            return try fetch(descriptor)
+        } catch {
+            AppLogger.error("SwiftData 查询失败\(label.isEmpty ? "" : " (\(label))"): \(error)")
+            return []
+        }
+    }
 }
 
 extension Date {

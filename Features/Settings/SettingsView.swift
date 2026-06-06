@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var showClearCacheAlert = false
     @State private var cacheSize: Int = 0
     @State private var novelCacheSize: Int = 0
+    @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
+    @AppStorage("keepOriginalSize") private var keepOriginalSize: Bool = false
+    @AppStorage("pageTransitionStyle") private var pageTransitionStyle: String = "翻书"
 
     var body: some View {
         List {
@@ -73,6 +76,73 @@ struct SettingsView: View {
                 }
             }
 
+            // AI 图像增强
+            Section("AI 图像增强") {
+                HStack {
+                    Label("超分辨率", systemImage: "sparkles")
+                    Spacer()
+                    Menu {
+                        ForEach(UpscaleMode.allCases) { mode in
+                            Button(mode.rawValue) {
+                                upscaleMode = mode
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(upscaleMode.rawValue)
+                                .foregroundColor(.primary)
+                            Image(systemName: "chevron.down")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    }
+                }
+
+                Toggle(isOn: $keepOriginalSize) {
+                    Label("保持原尺寸", systemImage: "arrow.down.right.and.arrow.up.left")
+                }
+                .tint(.accentColor)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                    Text(keepOriginalSize ?
+                         "增强细节但不放大图片，节省内存" :
+                         "超分放大图片，可能增加内存占用")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // 阅读设置
+            Section("阅读设置") {
+                HStack {
+                    Label("翻页效果", systemImage: "book.pages")
+                    Spacer()
+                    Menu {
+                        Button("翻书") { pageTransitionStyle = "翻书" }
+                        Button("平移") { pageTransitionStyle = "平移" }
+                    } label: {
+                        HStack {
+                            Text(pageTransitionStyle)
+                                .foregroundColor(.primary)
+                            Image(systemName: "chevron.down")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    }
+                }
+            }
+
             // 缓存
             Section("缓存") {
                 HStack {
@@ -106,7 +176,7 @@ struct SettingsView: View {
 
             // 关于
             Section("关于") {
-                LabeledContent("版本", value: "1.0.4")
+                LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知")
                 if let url = URL(string: "https://github.com/cropflre/nowen-reader") {
                     Link("项目主页", destination: url)
                 }
@@ -152,11 +222,7 @@ struct SettingsView: View {
     }
 
     private func loadCacheSize() {
-        guard let comics = try? modelContext.fetch(FetchDescriptor<CachedComic>()) else {
-            cacheSize = 0
-            novelCacheSize = NovelReaderViewModel.totalNovelCacheBytes
-            return
-        }
+        let comics = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "加载缓存大小")
         cacheSize = comics.reduce(0) { total, comic in
             total
                 + (comic.id.utf8.count)
@@ -166,7 +232,9 @@ struct SettingsView: View {
                 + (comic.type?.utf8.count ?? 0)
                 + 8 + 8 + 1 + 8 + 8 + 8 + 8
         }
-        novelCacheSize = NovelReaderViewModel.totalNovelCacheBytes
+        novelCacheSize = ChapterCache.totalNovelCacheBytes
+        // 图片磁盘缓存计入总大小
+        cacheSize += Int(ImageCache.shared.diskSize)
     }
 
     private func clearCache() {
@@ -174,7 +242,8 @@ struct SettingsView: View {
         modelContext.saveOrLog()
         cacheSize = 0
         novelCacheSize = 0
-        NovelReaderViewModel.totalNovelCacheBytes = 0
+        ChapterCache.totalNovelCacheBytes = 0
         NotificationCenter.default.post(name: .novelChapterCacheClear, object: nil)
+        ImageCache.shared.clear()
     }
 }

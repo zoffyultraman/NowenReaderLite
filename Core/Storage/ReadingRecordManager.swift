@@ -21,14 +21,19 @@ final class ReadingRecordManager {
         let timestamp: Date
     }
 
+    // 内存缓存，避免每次读写都做 JSON 编解码
+    private var cache: [String: Record]?
+    // 节流写入
+    private var flushTask: Task<Void, Never>?
+    private let flushDelay: UInt64 = 1_000_000_000 // 1 秒
+
     private init() {}
 
     func save(comicId: String, chapter: Int, page: Int) {
         var records = loadAll()
         records[comicId] = Record(chapter: chapter, page: page, timestamp: Date())
-        if let data = try? JSONEncoder().encode(records) {
-            defaults.set(data, forKey: UserDefaultsKey.readingRecords)
-        }
+        cache = records
+        scheduleFlush()
     }
 
     func load(comicId: String) -> Record? {
@@ -38,9 +43,8 @@ final class ReadingRecordManager {
     func remove(comicId: String) {
         var records = loadAll()
         records.removeValue(forKey: comicId)
-        if let data = try? JSONEncoder().encode(records) {
-            defaults.set(data, forKey: UserDefaultsKey.readingRecords)
-        }
+        cache = records
+        scheduleFlush()
     }
 
     /// 清除超过 30 天的过期记录
@@ -48,16 +52,37 @@ final class ReadingRecordManager {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
         var records = loadAll()
         records = records.filter { $0.value.timestamp >= cutoff }
-        if let data = try? JSONEncoder().encode(records) {
-            defaults.set(data, forKey: UserDefaultsKey.readingRecords)
-        }
+        cache = records
+        flush()
     }
 
+    // MARK: - Private
+
     private func loadAll() -> [String: Record] {
+        if let cache { return cache }
         guard let data = defaults.data(forKey: UserDefaultsKey.readingRecords),
               let records = try? JSONDecoder().decode([String: Record].self, from: data) else {
             return [:]
         }
+        cache = records
         return records
+    }
+
+    /// 节流：1 秒内的多次 save 只触发一次磁盘写入
+    private func scheduleFlush() {
+        flushTask?.cancel()
+        flushTask = Task {
+            try? await Task.sleep(nanoseconds: flushDelay)
+            guard !Task.isCancelled else { return }
+            self.flush()
+        }
+    }
+
+    /// 立即写入磁盘
+    private func flush() {
+        guard let cache else { return }
+        if let data = try? JSONEncoder().encode(cache) {
+            defaults.set(data, forKey: UserDefaultsKey.readingRecords)
+        }
     }
 }

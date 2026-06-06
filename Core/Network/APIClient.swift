@@ -97,7 +97,9 @@ final class APIClient: ObservableObject {
     func logout() async {
         do {
             let _: EmptyResponse = try await post("/api/auth/logout", body: EmptyBody())
-        } catch {}
+        } catch {
+            AppLogger.error("服务端登出失败: \(error)")
+        }
         isLoggedIn = false
         currentUser = nil
         clearCookiesForCurrentServer()
@@ -144,7 +146,7 @@ final class APIClient: ObservableObject {
             AppLogger.error("Keychain 删除密码失败: \(account.username)")
         }
         // 解绑引用此账号的服务器（@Relationship 会自动处理，但显式清理更安全）
-        let allServers = (try? context.fetch(FetchDescriptor<ServerRecord>())) ?? []
+        let allServers = context.fetchOrLog(FetchDescriptor<ServerRecord>(), label: "删除账号前查询所有服务器")
         for server in allServers where server.boundAccount?.id == account.id {
             server.boundAccount = nil
         }
@@ -154,7 +156,7 @@ final class APIClient: ObservableObject {
 
     /// 获取所有已保存账号
     func fetchAllAccounts(context: ModelContext) -> [SavedAccount] {
-        (try? context.fetch(FetchDescriptor<SavedAccount>())) ?? []
+        context.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "fetchAllAccounts")
     }
 
     /// 快速登录：用指定账号的凭据登录当前服务器

@@ -142,6 +142,13 @@ struct LoginView: View {
             .navigationDestination(isPresented: $navigateToServerConfig) {
                 ServerListView()
             }
+            .onChange(of: api.isLoggedIn) {
+                if api.isLoggedIn {
+                    // 从服务器列表自动登录成功，清除导航栈回到根视图
+                    navigateToServerConfig = false
+                    onLoginSuccess()
+                }
+            }
             .onDisappear {
                 password = ""
             }

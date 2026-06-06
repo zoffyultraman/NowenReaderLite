@@ -14,10 +14,10 @@ struct PDFReaderView: View {
 
             PDFKitView(
                 url: APIClient.shared.pdfURL(comicId: comicId),
+                reloadID: reloadID,
                 isLoading: $isLoading,
                 loadError: $loadError
             )
-            .id(reloadID)
             .ignoresSafeArea()
 
             if isLoading {
@@ -42,6 +42,8 @@ struct PDFReaderView: View {
             }
         }
         .navigationBarHidden(true)
+        .toolbar(.hidden, for: .tabBar)
+        .statusBarHidden(true)
         .overlay(alignment: .topLeading) {
             Button {
                 dismiss()
@@ -61,6 +63,7 @@ struct PDFReaderView: View {
 
 struct PDFKitView: UIViewRepresentable {
     let url: URL?
+    let reloadID: UUID
     @Binding var isLoading: Bool
     @Binding var loadError: Bool
 
@@ -68,6 +71,8 @@ struct PDFKitView: UIViewRepresentable {
 
     class Coordinator {
         var dataTask: URLSessionDataTask?
+        var lastReloadID: UUID?
+        var lastURL: URL?
     }
 
     func makeUIView(context: Context) -> PDFView {
@@ -76,27 +81,42 @@ struct PDFKitView: UIViewRepresentable {
         pdfView.displayMode = .singlePage
         pdfView.displayDirection = .horizontal
         pdfView.backgroundColor = .black
-
-        if let url {
-            isLoading = true
-            loadError = false
-            let request = APIClient.shared.authenticatedRequest(url: url, timeout: 60)
-            let task = URLSession.shared.dataTask(with: request) { data, _, error in
-                DispatchQueue.main.async {
-                    isLoading = false
-                    if let data, let doc = PDFDocument(data: data) {
-                        pdfView.document = doc
-                    } else {
-                        loadError = true
-                    }
-                }
-            }
-            context.coordinator.dataTask = task
-            task.resume()
-        }
-
+        pdfView.usePageViewController(true, withViewOptions: nil)
         return pdfView
     }
 
-    func updateUIView(_ uiView: PDFView, context: Context) {}
+    func updateUIView(_ uiView: PDFView, context: Context) {
+        // 只在 reloadID 或 url 变化时重新加载
+        let coordinator = context.coordinator
+        guard coordinator.lastReloadID != reloadID || coordinator.lastURL != url else {
+            return
+        }
+        coordinator.lastReloadID = reloadID
+        coordinator.lastURL = url
+        coordinator.dataTask?.cancel()
+
+        guard let url else {
+            DispatchQueue.main.async { loadError = true }
+            return
+        }
+
+        DispatchQueue.main.async {
+            isLoading = true
+            loadError = false
+        }
+
+        let request = APIClient.shared.authenticatedRequest(url: url, timeout: 60)
+        let task = URLSession.shared.dataTask(with: request) { data, _, error in
+            DispatchQueue.main.async {
+                isLoading = false
+                if let data, let doc = PDFDocument(data: data) {
+                    uiView.document = doc
+                } else {
+                    loadError = true
+                }
+            }
+        }
+        coordinator.dataTask = task
+        task.resume()
+    }
 }

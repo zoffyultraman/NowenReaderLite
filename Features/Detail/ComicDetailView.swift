@@ -96,7 +96,7 @@ struct ComicDetailView: View {
 
                 // 阅读按钮
                 NavigationLink {
-                    readerView(for: comic)
+                    comic.readerView(groupContext: groupContext)
                 } label: {
                     Label(
                         comic.lastReadPage > 0 ? "继续阅读 \(comic.lastReadPage + 1)/\(comic.pageCount)\(comic.isNovel ? "章" : "页")" : "开始阅读",
@@ -172,15 +172,6 @@ struct ComicDetailView: View {
             }
 
             Spacer(minLength: 40)
-        }
-    }
-
-    @ViewBuilder
-    private func readerView(for comic: Comic) -> some View {
-        if comic.isNovel {
-            NovelReaderView(comicId: comic.id, initialChapter: comic.lastReadPage, groupContext: groupContext)
-        } else {
-            ComicReaderView(comicId: comic.id, initialPage: comic.lastReadPage, groupContext: groupContext)
         }
     }
 
@@ -293,7 +284,7 @@ final class DetailViewModel: ObservableObject {
         guard let context = modelContext else { return }
         let id = comicId
         let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
-        guard let cached = try? context.fetch(descriptor), let first = cached.first else { return }
+        guard let first = context.fetchOrLog(descriptor, label: "同步收藏状态").first else { return }
         first.isFavorite = isFavorite
         context.saveOrLog()
     }
