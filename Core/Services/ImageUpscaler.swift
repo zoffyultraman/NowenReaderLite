@@ -200,7 +200,7 @@ final class ImageUpscaler {
 
         // tilePad: 每个 tile 内部的上下文扩展像素数
         // 有效区域 = tileSize - 2 * tilePad = 256 - 32 = 224
-        // 模型始终接收 256×256 输入，但边缘 16px 是上下文，推理后裁剪掉
+        // 模型始终接收 256×256 输入，边缘 16px 是上下文，推理后裁剪掉
         let tilePad = 16
         let effectiveSize = tileSize - 2 * tilePad  // 224
         let stride = effectiveSize
@@ -209,10 +209,10 @@ final class ImageUpscaler {
         let tilesX = (imageWidth + stride - 1) / stride
         let tilesY = (imageHeight + stride - 1) / stride
 
-        // 步骤 2: 创建输出 pixel buffer
+        // 步骤 2: 创建输出像素缓冲区
         let finalWidth = imageWidth * scale
         let finalHeight = imageHeight * scale
-
+        let finalBytesPerRow = finalWidth * 4
         var finalPixels = [UInt8](repeating: 0, count: finalWidth * finalHeight * 4)
 
         // 获取输入输出信息
@@ -231,38 +231,43 @@ final class ImageUpscaler {
         }
 
         // 步骤 3: 处理每个 tile
-        let scaledTileSize = tileSize * scale      // 1024
-        let scaledPad = tilePad * scale            // 64
-        let scaledEffective = effectiveSize * scale // 896
         var failedTiles = 0
 
         for gridY in 0..<tilesY {
             for gridX in 0..<tilesX {
 
-                // 3a. 有效区域在原图中的坐标
+                // 3a. 有效区域在原图中的坐标和实际尺寸
                 let effX = gridX * stride
                 let effY = gridY * stride
                 let effW = min(effectiveSize, imageWidth - effX)
                 let effH = min(effectiveSize, imageHeight - effY)
 
-                // 3b. 带上下文扩展的提取区域（有效区域 + 四周 tilePad）
-                let extractX = max(0, effX - tilePad)
-                let extractY = max(0, effY - tilePad)
-                let extractRight = min(imageWidth, effX + effW + tilePad)
-                let extractBottom = min(imageHeight, effY + effH + tilePad)
-                let extractW = extractRight - extractX
-                let extractH = extractBottom - extractY
+                // 3b. 以有效区域为中心，向四周扩展 tilePad，精确计算每侧 pad 量
+                let padLeft = tilePad - min(tilePad, effX)
+                let padTop = tilePad - min(tilePad, effY)
+                let padRight = tilePad - min(tilePad, imageWidth - (effX + effW))
+                let padBottom = tilePad - min(tilePad, imageHeight - (effY + effH))
 
-                // 3c. 裁剪原图得到带上下文的 tile
-                guard let tileCGImage = cgImage.cropping(to: CGRect(x: extractX, y: extractY, width: extractW, height: extractH)) else {
+                // 3c. 从原图裁剪实际可用区域
+                let cropX = max(0, effX - tilePad)
+                let cropY = max(0, effY - tilePad)
+                let cropW = min(tileSize - padLeft - padRight, imageWidth - cropX)
+                let cropH = min(tileSize - padTop - padBottom, imageHeight - cropY)
+
+                guard cropW > 0 && cropH > 0,
+                      let tileCGImage = cgImage.cropping(to: CGRect(x: cropX, y: cropY, width: cropW, height: cropH)) else {
                     continue
                 }
                 let tileUIImage = UIImage(cgImage: tileCGImage)
 
-                // 3d. Pad 到 256×256（边缘 tile 可能不足，需要 pad）
+                // 3d. 精确 pad 到 256×256（仅在需要时，避免二次插值）
                 let paddedImage: UIImage
-                if extractW != tileSize || extractH != tileSize {
-                    paddedImage = tileUIImage.padToSize(targetSize: CGSize(width: tileSize, height: tileSize))
+                if padLeft > 0 || padTop > 0 || padRight > 0 || padBottom > 0 {
+                    paddedImage = tileUIImage.padTo(
+                        left: padLeft, top: padTop,
+                        right: padRight, bottom: padBottom,
+                        targetSize: CGSize(width: tileSize, height: tileSize)
+                    )
                 } else {
                     paddedImage = tileUIImage
                 }
@@ -289,7 +294,7 @@ final class ImageUpscaler {
                     continue
                 }
 
-                // 3g. 获取输出，裁剪掉上下文扩展区域，写入有效区域
+                // 3g. 获取输出，裁剪上下文区域，行级 memcpy 写入输出缓冲区
                 if let outputValue = output.featureValue(for: outputName) {
                     let outputTile: UIImage?
                     if outputValue.type == .multiArray, let multiArray = outputValue.multiArrayValue {
@@ -307,52 +312,47 @@ final class ImageUpscaler {
                     }
 
                     if let outputTile = outputTile, let outputCGImage = outputTile.cgImage {
-                        // 读取输出像素
-                        let outW = outputCGImage.width
-                        let outH = outputCGImage.height
-                        var rawData = [UInt8](repeating: 0, count: outW * outH * 4)
+                        // 裁剪坐标：padLeft/Top 在输出中对应的像素偏移
+                        let cropOutX = padLeft * scale
+                        let cropOutY = padTop * scale
+                        let cropOutW = effW * scale
+                        let cropOutH = effH * scale
 
-                        guard let ctx = CGContext(
-                            data: &rawData,
-                            width: outW,
-                            height: outH,
-                            bitsPerComponent: 8,
-                            bytesPerRow: outW * 4,
-                            space: CGColorSpaceCreateDeviceRGB(),
-                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-                        ) else { continue }
-                        ctx.draw(outputCGImage, in: CGRect(x: 0, y: 0, width: outW, height: outH))
+                        // 从输出 tile 裁剪有效区域
+                        if let croppedCG = outputCGImage.cropping(to: CGRect(x: cropOutX, y: cropOutY, width: cropOutW, height: cropOutH)) {
+                            // 读取裁剪后的像素到临时缓冲区
+                            let cW = croppedCG.width
+                            let cH = croppedCG.height
+                            let cBytesPerRow = cW * 4
+                            var tilePixels = [UInt8](repeating: 0, count: cW * cH * 4)
 
-                        // 裁剪：跳过输出中对应上下文扩展的部分，只保留有效区域
-                        // 上下文在输入中占 tilePad，输出中占 tilePad * scale
-                        let cropX = (extractX > effX - tilePad) ? 0 : scaledPad  // 左侧是否有完整 pad
-                        let cropY = (extractY > effY - tilePad) ? 0 : scaledPad  // 上方是否有完整 pad
+                            guard let tileCtx = CGContext(
+                                data: &tilePixels,
+                                width: cW, height: cH,
+                                bitsPerComponent: 8,
+                                bytesPerRow: cBytesPerRow,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                            ) else { continue }
+                            // 翻转 y 轴：CGContext 默认底部原点，需要转为顶部原点以匹配像素数组布局
+                            tileCtx.translateBy(x: 0, y: CGFloat(cH))
+                            tileCtx.scaleBy(x: 1, y: -1)
+                            tileCtx.draw(croppedCG, in: CGRect(x: 0, y: 0, width: cW, height: cH))
 
-                        // 实际输出的有效区域尺寸
-                        let actualEffW = effW * scale
-                        let actualEffH = effH * scale
+                            // 行级 memcpy 写入输出缓冲区（top-left 原点，无翻转）
+                            let dstX = effX * scale
+                            let dstY = effY * scale
+                            let copyBytes = min(cW, finalWidth - dstX) * 4
+                            let copyRows = min(cH, finalHeight - dstY)
 
-                        // 目标位置
-                        let dstX = effX * scale
-                        let dstY = effY * scale
-
-                        // 写入有效区域像素
-                        for y in 0..<actualEffH {
-                            for x in 0..<actualEffW {
-                                let srcX = cropX + x
-                                let srcY = cropY + y
-                                guard srcX < outW && srcY < outH else { continue }
-
-                                let canvasX = dstX + x
-                                let canvasY = dstY + y
-                                guard canvasX >= 0 && canvasX < finalWidth && canvasY >= 0 && canvasY < finalHeight else { continue }
-
-                                let srcIdx = (srcY * outW + srcX) * 4
-                                let dstIdx = (canvasY * finalWidth + canvasX) * 4
-                                finalPixels[dstIdx] = rawData[srcIdx]
-                                finalPixels[dstIdx + 1] = rawData[srcIdx + 1]
-                                finalPixels[dstIdx + 2] = rawData[srcIdx + 2]
-                                finalPixels[dstIdx + 3] = 255
+                            tilePixels.withUnsafeBufferPointer { src in
+                                finalPixels.withUnsafeMutableBufferPointer { dst in
+                                    for row in 0..<copyRows {
+                                        let srcOffset = row * cBytesPerRow
+                                        let dstOffset = (dstY + row) * finalBytesPerRow + dstX * 4
+                                        memcpy(dst.baseAddress! + dstOffset, src.baseAddress! + srcOffset, copyBytes)
+                                    }
+                                }
                             }
                         }
                     }
@@ -374,7 +374,7 @@ final class ImageUpscaler {
                 width: finalWidth,
                 height: finalHeight,
                 bitsPerComponent: 8,
-                bytesPerRow: finalWidth * 4,
+                bytesPerRow: finalBytesPerRow,
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
             )?.makeImage()
@@ -572,6 +572,15 @@ private extension UIImage {
             UIColor.black.setFill()
             context.fill(CGRect(origin: .zero, size: targetSize))
             draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    /// 精确非对称 padding：在指定方向添加黑边，图像放置在 (left, top) 位置
+    func padTo(left: Int, top: Int, right: Int, bottom: Int, targetSize: CGSize) -> UIImage {
+        UIGraphicsImageRenderer(size: targetSize).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: targetSize))
+            draw(in: CGRect(x: CGFloat(left), y: CGFloat(top), width: size.width, height: size.height))
         }
     }
 
