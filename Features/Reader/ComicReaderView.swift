@@ -488,11 +488,11 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 self.upscaleTasks.removeValue(forKey: taskKey)
                 return
             }
-            // ✅ 即使任务被取消，也要缓存结果（避免重复计算）
+            // ✅ 缓存结果
             self.upscaledCache.setObject(result, forKey: key)
             self.upscaleTasks.removeValue(forKey: taskKey)
-            // ✅ 如果是当前页面且任务未被取消，立即更新显示
-            if !Task.isCancelled && page == self.currentIdx {
+            // ✅ 如果是当前页面，立即更新显示（无论任务是否被取消）
+            if page == self.currentIdx {
                 self.updateCurrentPageImage(result)
             }
         }
