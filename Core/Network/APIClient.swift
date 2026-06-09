@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import SwiftData
+import Network
 
 // MARK: - 统一网络层
 
@@ -11,9 +12,14 @@ final class APIClient: ObservableObject {
     @Published var serverURL: String = UserDefaults.standard.string(forKey: UserDefaultsKey.serverURL) ?? ""
     @Published var isLoggedIn: Bool = false
     @Published var currentUser: AuthUser?
+    /// 断网离线模式：有历史登录记录但服务器不可达
+    @Published var isOfflineMode: Bool = false
+    /// 网络是否可用（NWPathMonitor 实时更新，初始 false 阻止未检测到状态前的请求）
+    @Published private(set) var isNetworkReachable: Bool = false
 
     private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared
+    private let pathMonitor = NWPathMonitor()
 
     private init() {
         let config = URLSessionConfiguration.default
@@ -23,8 +29,18 @@ final class APIClient: ObservableObject {
         config.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: config)
 
+        // 用实际连接测试判断服务器是否可达（比 NWPathMonitor 更准确）
         if !serverURL.isEmpty {
-            Task { await checkAuth() }
+            Task {
+                let reachable = await self.testServerReachable()
+                self.isNetworkReachable = reachable
+                if reachable {
+                    await checkAuth()
+                } else if self.hasLoggedInBefore {
+                    self.isOfflineMode = true
+                    self.isLoggedIn = true
+                }
+            }
         }
     }
 
@@ -62,18 +78,30 @@ final class APIClient: ObservableObject {
     // MARK: - Auth
 
     func checkAuth() async {
-        guard !serverURL.isEmpty else { return }
+        guard !serverURL.isEmpty, isNetworkReachable else { return }
         do {
             let resp: AuthMeResponse = try await get("/api/auth/me")
             if let user = resp.user {
                 currentUser = user
                 isLoggedIn = true
+                isOfflineMode = false
+                markHasLoggedInBefore()
             } else {
+                // 服务器明确返回未登录 → 清除历史记录
                 isLoggedIn = false
                 currentUser = nil
+                isOfflineMode = false
+                clearHasLoggedInBefore()
             }
         } catch {
-            isLoggedIn = false
+            // 网络不可达：区分"从未登录"和"曾经登录但现在断网"
+            if hasLoggedInBefore {
+                isOfflineMode = true
+                isLoggedIn = true   // 保持登录态，允许访问离线内容
+            } else {
+                isLoggedIn = false
+                isOfflineMode = false
+            }
             currentUser = nil
         }
     }
@@ -83,6 +111,8 @@ final class APIClient: ObservableObject {
         let resp: AuthLoginResponse = try await post("/api/auth/login", body: body)
         currentUser = resp.user
         isLoggedIn = true
+        isOfflineMode = false
+        markHasLoggedInBefore()
         return resp.user
     }
 
@@ -91,6 +121,8 @@ final class APIClient: ObservableObject {
         let resp: AuthLoginResponse = try await post("/api/auth/register", body: body)
         currentUser = resp.user
         isLoggedIn = true
+        isOfflineMode = false
+        markHasLoggedInBefore()
         return resp.user
     }
 
@@ -102,6 +134,8 @@ final class APIClient: ObservableObject {
         }
         isLoggedIn = false
         currentUser = nil
+        isOfflineMode = false
+        clearHasLoggedInBefore()
         clearCookiesForCurrentServer()
     }
 
@@ -113,6 +147,58 @@ final class APIClient: ObservableObject {
                 cookieStorage.deleteCookie(cookie)
             }
         }
+    }
+
+    // MARK: - 历史登录记录（离线模式用）
+
+    private var hasLoggedInBefore: Bool {
+        UserDefaults.standard.bool(forKey: "hasLoggedInBefore_\(serverURL)")
+    }
+
+    private func markHasLoggedInBefore() {
+        UserDefaults.standard.set(true, forKey: "hasLoggedInBefore_\(serverURL)")
+    }
+
+    private func clearHasLoggedInBefore() {
+        UserDefaults.standard.removeObject(forKey: "hasLoggedInBefore_\(serverURL)")
+    }
+
+    // MARK: - 连接测试
+
+    /// 用 2 秒超时的 HEAD 请求测试服务器是否可达
+    private func testServerReachable() async -> Bool {
+        guard let url = URL(string: "\(serverURL)/api/health") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 2
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode != nil
+        } catch {
+            return false
+        }
+    }
+
+    /// 运行时重新检测网络（网络恢复时调用）
+    func recheckNetwork() async {
+        guard !isNetworkReachable else { return }
+        let reachable = await testServerReachable()
+        isNetworkReachable = reachable
+        if reachable && isOfflineMode {
+            await checkAuth()
+        }
+    }
+
+    /// 启动网络恢复监听
+    func startNetworkRecovery() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            if path.status == .satisfied {
+                Task { [weak self] in
+                    await self?.recheckNetwork()
+                }
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "NetworkRecovery"))
     }
 
     // MARK: - Account Management
@@ -339,6 +425,9 @@ final class APIClient: ObservableObject {
         _ path: String,
         query: [String: String]? = nil
     ) async throws -> T {
+        // 网络不可达时立即失败，不等超时
+        guard isNetworkReachable else { throw APIError.networkError }
+
         guard var components = URLComponents(string: "\(serverURL)\(path)") else {
             throw APIError.invalidURL
         }
@@ -374,6 +463,7 @@ final class APIClient: ObservableObject {
         method: String,
         body: B
     ) async throws -> T {
+        guard isNetworkReachable else { throw APIError.networkError }
         guard let url = URL(string: "\(serverURL)\(path)") else { throw APIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = method

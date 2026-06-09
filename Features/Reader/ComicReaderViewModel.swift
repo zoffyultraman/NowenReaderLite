@@ -33,7 +33,14 @@ final class ComicReaderViewModel: ObservableObject {
             isLoading = false
             startSession()
         } catch {
-            AppLogger.error("加载页面列表失败: \(error)")
+            AppLogger.log("fetchPages 失败: \(error.localizedDescription)")
+            // 离线 fallback：从本地元数据读取页数
+            if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
+                totalPages = meta.pageCount
+                AppLogger.log("离线 fallback 成功: \(comicId), \(meta.pageCount) 页")
+            } else {
+                AppLogger.log("离线 fallback 失败: 无本地 meta, comicId=\(comicId)")
+            }
             isLoading = false
         }
     }
@@ -63,6 +70,11 @@ final class ComicReaderViewModel: ObservableObject {
             startSession()
         } catch {
             AppLogger.error("加载下一卷失败: \(error)")
+            // 离线 fallback：从本地元数据读取页数
+            if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
+                totalPages = meta.pageCount
+                AppLogger.log("离线模式：使用本地元数据，共 \(meta.pageCount) 页")
+            }
             isLoading = false
         }
     }
@@ -90,7 +102,9 @@ final class ComicReaderViewModel: ObservableObject {
                 // 服务器保存成功后才更新本地缓存
                 self.updateCachedProgress(comicId: comicId, page: page)
             } catch {
-                AppLogger.error("保存进度失败: \(error)")
+                AppLogger.log("保存进度失败（离线暂存）: \(error.localizedDescription)")
+                PendingProgressManager.shared.save(comicId: comicId, page: page)
+                self.updateCachedProgress(comicId: comicId, page: page)
             }
         }
     }
@@ -124,8 +138,13 @@ final class ComicReaderViewModel: ObservableObject {
     /// 等待完成版本，退出时调用
     func saveProgressAndWait() async {
         saveTask?.cancel()
-        try? await api.updateProgress(comicId: currentComicId, page: currentPage)
-        updateCachedProgress(comicId: currentComicId, page: currentPage)
+        do {
+            try await api.updateProgress(comicId: currentComicId, page: currentPage)
+            updateCachedProgress(comicId: currentComicId, page: currentPage)
+        } catch {
+            PendingProgressManager.shared.save(comicId: currentComicId, page: currentPage)
+            updateCachedProgress(comicId: currentComicId, page: currentPage)
+        }
     }
 
     func endSessionAndWait() async {

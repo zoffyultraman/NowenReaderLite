@@ -1,9 +1,13 @@
 import SwiftUI
+import SwiftData
 
 struct HomeView: View {
     @State private var selectedTab: ContentType = .comic
     @StateObject private var continueReadingVM = ContinueReadingViewModel()
+    @StateObject private var searchVM = SearchViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.modelContext) private var modelContext
+    @FocusState private var isSearchFocused: Bool
 
     enum ContentType: String, CaseIterable {
         case comic, novel
@@ -11,8 +15,109 @@ struct HomeView: View {
         var icon: String { self == .comic ? "photo.stack" : "text.book.closed" }
     }
 
+    /// 是否处于搜索状态
+    private var isSearching: Bool {
+        !searchVM.query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
+        Group {
+            if isSearching {
+                searchResultsList
+            } else {
+                mainContent
+            }
+        }
+        .navigationTitle("书架")
+        .navigationBarTitleDisplayMode(.large)
+        .navigationDestination(for: String.self) { value in
+            if value.hasPrefix("group_") {
+                let id = Int(value.replacingOccurrences(of: "group_", with: "")) ?? 0
+                GroupDetailView(groupId: id)
+            } else {
+                ComicDetailView(comicId: value)
+            }
+        }
+        .task {
+            continueReadingVM.setModelContext(modelContext)
+            await continueReadingVM.load()
+        }
+    }
+
+    // MARK: - 搜索栏（复用）
+
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("搜索漫画或小说...", text: $searchVM.query)
+                .textInputAutocapitalization(.never)
+                .focused($isSearchFocused)
+                .onSubmit { searchVM.search() }
+                .onChange(of: searchVM.query) { _, _ in
+                    searchVM.search()
+                }
+            if !searchVM.query.isEmpty {
+                Button {
+                    searchVM.query = ""
+                    searchVM.results = []
+                    isSearchFocused = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16)
+    }
+
+    // MARK: - 搜索结果
+
+    private var searchResultsList: some View {
+        List {
+            if searchVM.isLoading {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+            } else if searchVM.results.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                    Text("没有找到结果")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 60)
+                .listRowBackground(Color.clear)
+            } else {
+                ForEach(searchVM.results) { comic in
+                    NavigationLink(value: comic.id) {
+                        SearchResultRow(comic: comic)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .overlay(alignment: .top) {
+            searchBar.padding(.top, 8)
+        }
+    }
+
+    // MARK: - 主内容
+
+    private var mainContent: some View {
         ScrollView {
+            searchBar
+                .padding(.top, 8)
+
             // 继续观看
             if !continueReadingVM.items.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
@@ -70,24 +175,10 @@ struct HomeView: View {
                 LibraryContentView(contentType: "novel")
             }
         }
-        .navigationTitle("书架")
-        .navigationBarTitleDisplayMode(.large)
-        .navigationDestination(for: String.self) { value in
-            if value.hasPrefix("group_") {
-                let id = Int(value.replacingOccurrences(of: "group_", with: "")) ?? 0
-                GroupDetailView(groupId: id)
-            } else {
-                ComicDetailView(comicId: value)
-            }
-        }
-        .task {
-            await continueReadingVM.load()
-        }
         .refreshable {
             await continueReadingVM.load()
         }
     }
-
 }
 
 // MARK: - 继续观看卡片
@@ -107,6 +198,22 @@ struct ContinueReadingCard: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: cardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                // 离线标识
+                if DownloadManager.shared.isDownloaded(comicId: comic.id) {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.white)
+                                .background(Circle().fill(.green).frame(width: 18, height: 18))
+                                .padding(6)
+                        }
+                        Spacer()
+                    }
+                    .frame(width: cardWidth, height: cardHeight)
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Spacer()
@@ -172,7 +279,9 @@ struct LibraryContentView: View {
     @StateObject private var viewModel = LibraryViewModel()
     @State private var viewMode: ViewMode = .grid
     @State private var sortOption: SortOption = .addedAt
+    @State private var isOffline = APIClient.shared.isOfflineMode
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.modelContext) private var modelContext
 
     enum ViewMode { case grid, list }
     enum SortOption: String, CaseIterable {
@@ -206,6 +315,14 @@ struct LibraryContentView: View {
                 listView
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if isOffline {
+                offlineIndicator
+            }
+        }
+        .onReceive(APIClient.shared.$isOfflineMode) { newValue in
+            isOffline = newValue
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -235,6 +352,7 @@ struct LibraryContentView: View {
             await viewModel.loadAll(refresh: true)
         }
         .task {
+            viewModel.setModelContext(modelContext)
             viewModel.setContentType(contentType)
             if viewModel.comics.isEmpty && viewModel.groups.isEmpty {
                 await viewModel.loadAll()
@@ -317,6 +435,26 @@ struct LibraryContentView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.top, 60)
+    }
+
+    private var offlineIndicator: some View {
+        Button {
+            Task { await APIClient.shared.recheckNetwork() }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 10))
+                Text("离线")
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(.trailing, 16)
+        .padding(.bottom, 16)
     }
 }
 
@@ -442,6 +580,12 @@ final class ContinueReadingViewModel: ObservableObject {
     @Published var items: [Comic] = []
     @Published var errorMessage: String?
 
+    private var modelContext: ModelContext?
+
+    func setModelContext(_ context: ModelContext) {
+        self.modelContext = context
+    }
+
     func load() async {
         do {
             let resp = try await APIClient.shared.fetchComics(
@@ -453,8 +597,34 @@ final class ContinueReadingViewModel: ObservableObject {
             items = resp.comics.filter { $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
             errorMessage = nil
         } catch {
-            AppLogger.error("加载继续观看失败: \(error)")
-            errorMessage = error.localizedDescription
+            AppLogger.log("网络不可用，从本地缓存加载继续观看")
+            loadFromCache()
+        }
+    }
+
+    /// 离线 fallback：从 SwiftData 缓存 + 本地已下载漫画加载
+    private func loadFromCache() {
+        guard let context = modelContext else { return }
+        let cached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载继续观看")
+        let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+
+        // 优先显示已下载且有阅读进度的漫画
+        let offlineItems = cached
+            .filter { downloadedIds.contains($0.id) && $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
+            .sorted { ($0.lastReadAt ?? .distantPast) > ($1.lastReadAt ?? .distantPast) }
+            .map { $0.toComic() }
+
+        if !offlineItems.isEmpty {
+            items = offlineItems
+            errorMessage = nil
+        } else {
+            // 没有已下载的在读漫画，显示所有已下载漫画
+            let allDownloaded = cached
+                .filter { downloadedIds.contains($0.id) }
+                .sorted { ($0.lastReadAt ?? $0.cachedAt) > ($1.lastReadAt ?? $1.cachedAt) }
+                .map { $0.toComic() }
+            items = allDownloaded
+            errorMessage = nil
         }
     }
 }

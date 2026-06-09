@@ -6,6 +6,7 @@ struct ComicDetailView: View {
     var groupContext: ReadingGroupContext? = nil
     @StateObject private var viewModel = DetailViewModel()
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var downloadManager = DownloadManager.shared
 
     var body: some View {
         ScrollView {
@@ -24,6 +25,7 @@ struct ComicDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             viewModel.setModelContext(modelContext)
+            downloadManager.setModelContext(modelContext)
             await viewModel.load(id: comicId)
         }
     }
@@ -94,12 +96,15 @@ struct ComicDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
 
+                // 下载按钮
+                downloadButton(comic: comic)
+
                 // 阅读按钮
                 NavigationLink {
                     comic.readerView(groupContext: groupContext)
                 } label: {
                     Label(
-                        comic.lastReadPage > 0 ? "继续阅读 \(comic.lastReadPage + 1)/\(comic.pageCount)\(comic.isNovel ? "章" : "页")" : "开始阅读",
+                        comic.lastReadPage > 0 ? "继续阅读" : "开始阅读",
                         systemImage: "book.fill"
                     )
                     .font(.subheadline.weight(.medium))
@@ -114,14 +119,15 @@ struct ComicDetailView: View {
 
             // 进度
             if comic.progress > 0 {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("阅读进度")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("\(comic.progress)%")
-                            .font(.caption.weight(.medium))
+                        Text("\(comic.lastReadPage + 1)/\(comic.pageCount)\(comic.isNovel ? "章" : "页")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
@@ -130,9 +136,15 @@ struct ComicDetailView: View {
                             Capsule()
                                 .fill(Color.accentColor)
                                 .frame(width: geo.size.width * CGFloat(comic.progress) / 100)
+                            // 百分比居中显示在进度条上
+                            Text("\(comic.progress)%")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.3), radius: 1)
+                                .frame(width: geo.size.width, height: 14)
                         }
                     }
-                    .frame(height: 6)
+                    .frame(height: 14)
                 }
                 .padding(.horizontal, 20)
             }
@@ -192,6 +204,94 @@ struct ComicDetailView: View {
             .buttonStyle(.bordered)
         }
         .padding(.top, 100)
+    }
+
+    // MARK: - 下载按钮
+
+    @ViewBuilder
+    private func downloadButton(comic: Comic) -> some View {
+        let task = downloadManager.task(for: comic.id)
+        let isDownloaded = task?.state == .completed || downloadManager.isDownloaded(comicId: comic.id)
+        let isDownloading = task?.state == .downloading || task?.state == .waiting
+        let isPaused = task?.state == .paused
+
+        if isDownloaded {
+            // 已下载完成
+            Button {
+                // 无需操作，可考虑跳转到已下载列表
+            } label: {
+                Label("已下载", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.green.opacity(0.1))
+                    .foregroundStyle(.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(true)
+        } else if isDownloading {
+            // 下载中 — 显示进度
+            Button {
+                downloadManager.pause(comicId: comic.id)
+            } label: {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                    Text("\(Int((task?.progress ?? 0) * 100))%")
+                        .font(.subheadline.weight(.medium))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.orange.opacity(0.1))
+                .foregroundStyle(.orange)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        } else if isPaused {
+            // 已暂停
+            Button {
+                downloadManager.resume(comicId: comic.id)
+            } label: {
+                Label("继续", systemImage: "play.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.orange.opacity(0.1))
+                    .foregroundStyle(.orange)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        } else if downloadManager.wouldExceedLimit(pageCount: comic.pageCount) {
+            // 存储空间不足
+            Button {
+                // 无操作，仅提示
+            } label: {
+                Label("空间不足", systemImage: "exclamationmark.circle")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.orange.opacity(0.1))
+                    .foregroundStyle(.orange)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(true)
+        } else {
+            // 未下载
+            Button {
+                downloadManager.download(
+                    comicId: comic.id,
+                    title: comic.title,
+                    pageCount: comic.pageCount,
+                    fileSize: comic.fileSize
+                )
+            } label: {
+                Label("下载", systemImage: "arrow.down.circle")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color(.systemGray6))
+                    .foregroundStyle(.primary)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        }
     }
 
 }
@@ -262,7 +362,37 @@ final class DetailViewModel: ObservableObject {
         do {
             comic = try await api.fetchComic(id: id)
         } catch {
-            errorMessage = error.localizedDescription
+            // 离线 fallback：从本地已下载数据构造 Comic
+            if let meta = OfflineFileManager.shared.loadMeta(comicId: id) {
+                comic = Comic(
+                    id: meta.comicId,
+                    title: meta.title,
+                    author: nil,
+                    publisher: nil,
+                    description: nil,
+                    genre: nil,
+                    language: nil,
+                    year: nil,
+                    pageCount: meta.pageCount,
+                    fileSize: meta.fileSize,
+                    lastReadPage: 0,
+                    totalReadTime: nil,
+                    readingStatus: nil,
+                    lastReadAt: nil,
+                    metadataSource: nil,
+                    coverUrl: nil,
+                    coverAspectRatio: nil,
+                    rating: nil,
+                    isFavorite: false,
+                    type: "comic",
+                    filename: nil,
+                    sortOrder: nil,
+                    tags: nil,
+                    categories: nil
+                )
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
         isLoading = false
     }

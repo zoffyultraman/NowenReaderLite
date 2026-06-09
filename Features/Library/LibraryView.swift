@@ -168,6 +168,14 @@ final class LibraryViewModel: ObservableObject {
     func loadComics(refresh: Bool = false) async {
         if refresh { currentPage = 1 }
 
+        // 离线模式：直接从缓存加载已下载漫画
+        if APIClient.shared.isOfflineMode, let context = modelContext {
+            let cached = loadFromCache(context: context)
+            let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+            comics = cached.filter { downloadedIds.contains($0.id) }
+            return
+        }
+
         // 首次加载时先显示缓存数据
         if currentPage == 1, let context = modelContext {
             let cached = loadFromCache(context: context)
@@ -195,11 +203,12 @@ final class LibraryViewModel: ObservableObject {
                 saveToCache(resp.comics, context: context)
             }
         } catch {
-            AppLogger.error("加载漫画失败: \(error)")
-            errorMessage = error.localizedDescription
-            // API 失败时如果有缓存数据则保留，不显示空状态
-            if comics.isEmpty, let context = modelContext {
-                comics = loadFromCache(context: context)
+            AppLogger.log("网络不可用，从本地缓存加载书架")
+            // API 失败：只显示已下载的漫画
+            if let context = modelContext {
+                let cached = loadFromCache(context: context)
+                let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+                comics = cached.filter { downloadedIds.contains($0.id) }
             }
         }
     }

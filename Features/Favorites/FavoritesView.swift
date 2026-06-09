@@ -2,8 +2,17 @@ import SwiftUI
 
 struct FavoritesView: View {
     @StateObject private var viewModel = FavoritesViewModel()
+    @ObservedObject private var api = APIClient.shared
 
     var body: some View {
+        if api.isOfflineMode {
+            offlineUnavailableView
+        } else {
+            mainContent
+        }
+    }
+
+    private var mainContent: some View {
         Group {
             if viewModel.comics.isEmpty && !viewModel.isLoading {
                 VStack(spacing: 12) {
@@ -52,6 +61,21 @@ struct FavoritesView: View {
                 ProgressView()
             }
         }
+    }
+
+    private var offlineUnavailableView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 44))
+                .foregroundStyle(.tertiary)
+            Text("离线模式不可用")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("收藏功能需要连接服务器")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

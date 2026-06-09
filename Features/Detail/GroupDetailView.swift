@@ -4,7 +4,13 @@ struct GroupDetailView: View {
     let groupId: Int
     @StateObject private var viewModel = GroupDetailViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var downloadManager = DownloadManager.shared
     @State private var isGrid = true
+    @State private var showDownloadAllAlert = false
+    @State private var showDownloadResult = false
+    @State private var downloadQueued = 0
+    @State private var downloadSkipped = 0
 
     var body: some View {
         Group {
@@ -127,7 +133,16 @@ struct GroupDetailView: View {
         .navigationTitle(viewModel.detail?.name ?? "合集")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                // 下载全部按钮
+                if let detail = viewModel.detail, !detail.comics.isEmpty {
+                    Button {
+                        showDownloadAllAlert = true
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                }
+
                 Button {
                     withAnimation { isGrid.toggle() }
                 } label: {
@@ -136,7 +151,29 @@ struct GroupDetailView: View {
             }
         }
         .task {
+            downloadManager.setModelContext(modelContext)
             await viewModel.load(groupId: groupId)
+        }
+        .alert("下载全部卷", isPresented: $showDownloadAllAlert) {
+            Button("取消", role: .cancel) {}
+            Button("下载") {
+                guard let detail = viewModel.detail else { return }
+                let result = downloadManager.downloadAll(comics: detail.comics)
+                downloadQueued = result.queued
+                downloadSkipped = result.skipped
+                showDownloadResult = true
+            }
+        } message: {
+            if let detail = viewModel.detail {
+                let totalPages = detail.comics.reduce(0) { $0 + $1.pageCount }
+                let alreadyDownloaded = detail.comics.filter { downloadManager.isDownloaded(comicId: $0.id) }.count
+                Text("共 \(detail.comics.count) 卷、\(totalPages) 页。已下载 \(alreadyDownloaded) 卷，其余将加入下载队列。")
+            }
+        }
+        .alert("下载结果", isPresented: $showDownloadResult) {
+            Button("确定") {}
+        } message: {
+            Text("已加入 \(downloadQueued) 卷到下载队列，跳过 \(downloadSkipped) 卷（已下载或空间不足）。")
         }
     }
 

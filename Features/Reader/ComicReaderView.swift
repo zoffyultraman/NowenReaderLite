@@ -23,6 +23,16 @@ struct ComicReaderView: View {
             if viewModel.isLoading {
                 ProgressView()
                     .tint(.white)
+            } else if viewModel.totalPages <= 0 {
+                // 无可用页面（离线且无本地数据）
+                VStack(spacing: 12) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.tertiary)
+                    Text("无法加载页面")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 PageViewController(
                     comicId: viewModel.currentComicId,
@@ -40,9 +50,16 @@ struct ComicReaderView: View {
                     onSwipeToPrev: {
                         guard let prevId = viewModel.groupContext?.previousVolumeId else { return }
                         Task {
-                            // 先获取上一卷页数，跳到末尾
-                            let pages = try? await APIClient.shared.fetchPages(comicId: prevId)
-                            let lastPage = max(0, (pages?.totalPages ?? 1) - 1)
+                            // 先获取上一卷页数，跳到末尾（网络优先，离线 fallback 本地 meta）
+                            let totalPages: Int
+                            if let pages = try? await APIClient.shared.fetchPages(comicId: prevId) {
+                                totalPages = pages.totalPages
+                            } else if let meta = OfflineFileManager.shared.loadMeta(comicId: prevId) {
+                                totalPages = meta.pageCount
+                            } else {
+                                totalPages = 1
+                            }
+                            let lastPage = max(0, totalPages - 1)
                             await viewModel.loadVolume(comicId: prevId, initialPage: lastPage)
                         }
                     }
@@ -427,10 +444,13 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
     // MARK: - Page Factory
 
     private func makePage(for index: Int) -> ZoomablePageVC? {
-        guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: index) else { return nil }
+        guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: index) else {
+            AppLogger.log("无法创建页面 URL: \(comicId) page \(index)")
+            return nil
+        }
         let cached = imageCache.object(forKey: cacheKey(for: index))
         let upscaled = upscaledCache.object(forKey: upscaledCacheKey(for: index))
-        let vc = ZoomablePageVC(imageURL: url, pageIndex: index, cachedImage: upscaled ?? cached)
+        let vc = ZoomablePageVC(imageURL: url, pageIndex: index, comicId: comicId, cachedImage: upscaled ?? cached)
         vc.onImageLoaded = { [weak self] image in
             guard let self else { return }
             self.imageCache.setObject(image, forKey: self.cacheKey(for: index))
@@ -562,6 +582,29 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
 
             preloadTasks[page] = Task { [weak self] in
                 guard let self else { return }
+
+                // 离线优先：先检查本地文件
+                if let localData = OfflineFileManager.shared.loadPageData(comicId: self.comicId, page: page),
+                   let image = UIImage(data: localData) {
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run { () -> Void in
+                        self.imageCache.setObject(image, forKey: key)
+                        if mode != .off {
+                            self.startUpscaleIfNeeded(for: page, image: image, isPreload: true)
+                        }
+                        self.preloadTasks.removeValue(forKey: page)
+                    }
+                    return
+                }
+
+                // 网络不可达时跳过预加载
+                guard await APIClient.shared.isNetworkReachable else {
+                    await MainActor.run { () -> Void in
+                        self.preloadTasks.removeValue(forKey: page)
+                    }
+                    return
+                }
+
                 let request = APIClient.shared.authenticatedRequest(url: url)
                 do {
                     let (data, _) = try await URLSession.shared.data(for: request)
@@ -591,15 +634,17 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
 class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     let imageURL: URL
     let pageIndex: Int
+    let comicId: String
     private let cachedImage: UIImage?
     var onImageLoaded: ((UIImage) -> Void)?
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
 
-    init(imageURL: URL, pageIndex: Int, cachedImage: UIImage? = nil) {
+    init(imageURL: URL, pageIndex: Int, comicId: String, cachedImage: UIImage? = nil) {
         self.imageURL = imageURL
         self.pageIndex = pageIndex
+        self.comicId = comicId
         self.cachedImage = cachedImage
         super.init(nibName: nil, bundle: nil)
     }
@@ -650,10 +695,34 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
             return
         }
 
+        // 离线优先：检查本地已下载文件
+        if let localData = OfflineFileManager.shared.loadPageData(comicId: comicId, page: pageIndex) {
+            if let image = UIImage(data: localData) {
+                activityIndicator.stopAnimating()
+                imageView.image = image
+                fitImage()
+                onImageLoaded?(image)
+                return
+            } else {
+                AppLogger.log("本地图片解码失败: \(comicId) page \(pageIndex), 大小 \(localData.count) bytes")
+            }
+        }
+
+        // 网络不可达时直接跳过，不等超时
+        guard APIClient.shared.isNetworkReachable else {
+            AppLogger.log("网络不可达，跳过网络加载: \(comicId) page \(pageIndex)")
+            return
+        }
+
         let request = APIClient.shared.authenticatedRequest(url: imageURL)
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
-            guard let self, let data, let image = UIImage(data: data) else { return }
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+            if let error {
+                AppLogger.log("页面加载失败: \(self.comicId) page \(self.pageIndex): \(error.localizedDescription)")
+                return
+            }
+            guard let data, let image = UIImage(data: data) else { return }
             DispatchQueue.main.async {
                 self.activityIndicator.stopAnimating()
                 self.imageView.image = image

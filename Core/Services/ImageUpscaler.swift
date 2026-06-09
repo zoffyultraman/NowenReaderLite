@@ -399,32 +399,66 @@ private extension UIImage {
         case .float32:
             array.withUnsafeMutableBytes { buffer, _ in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float32.self) else { return }
-                for i in 0..<channelSize {
-                    let p = i * 4
-                    let r = Float32(rawData[p]) / 255.0
-                    let g = Float32(rawData[p + 1]) / 255.0
-                    let b = Float32(rawData[p + 2]) / 255.0
-                    for copy in 0..<rgbCopies {
-                        let base = copy * 3 * channelSize
-                        ptr[base + i] = r
-                        ptr[base + channelSize + i] = g
-                        ptr[base + 2 * channelSize + i] = b
+                if isNCHW {
+                    // NCHW: [R, G, B] 通道分离
+                    for i in 0..<channelSize {
+                        let p = i * 4
+                        let r = Float32(rawData[p]) / 255.0
+                        let g = Float32(rawData[p + 1]) / 255.0
+                        let b = Float32(rawData[p + 2]) / 255.0
+                        for copy in 0..<rgbCopies {
+                            let base = copy * 3 * channelSize
+                            ptr[base + i] = r
+                            ptr[base + channelSize + i] = g
+                            ptr[base + 2 * channelSize + i] = b
+                        }
+                    }
+                } else {
+                    // NHWC: [R, G, B] 连续
+                    for i in 0..<channelSize {
+                        let p = i * 4
+                        let r = Float32(rawData[p]) / 255.0
+                        let g = Float32(rawData[p + 1]) / 255.0
+                        let b = Float32(rawData[p + 2]) / 255.0
+                        let base = i * channels
+                        for copy in 0..<rgbCopies {
+                            ptr[base + copy * 3] = r
+                            ptr[base + copy * 3 + 1] = g
+                            ptr[base + copy * 3 + 2] = b
+                        }
                     }
                 }
             }
         case .float16:
             array.withUnsafeMutableBytes { buffer, _ in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float16.self) else { return }
-                for i in 0..<channelSize {
-                    let p = i * 4
-                    let r = Float16(rawData[p]) / Float16(255.0)
-                    let g = Float16(rawData[p + 1]) / Float16(255.0)
-                    let b = Float16(rawData[p + 2]) / Float16(255.0)
-                    for copy in 0..<rgbCopies {
-                        let base = copy * 3 * channelSize
-                        ptr[base + i] = r
-                        ptr[base + channelSize + i] = g
-                        ptr[base + 2 * channelSize + i] = b
+                if isNCHW {
+                    // NCHW: [R, G, B] 通道分离
+                    for i in 0..<channelSize {
+                        let p = i * 4
+                        let r = Float16(rawData[p]) / Float16(255.0)
+                        let g = Float16(rawData[p + 1]) / Float16(255.0)
+                        let b = Float16(rawData[p + 2]) / Float16(255.0)
+                        for copy in 0..<rgbCopies {
+                            let base = copy * 3 * channelSize
+                            ptr[base + i] = r
+                            ptr[base + channelSize + i] = g
+                            ptr[base + 2 * channelSize + i] = b
+                        }
+                    }
+                } else {
+                    // NHWC: [R, G, B] 连续
+                    for i in 0..<channelSize {
+                        let p = i * 4
+                        let r = Float16(rawData[p]) / Float16(255.0)
+                        let g = Float16(rawData[p + 1]) / Float16(255.0)
+                        let b = Float16(rawData[p + 2]) / Float16(255.0)
+                        let base = i * channels
+                        for copy in 0..<rgbCopies {
+                            ptr[base + copy * 3] = r
+                            ptr[base + copy * 3 + 1] = g
+                            ptr[base + copy * 3 + 2] = b
+                        }
                     }
                 }
             }

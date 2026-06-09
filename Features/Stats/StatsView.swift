@@ -3,8 +3,17 @@ import SwiftUI
 struct StatsView: View {
     @StateObject private var viewModel = StatsViewModel()
     @State private var showGoalSheet = false
+    @ObservedObject private var api = APIClient.shared
 
     var body: some View {
+        if api.isOfflineMode {
+            offlineUnavailableView
+        } else {
+            mainContent
+        }
+    }
+
+    private var mainContent: some View {
         ScrollView {
             if let stats = viewModel.enhancedStats {
                 VStack(spacing: 20) {
@@ -50,6 +59,21 @@ struct StatsView: View {
                 }
             )
         }
+    }
+
+    private var offlineUnavailableView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 44))
+                .foregroundStyle(.tertiary)
+            Text("离线模式不可用")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("统计功能需要连接服务器")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - 目标进度

@@ -8,9 +8,21 @@ struct SettingsView: View {
     @State private var showClearCacheAlert = false
     @State private var cacheSize: Int = 0
     @State private var novelCacheSize: Int = 0
+    @State private var offlineSize: Int64 = 0
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
     @AppStorage("keepOriginalSize") private var keepOriginalSize: Bool = false
     @AppStorage("pageTransitionStyle") private var pageTransitionStyle: String = "翻书"
+    @AppStorage("offlineStorageLimitMB") private var storageLimitMB: Int = 0  // 0 = 无限制
+
+    /// 预设存储上限选项（MB）
+    private let limitOptions: [(label: String, value: Int)] = [
+        ("无限制", 0),
+        ("1 GB", 1024),
+        ("2 GB", 2048),
+        ("4 GB", 4096),
+        ("8 GB", 8192),
+        ("16 GB", 16384),
+    ]
 
     var body: some View {
         List {
@@ -176,6 +188,84 @@ struct SettingsView: View {
                 .disabled(cacheSize == 0 && novelCacheSize == 0)
             }
 
+            // 已下载
+            Section("已下载漫画") {
+                NavigationLink {
+                    DownloadListView()
+                } label: {
+                    HStack {
+                        Label("管理已下载", systemImage: "arrow.down.circle")
+                        Spacer()
+                        Text(formatFileSize(offlineSize))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // 存储使用进度条
+                if storageLimitMB > 0 {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("已用")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(formatFileSize(offlineSize)) / \(formatFileSize(Int64(storageLimitMB) * 1024 * 1024))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color(.systemGray5))
+                                Capsule()
+                                    .fill(offlineStorageRatio > 0.9 ? Color.red : Color.accentColor)
+                                    .frame(width: geo.size.width * CGFloat(min(offlineStorageRatio, 1.0)))
+                            }
+                        }
+                        .frame(height: 6)
+                    }
+                }
+
+                // 存储上限选择
+                HStack {
+                    Label("存储上限", systemImage: "internaldrive")
+                    Spacer()
+                    Menu {
+                        ForEach(limitOptions, id: \.value) { option in
+                            Button(option.label) {
+                                storageLimitMB = option.value
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(currentLimitLabel)
+                                .foregroundColor(.primary)
+                                .animation(nil, value: storageLimitMB)
+                            Image(systemName: "chevron.down")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    }
+                }
+
+                if storageLimitMB > 0 {
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                        Text("达到上限后自动暂停新下载，可随时调整")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             // 关于
             Section("关于") {
                 LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知")
@@ -223,6 +313,16 @@ struct SettingsView: View {
         }
     }
 
+    private var offlineStorageRatio: Double {
+        let limit = Int64(storageLimitMB) * 1024 * 1024
+        guard limit > 0 else { return 0 }
+        return Double(offlineSize) / Double(limit)
+    }
+
+    private var currentLimitLabel: String {
+        limitOptions.first(where: { $0.value == storageLimitMB })?.label ?? "无限制"
+    }
+
     private func loadCacheSize() {
         let comics = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "加载缓存大小")
         cacheSize = comics.reduce(0) { total, comic in
@@ -237,6 +337,8 @@ struct SettingsView: View {
         novelCacheSize = ChapterCache.totalNovelCacheBytes
         // 图片磁盘缓存计入总大小
         cacheSize += Int(ImageCache.shared.diskSize)
+        // 已下载漫画大小
+        offlineSize = OfflineFileManager.shared.totalDiskSize
     }
 
     private func clearCache() {

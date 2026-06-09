@@ -11,15 +11,23 @@ enum SchemaV1: VersionedSchema {
     }
 }
 
+enum SchemaV2: VersionedSchema {
+    static var versionIdentifier = Schema.Version(2, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [CachedComic.self, ServerRecord.self, SavedAccount.self, DownloadedComicRecord.self]
+    }
+}
+
 // MARK: - Migration Plan
 
 enum ReaderMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self]
+        [SchemaV1.self, SchemaV2.self]
     }
 
     static var stages: [MigrationStage] {
-        [] // 当前仅 v1，后续版本在此添加迁移阶段
+        [] // lightweight migration 自动处理，无需显式阶段
     }
 }
 
@@ -161,5 +169,24 @@ final class SavedAccount: Identifiable {
         self.id = UUID().uuidString
         self.alias = alias
         self.username = username
+    }
+}
+
+// MARK: - 离线下载记录
+
+@Model
+final class DownloadedComicRecord {
+    @Attribute(.unique) var comicId: String
+    var title: String
+    var pageCount: Int
+    var state: String       // DownloadState.rawValue
+    var downloadedAt: Date
+
+    init(comicId: String, title: String, pageCount: Int, state: String) {
+        self.comicId = comicId
+        self.title = title
+        self.pageCount = pageCount
+        self.state = state
+        self.downloadedAt = Date()
     }
 }

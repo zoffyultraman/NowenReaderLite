@@ -8,6 +8,6 @@ struct NowenReaderLiteApp: App {
             RootRouter()
                 .preferredColorScheme(.none)
         }
-        .modelContainer(for: [CachedComic.self, ServerRecord.self, SavedAccount.self])
+        .modelContainer(for: [CachedComic.self, ServerRecord.self, SavedAccount.self, DownloadedComicRecord.self])
     }
 }
