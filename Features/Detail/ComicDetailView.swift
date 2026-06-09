@@ -211,7 +211,8 @@ struct ComicDetailView: View {
     @ViewBuilder
     private func downloadButton(comic: Comic) -> some View {
         let task = downloadManager.task(for: comic.id)
-        let isDownloaded = task?.state == .completed || downloadManager.isDownloaded(comicId: comic.id)
+        let hasActiveTask = task != nil
+        let isDownloaded = task?.state == .completed || (!hasActiveTask && downloadManager.isDownloaded(comicId: comic.id))
         let isDownloading = task?.state == .downloading || task?.state == .waiting
         let isPaused = task?.state == .paused
 

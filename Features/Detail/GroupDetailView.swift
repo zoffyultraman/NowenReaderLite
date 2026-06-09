@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct GroupDetailView: View {
     let groupId: Int
@@ -152,13 +153,13 @@ struct GroupDetailView: View {
         }
         .task {
             downloadManager.setModelContext(modelContext)
-            await viewModel.load(groupId: groupId)
+            await viewModel.load(groupId: groupId, context: modelContext)
         }
         .alert("下载全部卷", isPresented: $showDownloadAllAlert) {
             Button("取消", role: .cancel) {}
             Button("下载") {
                 guard let detail = viewModel.detail else { return }
-                let result = downloadManager.downloadAll(comics: detail.comics)
+                let result = downloadManager.downloadAll(comics: detail.comics, groupDetail: detail)
                 downloadQueued = result.queued
                 downloadSkipped = result.skipped
                 showDownloadResult = true
@@ -269,10 +270,58 @@ final class GroupDetailViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
-    func load(groupId: Int) async {
+    func load(groupId: Int, context: ModelContext? = nil) async {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
+
+        // 离线：从本地加载合集
+        if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
+            if let local = OfflineFileManager.shared.loadGroupDetail(groupId: groupId) {
+                let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+                var comics: [GroupComicItem] = []
+                // 尝试从 SwiftData 缓存获取更完整的信息
+                var cachedMap: [String: CachedComic] = [:]
+                if let context {
+                    let allCached = try? context.fetch(FetchDescriptor<CachedComic>())
+                    if let allCached {
+                        for c in allCached where local.comicIds.contains(c.id) {
+                            cachedMap[c.id] = c
+                        }
+                    }
+                }
+                for (index, comicId) in local.comicIds.enumerated() {
+                    guard downloadedIds.contains(comicId) else { continue }
+                    let cached = cachedMap[comicId]
+                    let meta = OfflineFileManager.shared.loadMeta(comicId: comicId)
+                    comics.append(GroupComicItem(
+                        id: comicId,
+                        filename: nil,
+                        title: cached?.title ?? meta?.title ?? comicId,
+                        pageCount: cached?.pageCount ?? meta?.pageCount ?? 0,
+                        fileSize: meta?.fileSize,
+                        lastReadPage: cached?.lastReadPage ?? 0,
+                        totalReadTime: nil,
+                        coverUrl: cached?.coverUrl,
+                        sortIndex: index,
+                        readingStatus: nil
+                    ))
+                }
+                detail = GroupDetailResponse(
+                    id: local.id,
+                    name: local.name,
+                    coverUrl: local.coverUrl,
+                    author: local.author,
+                    description: local.description,
+                    comics: comics
+                )
+            } else {
+                errorMessage = "离线模式下无法加载合集"
+            }
+            isLoading = false
+            return
+        }
+
         do {
             detail = try await APIClient.shared.fetchGroupDetail(id: groupId)
         } catch {

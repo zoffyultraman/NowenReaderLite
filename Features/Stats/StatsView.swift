@@ -45,6 +45,13 @@ struct StatsView: View {
         .task {
             await viewModel.loadAll()
         }
+        .onChange(of: api.isOfflineMode) { _, isOffline in
+            if isOffline {
+                viewModel.isLoading = false
+                viewModel.enhancedStats = nil
+                viewModel.goals = []
+            }
+        }
         .refreshable {
             await viewModel.loadAll()
         }
@@ -462,6 +469,11 @@ final class StatsViewModel: ObservableObject {
     @Published var isLoading = false
 
     func loadAll() async {
+        // 离线或网络不可达：立即返回，不挂起等超时
+        guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
+            isLoading = false
+            return
+        }
         guard !isLoading else { return }
         isLoading = true
         async let statsTask = APIClient.shared.fetchEnhancedStats()
@@ -472,6 +484,10 @@ final class StatsViewModel: ObservableObject {
             self.goals = fetchedGoals
         } catch {
             AppLogger.error("加载统计数据失败: \(error)")
+            if APIClient.shared.isOfflineMode {
+                enhancedStats = nil
+                goals = []
+            }
         }
         isLoading = false
     }

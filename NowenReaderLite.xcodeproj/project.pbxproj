@@ -38,6 +38,10 @@
 		CC0000000000000000000010 /* ComicReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* ComicReaderViewModel.swift */; };
 		CC0000000000000000000012 /* Comic+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* Comic+ReaderView.swift */; };
 		DA7EA316D1A45103D7500886 /* ComicReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */; };
+		DD1000000000000000000002 /* OfflineFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000001 /* OfflineFileManager.swift */; };
+		DD1000000000000000000004 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000003 /* DownloadManager.swift */; };
+		DD1000000000000000000006 /* DownloadListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000005 /* DownloadListView.swift */; };
+		DD2000000000000000000002 /* PendingProgressManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2000000000000000000001 /* PendingProgressManager.swift */; };
 		E5E727D0FEC62CDB10B018E9 /* NowenReaderLiteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68161902B8397ACA3CD6C4B6 /* NowenReaderLiteApp.swift */; };
 		E7853F900C8BA5EB70057CEB /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */; };
 		EAC5D9A804E4AC932916EE39 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B37C34C647049726BF3DEED /* SettingsView.swift */; };
@@ -46,10 +50,6 @@
 		F5A74BBAAACB8D0184EF7BE6 /* ImageUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */; };
 		F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */; };
 		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
-		DD1000000000000000000002 /* OfflineFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000001 /* OfflineFileManager.swift */; };
-		DD1000000000000000000004 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000003 /* DownloadManager.swift */; };
-		DD2000000000000000000002 /* PendingProgressManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2000000000000000000001 /* PendingProgressManager.swift */; };
-		DD1000000000000000000006 /* DownloadListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000005 /* DownloadListView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +85,10 @@
 		CC0000000000000000000013 /* Comic+ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Comic+ReaderView.swift"; sourceTree = "<group>"; };
 		D804FBE0A5F92DA8770C8FC7 /* Comic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Comic.swift; sourceTree = "<group>"; };
 		DC44AAB4CC664B62E2DDAD0D /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		DD1000000000000000000001 /* OfflineFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineFileManager.swift; sourceTree = "<group>"; };
+		DD1000000000000000000003 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
+		DD1000000000000000000005 /* DownloadListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadListView.swift; sourceTree = "<group>"; };
+		DD2000000000000000000001 /* PendingProgressManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingProgressManager.swift; sourceTree = "<group>"; };
 		E8B8E5B600CC96114C23DE72 /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
 		EE112233445566778899AABB /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		EE3344556677889900BB01 /* FormatUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FormatUtils.swift; sourceTree = "<group>"; };
@@ -94,10 +98,6 @@
 		F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = RealESRGAN_x4plus_Anime.mlpackage; sourceTree = "<group>"; };
 		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
-		DD1000000000000000000001 /* OfflineFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineFileManager.swift; sourceTree = "<group>"; };
-		DD1000000000000000000003 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
-		DD2000000000000000000001 /* PendingProgressManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingProgressManager.swift; sourceTree = "<group>"; };
-		DD1000000000000000000005 /* DownloadListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadListView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -256,14 +256,6 @@
 			path = Stats;
 			sourceTree = "<group>";
 		};
-		DD1000000000000000000007 /* Downloads */ = {
-			isa = PBXGroup;
-			children = (
-				DD1000000000000000000005 /* DownloadListView.swift */,
-			);
-			path = Downloads;
-			sourceTree = "<group>";
-		};
 		C5134298214FCDA52C4BC916 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -274,6 +266,14 @@
 				AA002233445566778800BB01 /* ComicGroup.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		DD1000000000000000000007 /* Downloads */ = {
+			isa = PBXGroup;
+			children = (
+				DD1000000000000000000005 /* DownloadListView.swift */,
+			);
+			path = Downloads;
 			sourceTree = "<group>";
 		};
 		F33D461A9F6071C0B406CFFD = {
@@ -445,7 +445,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0.7;
+				MARKETING_VERSION = 1.0.8;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -499,7 +499,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.5;
+				MARKETING_VERSION = 1.0.8;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -555,7 +555,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.5;
+				MARKETING_VERSION = 1.0.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -586,7 +586,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0.7;
+				MARKETING_VERSION = 1.0.8;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";

@@ -47,6 +47,11 @@ struct HomeView: View {
             continueReadingVM.setModelContext(modelContext)
             await continueReadingVM.load()
         }
+        .onChange(of: api.isOfflineMode) { _, isOffline in
+            if isOffline {
+                Task { await continueReadingVM.load() }
+            }
+        }
         .onReceive(api.$networkRecovered) { recovered in
             if recovered {
                 Task {
@@ -198,7 +203,7 @@ struct HomeView: View {
             // 离线提示 - 固定在屏幕右下角
             if api.isOfflineMode {
                 Button {
-                    Task { await api.recheckNetwork() }
+                    Task { await api.retryConnection() }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "wifi.slash")
@@ -315,6 +320,7 @@ enum LibraryItem: Identifiable {
 struct LibraryContentView: View {
     let contentType: String
     @StateObject private var viewModel = LibraryViewModel()
+    @ObservedObject private var api = APIClient.shared
     @State private var viewMode: ViewMode = .grid
     @State private var sortOption: SortOption = .addedAt
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -387,9 +393,15 @@ struct LibraryContentView: View {
                 await viewModel.loadAll()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .networkRecovered)) { _ in
-            Task {
-                await viewModel.loadAll(refresh: true)
+        .onChange(of: api.isOfflineMode) { _, isOffline in
+            // 进入离线模式时重新加载（用已下载内容替换可能过期的缓存）
+            if isOffline {
+                Task { await viewModel.loadAll(refresh: true) }
+            }
+        }
+        .onReceive(api.$networkRecovered) { recovered in
+            if recovered {
+                Task { await viewModel.loadAll(refresh: true) }
             }
         }
     }
@@ -601,6 +613,11 @@ final class ContinueReadingViewModel: ObservableObject {
     }
 
     func load() async {
+        // 离线模式：直接从缓存加载
+        if APIClient.shared.isOfflineMode {
+            loadFromCache()
+            return
+        }
         do {
             let resp = try await APIClient.shared.fetchComics(
                 page: 1,

@@ -56,6 +56,13 @@ struct FavoritesView: View {
         .task {
             await viewModel.loadFavorites()
         }
+        .onChange(of: api.isOfflineMode) { _, isOffline in
+            // 进入离线时立即清空数据和加载态，避免残留加载/空状态
+            if isOffline {
+                viewModel.comics = []
+                viewModel.isLoading = false
+            }
+        }
         .overlay {
             if viewModel.isLoading && viewModel.comics.isEmpty {
                 ProgressView()
@@ -85,6 +92,12 @@ final class FavoritesViewModel: ObservableObject {
     @Published var isLoading = false
 
     func loadFavorites() async {
+        // 离线或网络不可达：立即返回，不挂起等超时
+        guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
+            comics = []
+            isLoading = false
+            return
+        }
         guard !isLoading else { return }
         isLoading = true
         do {
@@ -92,6 +105,7 @@ final class FavoritesViewModel: ObservableObject {
             comics = resp.comics
         } catch {
             AppLogger.error("加载收藏失败: \(error)")
+            if APIClient.shared.isOfflineMode { comics = [] }
         }
         isLoading = false
     }

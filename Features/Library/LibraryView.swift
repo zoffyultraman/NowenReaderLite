@@ -138,6 +138,8 @@ final class LibraryViewModel: ObservableObject {
     private var contentType: String?
     private let api = APIClient.shared
     private var modelContext: ModelContext?
+    /// 当前加载任务版本号，旧任务完成时忽略（避免离线切换时旧请求挂起覆盖状态）
+    private var loadVersion: Int = 0
 
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
@@ -145,11 +147,23 @@ final class LibraryViewModel: ObservableObject {
 
     /// 同时加载合集、漫画列表和分组映射
     func loadAll(refresh: Bool = false) async {
-        isLoading = true
-        async let g: () = loadGroups()
-        async let c: () = loadComics(refresh: refresh)
-        async let m: () = loadGroupMap()
-        _ = await (g, c, m)
+        // 离线 + 已有数据 + 非手动刷新 → 跳过（避免切 tab 时清空 groups 再重载）
+        if api.isOfflineMode && !comics.isEmpty && !refresh {
+            return
+        }
+        loadVersion += 1
+        let version = loadVersion
+        // 离线 + 有数据时不要显示加载动画
+        if !(api.isOfflineMode && !comics.isEmpty) {
+            isLoading = true
+        }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.loadGroups() }
+            group.addTask { await self.loadComics(refresh: refresh) }
+            group.addTask { await self.loadGroupMap() }
+        }
+        // 如果已被更新的 loadAll 取代，不覆盖状态
+        guard version == loadVersion else { return }
         isLoading = false
         updateDisplayItems()
     }
@@ -168,11 +182,13 @@ final class LibraryViewModel: ObservableObject {
     func loadComics(refresh: Bool = false) async {
         if refresh { currentPage = 1 }
 
-        // 离线模式：直接从缓存加载已下载漫画
-        if APIClient.shared.isOfflineMode, let context = modelContext {
-            let cached = loadFromCache(context: context)
-            let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-            comics = cached.filter { downloadedIds.contains($0.id) }
+        // 离线模式或网络不可达：直接从缓存加载已下载漫画（不等 API 超时）
+        if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
+            if let context = modelContext {
+                let cached = loadFromCache(context: context)
+                let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+                comics = cached.filter { downloadedIds.contains($0.id) }
+            }
             return
         }
 
@@ -246,26 +262,51 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func loadGroups() async {
-        guard contentType == "comic" else {
-            groups = []
+        guard contentType == "comic" else { groups = []; return }
+        guard !api.isOfflineMode, api.isNetworkReachable else {
+            // 离线：从本地加载已保存的合集，只显示有已下载漫画的合集
+            let local = OfflineFileManager.shared.loadGroups()
+            let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+            groups = local.compactMap { g in
+                let hasDownloaded = g.comicIds.contains { downloadedIds.contains($0) }
+                guard hasDownloaded else { return nil }
+                return ComicGroup(
+                    id: g.id, name: g.name, coverUrl: g.coverUrl,
+                    author: g.author, description: g.description,
+                    comicCount: g.comicCount, sortOrder: g.sortOrder,
+                    firstComicId: g.comicIds.first
+                )
+            }
             return
         }
         do {
             groups = try await api.fetchGroups(contentType: contentType)
         } catch {
             AppLogger.error("加载合集失败: \(error)")
+            groups = []
         }
     }
 
     func loadGroupMap() async {
-        guard contentType == "comic" else {
-            groupedComicIds = []
+        guard contentType == "comic" else { groupedComicIds = []; return }
+        guard !api.isOfflineMode, api.isNetworkReachable else {
+            // 离线：从本地合集数据重建 groupedComicIds
+            let local = OfflineFileManager.shared.loadGroups()
+            let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+            var ids = Set<String>()
+            for g in local {
+                for comicId in g.comicIds where downloadedIds.contains(comicId) {
+                    ids.insert(comicId)
+                }
+            }
+            groupedComicIds = ids
             return
         }
         do {
             groupedComicIds = try await api.fetchComicGroupMap()
         } catch {
             AppLogger.error("加载分组映射失败: \(error)")
+            groupedComicIds = []
         }
     }
 

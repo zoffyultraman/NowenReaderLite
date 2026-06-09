@@ -8,11 +8,18 @@ final class OfflineFileManager {
 
     private let baseDir: URL
     private let fileManager = FileManager.default
+    /// 缓存的已下载漫画 ID 列表，避免重复扫描磁盘
+    private var cachedDownloadedComicIds: [String]?
 
     private init() {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         baseDir = documents.appendingPathComponent("OfflineComics", isDirectory: true)
         try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+    }
+
+    /// 清除 downloadedComicIds 缓存（文件变更时调用）
+    private func invalidateDownloadedIdsCache() {
+        cachedDownloadedComicIds = nil
     }
 
     // MARK: - 漫画目录
@@ -39,13 +46,12 @@ final class OfflineFileManager {
         fileManager.fileExists(atPath: pageURL(comicId: comicId, page: page).path)
     }
 
-    /// 某本漫画是否已下载（目录存在 + meta.json 存在 + 至少有 1 个页面文件）
+    /// 某本漫画是否已下载（meta.json 存在 + 至少有 1 个页面文件）
     func isComicDownloaded(comicId: String, pageCount: Int) -> Bool {
-        let dir = comicDir(for: comicId)
-        guard fileManager.fileExists(atPath: dir.path) else { return false }
-        guard fileManager.fileExists(atPath: metaURL(comicId: comicId).path) else { return false }
-        // 检查至少有页面文件存在
-        let contents = try? fileManager.contentsOfDirectory(atPath: dir.path)
+        // 先用缓存的 downloadedComicIds 快速判断 meta.json 是否存在
+        guard downloadedComicIds.contains(comicId) else { return false }
+        // 再检查是否有页面文件
+        let contents = try? fileManager.contentsOfDirectory(atPath: comicDir(for: comicId).path)
         return contents?.contains(where: { $0.hasPrefix("page_") }) == true
     }
 
@@ -73,8 +79,13 @@ final class OfflineFileManager {
 
     /// 保存漫画下载元数据
     func saveMeta(_ meta: OfflineComicMeta, comicId: String) throws {
+        let dir = comicDir(for: comicId)
+        if !fileManager.fileExists(atPath: dir.path) {
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
         let data = try JSONEncoder().encode(meta)
         try data.write(to: metaURL(comicId: comicId))
+        invalidateDownloadedIdsCache()
     }
 
     /// 读取漫画下载元数据
@@ -89,12 +100,14 @@ final class OfflineFileManager {
     func deleteComic(comicId: String) {
         let dir = comicDir(for: comicId)
         try? fileManager.removeItem(at: dir)
+        invalidateDownloadedIdsCache()
     }
 
     /// 删除所有已下载漫画
     func deleteAll() {
         try? fileManager.removeItem(at: baseDir)
         try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        invalidateDownloadedIdsCache()
     }
 
     // MARK: - 统计
@@ -126,15 +139,59 @@ final class OfflineFileManager {
         return total
     }
 
-    /// 已下载漫画 ID 列表（必须有 meta.json 文件）
+    /// 已下载漫画 ID 列表（必须有 meta.json 文件），带缓存避免重复扫描磁盘
     var downloadedComicIds: [String] {
+        if let cached = cachedDownloadedComicIds { return cached }
         guard let items = try? fileManager.contentsOfDirectory(
             at: baseDir, includingPropertiesForKeys: nil,
             options: .skipsSubdirectoryDescendants
         ) else { return [] }
-        return items.filter { url in
+        let ids = items.filter { url in
             fileManager.fileExists(atPath: metaURL(comicId: url.lastPathComponent).path)
         }.map { $0.lastPathComponent }
+        cachedDownloadedComicIds = ids
+        return ids
+    }
+
+    // MARK: - 合集存储
+
+    private var groupsFileURL: URL {
+        baseDir.appendingPathComponent("groups.json")
+    }
+
+    /// 加载所有已保存的合集
+    func loadGroups() -> [OfflineGroupMeta] {
+        guard let data = try? Data(contentsOf: groupsFileURL) else { return [] }
+        return (try? JSONDecoder().decode([OfflineGroupMeta].self, from: data)) ?? []
+    }
+
+    /// 保存单个合集（合并已有数据，按 id 去重）
+    func saveGroup(_ group: OfflineGroupMeta) {
+        var groups = loadGroups()
+        if let index = groups.firstIndex(where: { $0.id == group.id }) {
+            groups[index] = group
+        } else {
+            groups.append(group)
+        }
+        saveGroups(groups)
+    }
+
+    /// 批量保存合集
+    func saveGroups(_ groups: [OfflineGroupMeta]) {
+        guard let data = try? JSONEncoder().encode(groups) else { return }
+        try? data.write(to: groupsFileURL)
+    }
+
+    /// 删除单个合集记录
+    func deleteGroup(groupId: Int) {
+        var groups = loadGroups()
+        groups.removeAll { $0.id == groupId }
+        saveGroups(groups)
+    }
+
+    /// 查找单个合集
+    func loadGroupDetail(groupId: Int) -> OfflineGroupMeta? {
+        loadGroups().first { $0.id == groupId }
     }
 }
 
@@ -146,4 +203,17 @@ struct OfflineComicMeta: Codable {
     let pageCount: Int
     let downloadedAt: Date
     let fileSize: Int64?       // 漫画原始 fileSize
+}
+
+// MARK: - 合集离线元数据
+
+struct OfflineGroupMeta: Codable, Identifiable {
+    let id: Int
+    let name: String
+    let coverUrl: String?
+    let author: String?
+    let description: String?
+    let comicCount: Int?
+    let sortOrder: Int?
+    var comicIds: [String]     // 合集内的漫画 ID 列表
 }

@@ -22,28 +22,50 @@ final class APIClient: ObservableObject {
     private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared
     private let pathMonitor = NWPathMonitor()
+    private var recoveryMonitorStarted = false
 
     private init() {
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = cookieStorage
         config.httpCookieAcceptPolicy = .always
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 60
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 30
         self.session = URLSession(configuration: config)
 
-        // 用实际连接测试判断服务器是否可达（比 NWPathMonitor 更准确）
-        if !serverURL.isEmpty {
-            Task {
-                let reachable = await self.testServerReachable()
-                self.isNetworkReachable = reachable
-                if reachable {
-                    await checkAuth()
-                } else if self.hasLoggedInBefore {
-                    self.isOfflineMode = true
-                    self.isLoggedIn = true
+        guard !serverURL.isEmpty else { return }
+
+        // 即时恢复登录态，避免闪现登录页（RootRouter 依赖 isLoggedIn）
+        if hasLoggedInBefore {
+            isLoggedIn = true
+        }
+
+        // 先用 NWPathMonitor 快速判断网络状态（无网络时立即进入离线模式）
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            monitor.cancel()  // 只需要首次回调
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if path.status == .satisfied {
+                    // 有网络，测试服务器是否可达
+                    let reachable = await self.testServerReachable()
+                    self.isNetworkReachable = reachable
+                    if reachable {
+                        await self.checkAuth()
+                        // 启动时从离线切换到在线，通知 UI 刷新内容
+                        self.networkRecovered = true
+                    } else if self.hasLoggedInBefore {
+                        self.isOfflineMode = true
+                    }
+                } else {
+                    // 无网络，立即进入离线模式
+                    self.isNetworkReachable = false
+                    if self.hasLoggedInBefore {
+                        self.isOfflineMode = true
+                    }
                 }
             }
         }
+        monitor.start(queue: DispatchQueue(label: "StartupNetworkCheck"))
     }
 
     // MARK: - Server
@@ -68,11 +90,37 @@ final class APIClient: ObservableObject {
 
     func testConnection(_ url: String) async -> Bool {
         let trimmed = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(trimmed)/api/health") else { return false }
-        do {
-            let (_, response) = try await session.data(from: url)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
+        return await withTaskGroup(of: Bool.self) { group in
+            // /api/health HEAD
+            if let healthURL = URL(string: "\(trimmed)/api/health") {
+                group.addTask {
+                    var request = URLRequest(url: healthURL)
+                    request.httpMethod = "HEAD"
+                    request.timeoutInterval = 2
+                    guard let (_, response) = try? await URLSession.shared.data(for: request),
+                          (response as? HTTPURLResponse)?.statusCode != nil else { return false }
+                    return true
+                }
+            }
+            // /api/auth/me GET
+            if let authURL = URL(string: "\(trimmed)/api/auth/me") {
+                group.addTask {
+                    var request = URLRequest(url: authURL)
+                    request.httpMethod = "GET"
+                    request.timeoutInterval = 2
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    guard let (_, response) = try? await URLSession.shared.data(for: request),
+                          let http = response as? HTTPURLResponse,
+                          http.statusCode < 500 else { return false }
+                    return true
+                }
+            }
+            for await result in group {
+                if result {
+                    group.cancelAll()
+                    return true
+                }
+            }
             return false
         }
     }
@@ -167,42 +215,81 @@ final class APIClient: ObservableObject {
 
     // MARK: - 连接测试
 
-    /// 用 2 秒超时的 HEAD 请求测试服务器是否可达
+    /// 测试服务器是否可达（并发检测两个端点，谁先返回用谁）
     private func testServerReachable() async -> Bool {
-        guard let url = URL(string: "\(serverURL)/api/health") else { return false }
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        request.timeoutInterval = 2
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            return (response as? HTTPURLResponse)?.statusCode != nil
-        } catch {
+        await withTaskGroup(of: Bool.self) { group in
+            // /api/health HEAD
+            if let url = URL(string: "\(serverURL)/api/health") {
+                group.addTask {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "HEAD"
+                    request.timeoutInterval = 2
+                    guard let (_, response) = try? await URLSession.shared.data(for: request),
+                          (response as? HTTPURLResponse)?.statusCode != nil else { return false }
+                    return true
+                }
+            }
+            // /api/auth/me GET
+            if let url = URL(string: "\(serverURL)/api/auth/me") {
+                group.addTask {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "GET"
+                    request.timeoutInterval = 2
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    guard let (_, response) = try? await URLSession.shared.data(for: request),
+                          let http = response as? HTTPURLResponse,
+                          http.statusCode < 500 else { return false }
+                    return true
+                }
+            }
+            // 任一成功即为可达
+            for await result in group {
+                if result {
+                    group.cancelAll()
+                    return true
+                }
+            }
             return false
         }
     }
 
-    /// 运行时重新检测网络（网络恢复时调用）
-    func recheckNetwork() async {
-        guard !isNetworkReachable else { return }
-        let reachable = await testServerReachable()
-        isNetworkReachable = reachable
-        if reachable && isOfflineMode {
-            await checkAuth()
-            // 网络恢复，通知 UI 刷新
-            networkRecovered = true
-        }
-    }
-
-    /// 启动网络恢复监听
+    /// 持续网络监听（断线 + 重连都处理，逻辑与启动时一致，永不取消）
     func startNetworkRecovery() {
+        guard !recoveryMonitorStarted else { return }
+        recoveryMonitorStarted = true
         pathMonitor.pathUpdateHandler = { [weak self] path in
-            if path.status == .satisfied {
-                Task { [weak self] in
-                    await self?.recheckNetwork()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if path.status == .satisfied {
+                    let reachable = await self.testServerReachable()
+                    self.isNetworkReachable = reachable
+                    if reachable {
+                        await self.checkAuth()
+                        self.isOfflineMode = false
+                        self.networkRecovered = true
+                    } else if self.hasLoggedInBefore {
+                        self.isOfflineMode = true
+                    }
+                } else {
+                    self.isNetworkReachable = false
+                    if self.hasLoggedInBefore {
+                        self.isOfflineMode = true
+                    }
                 }
             }
         }
         pathMonitor.start(queue: DispatchQueue(label: "NetworkRecovery"))
+    }
+
+    /// 手动重试连接（离线提示按钮调用）
+    func retryConnection() async {
+        let reachable = await testServerReachable()
+        isNetworkReachable = reachable
+        if reachable {
+            await checkAuth()
+            isOfflineMode = false
+            networkRecovered = true
+        }
     }
 
     // MARK: - Account Management
@@ -421,6 +508,12 @@ final class APIClient: ObservableObject {
     func fetchComicGroupMap() async throws -> Set<String> {
         let resp: ComicMapResponse = try await get("/api/groups/comic-map")
         return Set(resp.map.keys)
+    }
+
+    /// 获取漫画 ID → 合集 ID 列表的完整映射
+    func fetchComicGroupMapFull() async throws -> [String: [Int]] {
+        let resp: ComicMapResponse = try await get("/api/groups/comic-map")
+        return resp.map
     }
 
     // MARK: - HTTP Methods
