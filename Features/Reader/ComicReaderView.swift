@@ -25,13 +25,25 @@ struct ComicReaderView: View {
                     .tint(.white)
             } else if viewModel.totalPages <= 0 {
                 // 无可用页面（离线且无本地数据）
-                VStack(spacing: 12) {
+                VStack(spacing: 16) {
                     Image(systemName: "photo")
                         .font(.system(size: 40))
                         .foregroundStyle(.tertiary)
                     Text("无法加载页面")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("返回")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 10)
+                            .background(Color.accentColor)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
                 }
             } else {
                 PageViewController(

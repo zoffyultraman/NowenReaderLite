@@ -16,6 +16,8 @@ final class APIClient: ObservableObject {
     @Published var isOfflineMode: Bool = false
     /// 网络是否可用（NWPathMonitor 实时更新，初始 false 阻止未检测到状态前的请求）
     @Published private(set) var isNetworkReachable: Bool = false
+    /// 网络恢复标记（用于通知 UI 刷新）
+    @Published var networkRecovered: Bool = false
 
     private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared
@@ -186,6 +188,8 @@ final class APIClient: ObservableObject {
         isNetworkReachable = reachable
         if reachable && isOfflineMode {
             await checkAuth()
+            // 网络恢复，通知 UI 刷新
+            networkRecovered = true
         }
     }
 

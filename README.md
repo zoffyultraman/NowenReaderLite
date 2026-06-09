@@ -32,6 +32,9 @@
 | 🌗 深色模式 | 自动跟随系统切换 |
 | 📱 iPad 适配 | 全设备尺寸适配 |
 | 🖥 多服务器 | 服务器列表管理、快速切换 |
+| 📥 离线下载 | 漫画批量下载、断点续传、存储管理 |
+| 📡 离线模式 | 断网自动切换、已下载内容阅读、进度离线暂存 |
+| 🤖 AI 超分辨率 | Anime4K / RealESRGAN 模型、实时超分、Tile 分块处理 |
 
 ## 技术栈
 
@@ -45,6 +48,9 @@
 | 密钥管理 | Keychain |
 | 漫画阅读器 | UIPageViewController (.pageCurl) |
 | PDF 阅读器 | PDFKit |
+| 离线存储 | OfflineFileManager（文件系统 + JSON 元数据） |
+| 网络监控 | NWPathMonitor + 服务器可达性测试 |
+| AI 超分 | Core ML（Anime4K / RealESRGAN） |
 | 最低版本 | iOS 17.0 |
 
 ## 项目结构
@@ -59,22 +65,33 @@ NowenReaderLite/
 │   ├── Network/                # API 客户端、图片加载
 │   │   ├── APIClient.swift
 │   │   └── AuthenticatedImage.swift
+│   ├── Services/               # 业务服务
+│   │   ├── DownloadManager.swift    # 下载管理器
+│   │   ├── OfflineFileManager.swift # 离线文件管理
+│   │   ├── ImageCache.swift         # 图片缓存
+│   │   ├── ChapterCache.swift       # 小说章节缓存
+│   │   ├── ImageUpscaler.swift      # AI 超分辨率
+│   │   └── PaginationService.swift  # 分页服务
 │   ├── Storage/                # SwiftData、Keychain、阅读记录
 │   │   ├── SwiftDataSchema.swift
 │   │   ├── KeychainHelper.swift
-│   │   └── ReadingRecordManager.swift
+│   │   ├── ReadingRecordManager.swift
+│   │   └── PendingProgressManager.swift  # 离线进度暂存
 │   └── Extensions/             # 工具扩展
 ├── Features/
 │   ├── Auth/                   # 服务器配置、登录/注册、服务器列表
-│   ├── Library/                # 书架首页、继续观看
+│   ├── Library/                # 书架首页、继续观看、内容列表
 │   ├── Detail/                 # 漫画详情、合集详情
 │   ├── Reader/                 # 漫画/小说/PDF 阅读器
 │   ├── Search/                 # 全文搜索
 │   ├── Favorites/              # 收藏管理
+│   ├── Downloads/              # 下载列表管理
 │   ├── Stats/                  # 阅读统计
 │   └── Settings/               # 应用设置
 ├── Models/                     # Codable 数据模型
 ├── Assets.xcassets/            # 图片、图标资源
+├── anime4k-4x-a-hq.mlpackage   # Anime4K 超分模型
+├── RealESRGAN_x4plus_Anime.mlpackage  # RealESRGAN 超分模型
 ├── Info.plist
 └── NowenReaderLite.xcodeproj/
 ```
@@ -119,6 +136,8 @@ NowenReaderLite/
 - **强缓存** — SwiftData 本地缓存，提升加载体验
 - **原生优先** — 纯 SwiftUI + UIKit，不复用 Web UI
 - **UI 与数据解耦** — MVVM 分层，职责清晰
+- **离线优先** — 断网时自动切换离线模式，已下载内容可正常阅读
+- **自动恢复** — NWPathMonitor 监听网络变化，自动重连并刷新数据
 
 ## API 对接
 
@@ -133,11 +152,13 @@ NowenReaderLite/
 | 漫画 | `GET /api/comics/:id/pages` · `GET /api/comics/:id/page/:index` |
 | 小说 | `GET /api/comics/:id/chapter/:index` |
 | PDF | `GET /api/comics/:id/pdf` |
+| 缩略图 | `GET /api/comics/:id/thumbnail` |
 | 搜索 | `GET /api/comics?search=` |
 | 收藏 | `POST/DELETE /api/comics/:id/favorite` |
 | 合集 | `GET /api/groups` · `GET /api/groups/:id` |
 | 统计 | `GET /api/stats` |
 | 进度 | `POST /api/comics/:id/progress` · `POST /api/stats/session` |
+| 健康检查 | `HEAD /api/health` |
 
 </details>
 

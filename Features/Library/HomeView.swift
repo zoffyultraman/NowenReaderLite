@@ -1,10 +1,15 @@
 import SwiftUI
 import SwiftData
 
+extension Notification.Name {
+    static let networkRecovered = Notification.Name("networkRecovered")
+}
+
 struct HomeView: View {
     @State private var selectedTab: ContentType = .comic
     @StateObject private var continueReadingVM = ContinueReadingViewModel()
     @StateObject private var searchVM = SearchViewModel()
+    @ObservedObject private var api = APIClient.shared
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @FocusState private var isSearchFocused: Bool
@@ -41,6 +46,16 @@ struct HomeView: View {
         .task {
             continueReadingVM.setModelContext(modelContext)
             await continueReadingVM.load()
+        }
+        .onReceive(api.$networkRecovered) { recovered in
+            if recovered {
+                Task {
+                    await continueReadingVM.load()
+                    // 通知 LibraryContentView 刷新
+                    NotificationCenter.default.post(name: .networkRecovered, object: nil)
+                    api.networkRecovered = false
+                }
+            }
         }
     }
 
@@ -114,69 +129,92 @@ struct HomeView: View {
     // MARK: - 主内容
 
     private var mainContent: some View {
-        ScrollView {
-            searchBar
-                .padding(.top, 8)
+        ZStack(alignment: .bottomTrailing) {
+            ScrollView {
+                searchBar
+                    .padding(.top, 8)
 
-            // 继续观看
-            if !continueReadingVM.items.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("继续观看")
-                        .font(.headline)
-                        .padding(.horizontal, 20)
+                // 继续观看
+                if !continueReadingVM.items.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("继续观看")
+                            .font(.headline)
+                            .padding(.horizontal, 20)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 14) {
-                            ForEach(continueReadingVM.items) { comic in
-                                NavigationLink {
-                                    comic.readerView()
-                                } label: {
-                                    ContinueReadingCard(comic: comic, serverURL: APIClient.shared.serverURL)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(spacing: 14) {
+                                ForEach(continueReadingVM.items) { comic in
+                                    NavigationLink {
+                                        comic.readerView()
+                                    } label: {
+                                        ContinueReadingCard(comic: comic, serverURL: APIClient.shared.serverURL)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .padding(.horizontal, 20)
                         }
-                        .padding(.horizontal, 20)
+                        .frame(height: sizeClass == .regular ? 260 : 220)
                     }
-                    .frame(height: sizeClass == .regular ? 260 : 220)
+                    .padding(.top, 8)
                 }
-                .padding(.top, 8)
-            }
 
-            // 加载失败提示
-            if let error = continueReadingVM.errorMessage {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                // 加载失败提示
+                if let error = continueReadingVM.errorMessage {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
                 }
+
+                // 分类切换
+                Picker("类型", selection: $selectedTab) {
+                    ForEach(ContentType.allCases, id: \.self) { type in
+                        Label(type.title, systemImage: type.icon).tag(type)
+                    }
+                }
+                .pickerStyle(.segmented)
                 .padding(.horizontal, 20)
-                .padding(.top, 4)
-            }
+                .padding(.top, continueReadingVM.items.isEmpty ? 8 : 16)
 
-            // 分类切换
-            Picker("类型", selection: $selectedTab) {
-                ForEach(ContentType.allCases, id: \.self) { type in
-                    Label(type.title, systemImage: type.icon).tag(type)
+                // 内容列表
+                if selectedTab == .comic {
+                    LibraryContentView(contentType: "comic")
+                } else {
+                    LibraryContentView(contentType: "novel")
                 }
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.top, continueReadingVM.items.isEmpty ? 8 : 16)
-
-            // 内容列表
-            if selectedTab == .comic {
-                LibraryContentView(contentType: "comic")
-            } else {
-                LibraryContentView(contentType: "novel")
+            .refreshable {
+                await continueReadingVM.load()
             }
-        }
-        .refreshable {
-            await continueReadingVM.load()
+
+            // 离线提示 - 固定在屏幕右下角
+            if api.isOfflineMode {
+                Button {
+                    Task { await api.recheckNetwork() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wifi.slash")
+                            .font(.system(size: 10))
+                        Text("离线")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 8)
+            }
         }
     }
 }
@@ -279,7 +317,6 @@ struct LibraryContentView: View {
     @StateObject private var viewModel = LibraryViewModel()
     @State private var viewMode: ViewMode = .grid
     @State private var sortOption: SortOption = .addedAt
-    @State private var isOffline = APIClient.shared.isOfflineMode
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
 
@@ -315,14 +352,6 @@ struct LibraryContentView: View {
                 listView
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            if isOffline {
-                offlineIndicator
-            }
-        }
-        .onReceive(APIClient.shared.$isOfflineMode) { newValue in
-            isOffline = newValue
-        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -356,6 +385,11 @@ struct LibraryContentView: View {
             viewModel.setContentType(contentType)
             if viewModel.comics.isEmpty && viewModel.groups.isEmpty {
                 await viewModel.loadAll()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .networkRecovered)) { _ in
+            Task {
+                await viewModel.loadAll(refresh: true)
             }
         }
     }
@@ -435,26 +469,6 @@ struct LibraryContentView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.top, 60)
-    }
-
-    private var offlineIndicator: some View {
-        Button {
-            Task { await APIClient.shared.recheckNetwork() }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "wifi.slash")
-                    .font(.system(size: 10))
-                Text("离线")
-                    .font(.system(size: 11))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .padding(.trailing, 16)
-        .padding(.bottom, 16)
     }
 }
 

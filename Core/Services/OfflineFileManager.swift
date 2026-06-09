@@ -126,12 +126,15 @@ final class OfflineFileManager {
         return total
     }
 
-    /// 已下载漫画 ID 列表
+    /// 已下载漫画 ID 列表（必须有 meta.json 文件）
     var downloadedComicIds: [String] {
-        (try? fileManager.contentsOfDirectory(
+        guard let items = try? fileManager.contentsOfDirectory(
             at: baseDir, includingPropertiesForKeys: nil,
             options: .skipsSubdirectoryDescendants
-        ).map { $0.lastPathComponent }) ?? []
+        ) else { return [] }
+        return items.filter { url in
+            fileManager.fileExists(atPath: metaURL(comicId: url.lastPathComponent).path)
+        }.map { $0.lastPathComponent }
     }
 }
 
