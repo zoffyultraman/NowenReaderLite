@@ -4,14 +4,18 @@ import SwiftData
 // MARK: - 漫画卡片
 
 struct ComicCardView: View {
-    let comic: Comic
+    let id: String
+    let title: String
+    let isFavorite: Bool
+    let isNovel: Bool
+    let progress: Int
     let serverURL: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 封面
             ZStack(alignment: .topTrailing) {
-                AuthenticatedImage(serverURL: serverURL, comicId: comic.id, thumbnail: true)
+                AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                     .aspectRatio(contentMode: .fill)
                     .frame(height: 180)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -21,7 +25,7 @@ struct ComicCardView: View {
                     )
 
                 // 收藏标记
-                if comic.isFavorite {
+                if isFavorite {
                     Image(systemName: "heart.fill")
                         .font(.caption2)
                         .foregroundStyle(.red)
@@ -31,7 +35,7 @@ struct ComicCardView: View {
                 }
 
                 // 小说标记
-                if comic.isNovel {
+                if isNovel {
                     Text("小说")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.white)
@@ -44,7 +48,7 @@ struct ComicCardView: View {
                 }
 
                 // 进度条
-                if comic.progress > 0 {
+                if progress > 0 {
                     VStack {
                         Spacer()
                         GeometryReader { geo in
@@ -53,7 +57,7 @@ struct ComicCardView: View {
                                     .fill(.black.opacity(0.3))
                                 Rectangle()
                                     .fill(Color.accentColor)
-                                    .frame(width: geo.size.width * CGFloat(comic.progress) / 100)
+                                    .frame(width: geo.size.width * CGFloat(progress) / 100)
                             }
                         }
                         .frame(height: 3)
@@ -63,45 +67,50 @@ struct ComicCardView: View {
             }
 
             // 标题
-            Text(comic.title)
+            Text(title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .padding(.top, 8)
         }
     }
-
 }
 
 // MARK: - 列表行
 
 struct ComicListRowView: View {
-    let comic: Comic
+    let id: String
+    let title: String
+    let author: String?
+    let pageCount: Int
+    let fileSize: Int64?
+    let progress: Int
+    let isFavorite: Bool
     let serverURL: String
 
     var body: some View {
         HStack(spacing: 12) {
-            AuthenticatedImage(serverURL: serverURL, comicId: comic.id, thumbnail: true)
+            AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 80)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(comic.title)
+                Text(title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                if let author = comic.author, !author.isEmpty {
+                if let author, !author.isEmpty {
                     Text(author)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
-                if comic.pageCount > 0 {
-                    let sizeText = comic.fileSize.map { formatFileSize($0) } ?? ""
-                    Text("\(comic.pageCount) 页 · \(comic.progress)% 已读\(sizeText.isEmpty ? "" : " · \(sizeText)")")
+                if pageCount > 0 {
+                    let sizeText = fileSize.map { formatFileSize($0) } ?? ""
+                    Text("\(pageCount) 页 · \(progress)% 已读\(sizeText.isEmpty ? "" : " · \(sizeText)")")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -109,7 +118,7 @@ struct ComicListRowView: View {
 
             Spacer()
 
-            if comic.isFavorite {
+            if isFavorite {
                 Image(systemName: "heart.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -117,20 +126,20 @@ struct ComicListRowView: View {
         }
         .padding(.vertical, 4)
     }
-
 }
 
 // MARK: - ViewModel
 
 @MainActor
-final class LibraryViewModel: ObservableObject {
-    @Published var comics: [Comic] = []
-    @Published var groups: [ComicGroup] = []
-    @Published var groupedComicIds: Set<String> = []
-    @Published var isLoading = false
-    @Published var hasMore = true
-    @Published var errorMessage: String?
-    @Published var displayItems: [LibraryItem] = []
+@Observable
+final class LibraryViewModel {
+    var comics: [Comic] = []
+    var groups: [ComicGroup] = []
+    var groupedComicIds: Set<String> = []
+    var isLoading = false
+    var hasMore = true
+    var errorMessage: String?
+    var displayItems: [LibraryItem] = []
 
     private var currentPage = 1
     private var sortBy = "addedAt"

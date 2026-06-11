@@ -6,14 +6,11 @@ struct DownloadListView: View {
     @ObservedObject private var downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @State private var showClearAlert = false
+    @State private var activeTasks: [DownloadTask] = []
+    @State private var completedTasks: [DownloadTask] = []
 
     var body: some View {
         List {
-            // 正在下载的任务
-            let activeTasks = downloadManager.tasks.values
-                .filter { $0.state == .downloading || $0.state == .waiting || $0.state == .paused }
-                .sorted { $0.title < $1.title }
-
             if !activeTasks.isEmpty {
                 Section("下载中") {
                     ForEach(activeTasks) { task in
@@ -21,11 +18,6 @@ struct DownloadListView: View {
                     }
                 }
             }
-
-            // 已完成的任务
-            let completedTasks = downloadManager.tasks.values
-                .filter { $0.state == .completed }
-                .sorted { $0.title < $1.title }
 
             if !completedTasks.isEmpty {
                 Section("已下载 (\(completedTasks.count))") {
@@ -82,6 +74,10 @@ struct DownloadListView: View {
         .task {
             downloadManager.setModelContext(modelContext)
             downloadManager.restoreFromStore(context: modelContext)
+            refreshTasks()
+        }
+        .onChange(of: downloadManager.downloadVersion) {
+            refreshTasks()
         }
         .alert("清除全部下载", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
@@ -93,6 +89,16 @@ struct DownloadListView: View {
         } message: {
             Text("将删除所有已下载的漫画文件，此操作不可恢复。")
         }
+    }
+
+    private func refreshTasks() {
+        let tasks = downloadManager.tasks.values
+        activeTasks = tasks
+            .filter { $0.state == .downloading || $0.state == .waiting || $0.state == .paused }
+            .sorted { $0.title < $1.title }
+        completedTasks = tasks
+            .filter { $0.state == .completed }
+            .sorted { $0.title < $1.title }
     }
 }
 

@@ -9,7 +9,7 @@ struct ComicReaderView: View {
     let initialPage: Int
     var groupContext: ReadingGroupContext? = nil
 
-    @StateObject private var viewModel = ComicReaderViewModel()
+    @State private var viewModel = ComicReaderViewModel()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -17,6 +17,7 @@ struct ComicReaderView: View {
     @AppStorage("pageTransitionStyle") private var pageTransitionStyle: String = "翻书"
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         ZStack {
             Color.black.ignoresSafeArea()
 
@@ -248,9 +249,9 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
         return cache
     }()
     /// 当前正在预加载的任务
-    private var preloadTasks: [Int: Task<Void, Never>] = [:]
+    nonisolated(unsafe) private var preloadTasks: [Int: Task<Void, Never>] = [:]
     /// 当前正在超分的任务（key: "page_mode"）
-    private var upscaleTasks: [String: Task<Void, Never>] = [:]
+    nonisolated(unsafe) private var upscaleTasks: [String: Task<Void, Never>] = [:]
 
     /// 缓存的超分设置（避免频繁读取 UserDefaults）
     private var _cachedUpscaleMode: UpscaleMode?
@@ -610,7 +611,8 @@ class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSour
                 }
 
                 // 网络不可达时跳过预加载
-                guard await APIClient.shared.isNetworkReachable else {
+                let isReachable = await MainActor.run { APIClient.shared.isNetworkReachable }
+                guard isReachable else {
                     await MainActor.run { () -> Void in
                         self.preloadTasks.removeValue(forKey: page)
                     }

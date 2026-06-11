@@ -3,12 +3,12 @@ import SwiftData
 import Network
 
 struct MainTabView: View {
-    @ObservedObject private var api = APIClient.shared
     @ObservedObject private var downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @State private var selectedTab = 0
 
     var body: some View {
+        let api = APIClient.shared
         TabView(selection: $selectedTab) {
             NavigationStack {
                 HomeView()
@@ -60,13 +60,14 @@ struct MainTabView: View {
             // 启动时尝试同步离线进度
             syncPendingProgress()
         }
-        .onReceive(api.$networkRecovered) { recovered in
+        .onChange(of: api.networkRecovered) { _, recovered in
             if recovered { syncPendingProgress() }
         }
     }
 
     /// 联网后同步离线阅读进度到服务端
     private func syncPendingProgress() {
+        let api = APIClient.shared
         guard !api.isOfflineMode, PendingProgressManager.shared.hasPending else { return }
         let pending = PendingProgressManager.shared.loadAll()
         AppLogger.log("同步离线进度: \(pending.count) 本漫画")

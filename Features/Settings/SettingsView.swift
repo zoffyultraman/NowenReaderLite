@@ -2,7 +2,6 @@ import SwiftUI
 import SwiftData
 
 struct SettingsView: View {
-    @ObservedObject private var api = APIClient.shared
     @Environment(\.modelContext) private var modelContext
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
@@ -34,9 +33,9 @@ struct SettingsView: View {
                         .foregroundStyle(Color.accentColor)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(api.currentUser?.nickname ?? api.currentUser?.username ?? "用户")
+                        Text(APIClient.shared.currentUser?.nickname ?? APIClient.shared.currentUser?.username ?? "用户")
                             .font(.headline)
-                        Text(api.currentUser?.username ?? "")
+                        Text(APIClient.shared.currentUser?.username ?? "")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -50,7 +49,7 @@ struct SettingsView: View {
                     ServerListView()
                 } label: {
                     HStack {
-                        let isHTTPS = api.serverURL.lowercased().hasPrefix("https://")
+                        let isHTTPS = APIClient.shared.serverURL.lowercased().hasPrefix("https://")
                         Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
                             .foregroundStyle(isHTTPS ? .green : .red)
                             .font(.caption)
@@ -58,7 +57,7 @@ struct SettingsView: View {
                         Label("服务器", systemImage: "server.rack")
                             .foregroundStyle(.primary)
                         Spacer()
-                        Text(api.serverURL)
+                        Text(APIClient.shared.serverURL)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -76,7 +75,7 @@ struct SettingsView: View {
                     }
                 }
 
-                if !api.serverURL.isEmpty && !api.serverURL.lowercased().hasPrefix("https://") {
+                if !APIClient.shared.serverURL.isEmpty && !APIClient.shared.serverURL.lowercased().hasPrefix("https://") {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
@@ -297,7 +296,7 @@ struct SettingsView: View {
             Button("退出", role: .destructive) {
                 Task {
                     clearCache()
-                    await api.logout()
+                    await APIClient.shared.logout()
                 }
             }
         } message: {

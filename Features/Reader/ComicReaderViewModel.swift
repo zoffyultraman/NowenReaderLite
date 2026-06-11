@@ -2,12 +2,13 @@ import Foundation
 import SwiftData
 
 @MainActor
-final class ComicReaderViewModel: ObservableObject {
-    @Published var totalPages = 0
-    @Published var currentPage = 0
-    @Published var isLoading = true
-    @Published var currentComicId: String
-    @Published var groupContext: ReadingGroupContext?
+@Observable
+final class ComicReaderViewModel {
+    var totalPages = 0
+    var currentPage = 0
+    var isLoading = true
+    var currentComicId: String
+    var groupContext: ReadingGroupContext?
 
     private var sessionId: Int?
     private var sessionStart: Date?

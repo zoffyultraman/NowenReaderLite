@@ -8,7 +8,7 @@ struct NovelReaderView: View {
     let initialChapter: Int
     var groupContext: ReadingGroupContext? = nil
 
-    @StateObject private var viewModel = NovelReaderViewModel()
+    @State private var viewModel = NovelReaderViewModel()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var showOverlay = false
@@ -524,17 +524,18 @@ extension Notification.Name {
 // MARK: - ViewModel
 
 @MainActor
-final class NovelReaderViewModel: ObservableObject {
-    @Published var chapterContent: ChapterContent?
-    @Published var isLoading = false
-    @Published var currentChapter = 0
-    @Published var totalChapters: Int = 0
-    @Published var currentChapterTitle: String? = nil
-    @Published var darkMode = false
-    @Published var pages: [String] = []
-    @Published var groupContext: ReadingGroupContext?
-    @Published var currentComicId: String
-    @Published var chapterTitles: [Int: String] = [:]
+@Observable
+final class NovelReaderViewModel {
+    var chapterContent: ChapterContent?
+    var isLoading = false
+    var currentChapter = 0
+    var totalChapters: Int = 0
+    var currentChapterTitle: String? = nil
+    var darkMode = false
+    var pages: [String] = []
+    var groupContext: ReadingGroupContext?
+    var currentComicId: String
+    var chapterTitles: [Int: String] = [:]
 
     /// 各章节的起始页索引 [章节号: 在 pages 中的起始位置]
     private(set) var chapterPageOffsets: [Int: Int] = [:]
@@ -547,7 +548,7 @@ final class NovelReaderViewModel: ObservableObject {
     private var comicId = ""
     private let api = APIClient.shared
     private let cache = ChapterCache()
-    private var cacheObserver: Any?
+    nonisolated(unsafe) private var cacheObserver: Any?
 
     init() {
         self.currentComicId = ""

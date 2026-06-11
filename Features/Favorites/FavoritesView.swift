@@ -1,10 +1,10 @@
 import SwiftUI
 
 struct FavoritesView: View {
-    @StateObject private var viewModel = FavoritesViewModel()
-    @ObservedObject private var api = APIClient.shared
+    @State private var viewModel = FavoritesViewModel()
 
     var body: some View {
+        let api = APIClient.shared
         if api.isOfflineMode {
             offlineUnavailableView
         } else {
@@ -35,7 +35,7 @@ struct FavoritesView: View {
                     ], spacing: 16) {
                         ForEach(viewModel.comics) { comic in
                             NavigationLink(value: comic.id) {
-                                ComicCardView(comic: comic, serverURL: APIClient.shared.serverURL)
+                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: APIClient.shared.serverURL)
                             }
                             .buttonStyle(.plain)
                         }
@@ -56,7 +56,7 @@ struct FavoritesView: View {
         .task {
             await viewModel.loadFavorites()
         }
-        .onChange(of: api.isOfflineMode) { _, isOffline in
+        .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
             // 进入离线时立即清空数据和加载态，避免残留加载/空状态
             if isOffline {
                 viewModel.comics = []
@@ -87,9 +87,10 @@ struct FavoritesView: View {
 }
 
 @MainActor
-final class FavoritesViewModel: ObservableObject {
-    @Published var comics: [Comic] = []
-    @Published var isLoading = false
+@Observable
+final class FavoritesViewModel {
+    var comics: [Comic] = []
+    var isLoading = false
 
     func loadFavorites() async {
         // 离线或网络不可达：立即返回，不挂起等超时

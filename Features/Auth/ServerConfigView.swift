@@ -12,7 +12,6 @@ struct ServerConfigView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
-    @ObservedObject private var api = APIClient.shared
     var onConnected: () -> Void
     var embedsInOwnStack: Bool = true
 
@@ -190,14 +189,14 @@ struct ServerConfigView: View {
     }
 
     private func loadAccounts() {
-        accounts = api.fetchAllAccounts(context: modelContext)
+        accounts = APIClient.shared.fetchAllAccounts(context: modelContext)
     }
 
     private func testConnection() {
         isTestingConnection = true
         connectionStatus = .testing
         Task {
-            let success = await api.testConnection(serverURL)
+            let success = await APIClient.shared.testConnection(serverURL)
             isTestingConnection = false
             connectionStatus = success ? .success : .failure
         }
@@ -205,9 +204,9 @@ struct ServerConfigView: View {
 
     private func connectAndContinue() {
         let trimmed = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        api.setServerURL(trimmed)
+        APIClient.shared.setServerURL(trimmed)
         Task {
-            await api.checkAuth()
+            await APIClient.shared.checkAuth()
             // Save or update server record
             let descriptor = FetchDescriptor<ServerRecord>(
                 predicate: #Predicate<ServerRecord> { $0.url == trimmed }
@@ -221,20 +220,20 @@ struct ServerConfigView: View {
 
             if let existing = modelContext.fetchOrLog(descriptor, label: "查找已有服务器记录").first {
                 existing.lastUsed = Date()
-                existing.username = api.currentUser?.username
+                existing.username = APIClient.shared.currentUser?.username
                 existing.boundAccount = boundAccount
             } else {
-                let record = ServerRecord(url: trimmed, username: api.currentUser?.username)
+                let record = ServerRecord(url: trimmed, username: APIClient.shared.currentUser?.username)
                 record.boundAccount = boundAccount
                 modelContext.insert(record)
             }
             modelContext.saveOrLog()
 
             // 如果选了绑定账号且当前未登录，尝试自动登录
-            if !api.isLoggedIn, let accountId = selectedAccountId {
+            if !APIClient.shared.isLoggedIn, let accountId = selectedAccountId {
                 let all = modelContext.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "自动登录查询账号")
                 if let account = all.first(where: { $0.id == accountId }) {
-                    _ = try? await api.quickLogin(account: account)
+                    _ = try? await APIClient.shared.quickLogin(account: account)
                 }
             }
 

@@ -9,7 +9,6 @@ struct LoginView: View {
     @State private var showError = false
     @State private var errorMessage = ""
 
-    @ObservedObject private var api = APIClient.shared
     var onLoginSuccess: () -> Void
 
     @State private var navigateToServerConfig = false
@@ -32,10 +31,10 @@ struct LoginView: View {
                         navigateToServerConfig = true
                     } label: {
                         HStack(spacing: 4) {
-                            let isHTTPS = api.serverURL.lowercased().hasPrefix("https://")
+                            let isHTTPS = APIClient.shared.serverURL.lowercased().hasPrefix("https://")
                             Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
                                 .foregroundStyle(isHTTPS ? .green : .red)
-                            Text(api.serverURL)
+                            Text(APIClient.shared.serverURL)
                                 .lineLimit(1)
                             Image(systemName: "chevron.right")
                                 .font(.caption2)
@@ -142,8 +141,8 @@ struct LoginView: View {
             .navigationDestination(isPresented: $navigateToServerConfig) {
                 ServerListView()
             }
-            .onChange(of: api.isLoggedIn) {
-                if api.isLoggedIn {
+            .onChange(of: APIClient.shared.isLoggedIn) {
+                if APIClient.shared.isLoggedIn {
                     // 从服务器列表自动登录成功，清除导航栈回到根视图
                     navigateToServerConfig = false
                     onLoginSuccess()
@@ -167,9 +166,9 @@ struct LoginView: View {
         Task {
             do {
                 if isRegistering {
-                    _ = try await api.register(username: username, password: password, nickname: nickname)
+                    _ = try await APIClient.shared.register(username: username, password: password, nickname: nickname)
                 } else {
-                    _ = try await api.login(username: username, password: password)
+                    _ = try await APIClient.shared.login(username: username, password: password)
                 }
                 password = ""
                 onLoginSuccess()

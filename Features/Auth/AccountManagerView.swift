@@ -3,7 +3,6 @@ import SwiftData
 
 struct AccountManagerView: View {
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var api = APIClient.shared
 
     @State private var accounts: [SavedAccount] = []
     @State private var showAddSheet = false
@@ -78,13 +77,13 @@ struct AccountManagerView: View {
         }
         .sheet(isPresented: $showAddSheet) {
             AccountEditSheet(mode: .add) { alias, username, password in
-                _ = api.createAccount(alias: alias, username: username, password: password, context: modelContext)
+                _ = APIClient.shared.createAccount(alias: alias, username: username, password: password, context: modelContext)
                 loadAccounts()
             }
         }
         .sheet(item: $editingAccount) { account in
             AccountEditSheet(mode: .edit(account)) { alias, username, password in
-                api.updateAccount(account, alias: alias, username: username, password: password, context: modelContext)
+                APIClient.shared.updateAccount(account, alias: alias, username: username, password: password, context: modelContext)
                 loadAccounts()
             }
         }
@@ -94,12 +93,12 @@ struct AccountManagerView: View {
     }
 
     private func loadAccounts() {
-        accounts = api.fetchAllAccounts(context: modelContext)
+        accounts = APIClient.shared.fetchAllAccounts(context: modelContext)
     }
 
     private func deleteAccounts(at offsets: IndexSet) {
         for index in offsets {
-            api.deleteAccount(accounts[index], context: modelContext)
+            APIClient.shared.deleteAccount(accounts[index], context: modelContext)
         }
         loadAccounts()
     }

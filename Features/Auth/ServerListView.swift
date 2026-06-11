@@ -6,7 +6,6 @@ struct ServerListView: View {
     private var servers: [ServerRecord]
 
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var api = APIClient.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var showAddServer = false
@@ -48,7 +47,7 @@ struct ServerListView: View {
                                     .foregroundStyle(isHTTPS ? .green : .red)
                                 Image(systemName: "server.rack")
                                     .font(.title3)
-                                    .foregroundStyle(api.serverURL == server.url ? Color.accentColor : .secondary)
+                                    .foregroundStyle(APIClient.shared.serverURL == server.url ? Color.accentColor : .secondary)
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(server.url)
@@ -77,7 +76,7 @@ struct ServerListView: View {
                                 if isSwitching && switchingServerId == server.url {
                                     ProgressView()
                                         .scaleEffect(0.8)
-                                } else if api.serverURL == server.url {
+                                } else if APIClient.shared.serverURL == server.url {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(Color.accentColor)
                                 }
@@ -146,21 +145,21 @@ struct ServerListView: View {
 
     private func switchToServer(_ record: ServerRecord) {
         guard !isSwitching else { return }
-        guard api.serverURL != record.url else { return }
+        guard APIClient.shared.serverURL != record.url else { return }
 
-        let previousURL = api.serverURL
-        let previousUser = api.currentUser
+        let previousURL = APIClient.shared.serverURL
+        let previousUser = APIClient.shared.currentUser
 
         isSwitching = true
         switchingServerId = record.url
         record.lastUsed = Date()
 
         // 清除旧服务器的 cookie 和本地缓存
-        api.clearCookiesForCurrentServer()
+        APIClient.shared.clearCookiesForCurrentServer()
         try? modelContext.delete(model: CachedComic.self)
         modelContext.saveOrLog()
 
-        api.setServerURL(record.url)
+        APIClient.shared.setServerURL(record.url)
 
         Task {
             // 带超时的切换逻辑
@@ -169,7 +168,7 @@ struct ServerListView: View {
                 if let accountId = record.boundAccountId,
                    let account = self.findAccount(id: accountId) {
                     do {
-                        _ = try await self.api.quickLogin(account: account)
+                        _ = try await APIClient.shared.quickLogin(account: account)
                         await MainActor.run {
                             record.username = account.username
                         }
@@ -181,9 +180,9 @@ struct ServerListView: View {
                 }
 
                 // 无绑定账号或自动登录失败
-                await self.api.checkAuth()
+                await APIClient.shared.checkAuth()
                 await MainActor.run {
-                    record.username = self.api.currentUser?.username
+                    record.username = APIClient.shared.currentUser?.username
                 }
                 self.modelContext.saveOrLog(label: "更新服务器用户名")
                 return true
@@ -196,18 +195,18 @@ struct ServerListView: View {
                 case .timeout:
                     timeoutServerURL = record.url
                     showTimeoutAlert = true
-                    api.clearCookiesForCurrentServer()
-                    api.setServerURL(previousURL)
-                    api.currentUser = previousUser
-                    api.isLoggedIn = previousUser != nil
-                    Task { await api.checkAuth() }
+                    APIClient.shared.clearCookiesForCurrentServer()
+                    APIClient.shared.setServerURL(previousURL)
+                    APIClient.shared.currentUser = previousUser
+                    APIClient.shared.isLoggedIn = previousUser != nil
+                    Task { await APIClient.shared.checkAuth() }
                 case .failure:
                     // 操作完成但登录失败，回退到之前的服务器
-                    api.clearCookiesForCurrentServer()
-                    api.setServerURL(previousURL)
-                    api.currentUser = previousUser
-                    api.isLoggedIn = previousUser != nil
-                    Task { await api.checkAuth() }
+                    APIClient.shared.clearCookiesForCurrentServer()
+                    APIClient.shared.setServerURL(previousURL)
+                    APIClient.shared.currentUser = previousUser
+                    APIClient.shared.isLoggedIn = previousUser != nil
+                    Task { await APIClient.shared.checkAuth() }
                 }
                 isSwitching = false
                 switchingServerId = nil
@@ -240,7 +239,7 @@ struct ServerListView: View {
     private func deleteServers(at offsets: IndexSet) {
         for index in offsets {
             let server = servers[index]
-            if server.url == api.serverURL { continue }
+            if server.url == APIClient.shared.serverURL { continue }
             modelContext.delete(server)
         }
         modelContext.saveOrLog()

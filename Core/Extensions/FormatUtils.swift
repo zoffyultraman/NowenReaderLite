@@ -1,5 +1,14 @@
 import Foundation
 
+/// 格式化时长（秒 → "X时X分" / "X分" / "X秒"）
+func formatDuration(_ seconds: Int) -> String {
+    let h = seconds / 3600
+    let m = (seconds % 3600) / 60
+    if h > 0 { return "\(h)时\(m)分" }
+    if m > 0 { return "\(m)分" }
+    return "\(seconds)秒"
+}
+
 /// 格式化文件大小
 func formatFileSize(_ bytes: Int64) -> String {
     if bytes < 1024 { return "\(bytes) B" }

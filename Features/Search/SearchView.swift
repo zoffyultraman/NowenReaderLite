@@ -1,9 +1,10 @@
 import SwiftUI
 
 struct SearchView: View {
-    @StateObject private var viewModel = SearchViewModel()
+    @State private var viewModel = SearchViewModel()
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         VStack(spacing: 0) {
             // 搜索栏
             HStack(spacing: 10) {
@@ -49,7 +50,7 @@ struct SearchView: View {
             } else {
                 List(viewModel.results) { comic in
                     NavigationLink(value: comic.id) {
-                        SearchResultRow(comic: comic)
+                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite)
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
@@ -66,34 +67,38 @@ struct SearchView: View {
 }
 
 struct SearchResultRow: View {
-    let comic: Comic
+    let id: String
+    let title: String
+    let author: String?
+    let isNovel: Bool
+    let isFavorite: Bool
 
     var body: some View {
         HStack(spacing: 12) {
-            AuthenticatedImage(serverURL: APIClient.shared.serverURL, comicId: comic.id, thumbnail: true)
+            AuthenticatedImage(serverURL: APIClient.shared.serverURL, comicId: id, thumbnail: true)
                 .frame(width: 50, height: 70)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(comic.title)
+                Text(title)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                if let author = comic.author, !author.isEmpty {
+                if let author, !author.isEmpty {
                     Text(author)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                Text(comic.isNovel ? "小说" : "漫画")
+                Text(isNovel ? "小说" : "漫画")
                     .font(.caption2)
                     .foregroundStyle(Color.accentColor)
             }
 
             Spacer()
 
-            if comic.isFavorite {
+            if isFavorite {
                 Image(systemName: "heart.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -101,16 +106,16 @@ struct SearchResultRow: View {
         }
         .padding(.vertical, 4)
     }
-
 }
 
 // MARK: - ViewModel
 
 @MainActor
-final class SearchViewModel: ObservableObject {
-    @Published var query = ""
-    @Published var results: [Comic] = []
-    @Published var isLoading = false
+@Observable
+final class SearchViewModel {
+    var query = ""
+    var results: [Comic] = []
+    var isLoading = false
 
     private let api = APIClient.shared
     private var searchTask: Task<Void, Never>?

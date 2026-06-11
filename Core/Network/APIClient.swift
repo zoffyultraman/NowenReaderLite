@@ -6,18 +6,19 @@ import Network
 // MARK: - 统一网络层
 
 @MainActor
-final class APIClient: ObservableObject {
+@Observable
+final class APIClient {
     static let shared = APIClient()
 
-    @Published var serverURL: String = UserDefaults.standard.string(forKey: UserDefaultsKey.serverURL) ?? ""
-    @Published var isLoggedIn: Bool = false
-    @Published var currentUser: AuthUser?
+    var serverURL: String = UserDefaults.standard.string(forKey: UserDefaultsKey.serverURL) ?? ""
+    var isLoggedIn: Bool = false
+    var currentUser: AuthUser?
     /// 断网离线模式：有历史登录记录但服务器不可达
-    @Published var isOfflineMode: Bool = false
+    var isOfflineMode: Bool = false
     /// 网络是否可用（NWPathMonitor 实时更新，初始 false 阻止未检测到状态前的请求）
-    @Published private(set) var isNetworkReachable: Bool = false
+    private(set) var isNetworkReachable: Bool = false
     /// 网络恢复标记（用于通知 UI 刷新）
-    @Published var networkRecovered: Bool = false
+    var networkRecovered: Bool = false
 
     private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared

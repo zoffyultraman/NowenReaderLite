@@ -7,9 +7,8 @@ extension Notification.Name {
 
 struct HomeView: View {
     @State private var selectedTab: ContentType = .comic
-    @StateObject private var continueReadingVM = ContinueReadingViewModel()
-    @StateObject private var searchVM = SearchViewModel()
-    @ObservedObject private var api = APIClient.shared
+    @State private var continueReadingVM = ContinueReadingViewModel()
+    @State private var searchVM = SearchViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @FocusState private var isSearchFocused: Bool
@@ -26,6 +25,8 @@ struct HomeView: View {
     }
 
     var body: some View {
+        let api = APIClient.shared
+        @Bindable var searchVM = searchVM
         Group {
             if isSearching {
                 searchResultsList
@@ -52,7 +53,7 @@ struct HomeView: View {
                 Task { await continueReadingVM.load() }
             }
         }
-        .onReceive(api.$networkRecovered) { recovered in
+        .onChange(of: api.networkRecovered) { _, recovered in
             if recovered {
                 Task {
                     await continueReadingVM.load()
@@ -119,7 +120,7 @@ struct HomeView: View {
             } else {
                 ForEach(searchVM.results) { comic in
                     NavigationLink(value: comic.id) {
-                        SearchResultRow(comic: comic)
+                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite)
                     }
                     .buttonStyle(.plain)
                 }
@@ -140,44 +141,11 @@ struct HomeView: View {
                     .padding(.top, 8)
 
                 // 继续观看
-                if !continueReadingVM.items.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("继续观看")
-                            .font(.headline)
-                            .padding(.horizontal, 20)
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(spacing: 14) {
-                                ForEach(continueReadingVM.items) { comic in
-                                    NavigationLink {
-                                        comic.readerView()
-                                    } label: {
-                                        ContinueReadingCard(comic: comic, serverURL: APIClient.shared.serverURL)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                        }
-                        .frame(height: sizeClass == .regular ? 260 : 220)
-                    }
-                    .padding(.top, 8)
-                }
-
-                // 加载失败提示
-                if let error = continueReadingVM.errorMessage {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                            .font(.caption)
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 4)
-                }
+                ContinueReadingSection(
+                    items: continueReadingVM.items,
+                    errorMessage: continueReadingVM.errorMessage,
+                    sizeClass: sizeClass
+                )
 
                 // 分类切换
                 Picker("类型", selection: $selectedTab) {
@@ -201,9 +169,9 @@ struct HomeView: View {
             }
 
             // 离线提示 - 固定在屏幕右下角
-            if api.isOfflineMode {
+            if APIClient.shared.isOfflineMode {
                 Button {
-                    Task { await api.retryConnection() }
+                    Task { await APIClient.shared.retryConnection() }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "wifi.slash")
@@ -224,10 +192,62 @@ struct HomeView: View {
     }
 }
 
+// MARK: - 继续观看段落
+
+struct ContinueReadingSection: View {
+    let items: [Comic]
+    let errorMessage: String?
+    let sizeClass: UserInterfaceSizeClass?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !items.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("继续观看")
+                        .font(.headline)
+                        .padding(.horizontal, 20)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 14) {
+                            ForEach(items) { comic in
+                                NavigationLink {
+                                    comic.readerView()
+                                } label: {
+                                    ContinueReadingCard(id: comic.id, title: comic.title, progress: comic.progress, serverURL: APIClient.shared.serverURL)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .frame(height: sizeClass == .regular ? 260 : 220)
+                }
+                .padding(.top, 8)
+            }
+
+            if let error = errorMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+            }
+        }
+    }
+}
+
 // MARK: - 继续观看卡片
 
 struct ContinueReadingCard: View {
-    let comic: Comic
+    let id: String
+    let title: String
+    let progress: Int
     let serverURL: String
     @Environment(\.horizontalSizeClass) private var sizeClass
 
@@ -237,13 +257,13 @@ struct ContinueReadingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .bottomLeading) {
-                AuthenticatedImage(serverURL: serverURL, comicId: comic.id, thumbnail: true)
+                AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                     .aspectRatio(contentMode: .fill)
                     .frame(width: cardWidth, height: cardHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 // 离线标识
-                if DownloadManager.shared.isDownloaded(comicId: comic.id) {
+                if DownloadManager.shared.isDownloaded(comicId: id) {
                     VStack {
                         HStack {
                             Spacer()
@@ -260,7 +280,7 @@ struct ContinueReadingCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Spacer()
-                    Text("\(comic.progress)%")
+                    Text("\(progress)%")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 8)
@@ -283,7 +303,7 @@ struct ContinueReadingCard: View {
                             Rectangle().fill(.black.opacity(0.3))
                             Rectangle()
                                 .fill(Color.accentColor)
-                                .frame(width: geo.size.width * CGFloat(comic.progress) / 100)
+                                .frame(width: geo.size.width * CGFloat(progress) / 100)
                         }
                     }
                     .frame(height: 3)
@@ -291,7 +311,7 @@ struct ContinueReadingCard: View {
                 }
             }
 
-            Text(comic.title)
+            Text(title)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -319,8 +339,7 @@ enum LibraryItem: Identifiable {
 
 struct LibraryContentView: View {
     let contentType: String
-    @StateObject private var viewModel = LibraryViewModel()
-    @ObservedObject private var api = APIClient.shared
+    @State private var viewModel = LibraryViewModel()
     @State private var viewMode: ViewMode = .grid
     @State private var sortOption: SortOption = .addedAt
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -393,13 +412,13 @@ struct LibraryContentView: View {
                 await viewModel.loadAll()
             }
         }
-        .onChange(of: api.isOfflineMode) { _, isOffline in
+        .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
             // 进入离线模式时重新加载（用已下载内容替换可能过期的缓存）
             if isOffline {
                 Task { await viewModel.loadAll(refresh: true) }
             }
         }
-        .onReceive(api.$networkRecovered) { recovered in
+        .onChange(of: APIClient.shared.networkRecovered) { _, recovered in
             if recovered {
                 Task { await viewModel.loadAll(refresh: true) }
             }
@@ -412,17 +431,19 @@ struct LibraryContentView: View {
         let columns = gridColumns
         return LazyVGrid(columns: columns, spacing: 16) {
             ForEach(items) { item in
-                switch item {
-                case .comic(let comic):
-                    NavigationLink(value: comic.id) {
-                        ComicCardView(comic: comic, serverURL: APIClient.shared.serverURL)
+                Group {
+                    switch item {
+                    case .comic(let comic):
+                        NavigationLink(value: comic.id) {
+                            ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: APIClient.shared.serverURL)
+                        }
+                        .buttonStyle(.plain)
+                    case .group(let group):
+                        NavigationLink(value: "group_\(group.id)") {
+                            GroupCardView(group: group, serverURL: APIClient.shared.serverURL)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                case .group(let group):
-                    NavigationLink(value: "group_\(group.id)") {
-                        GroupCardView(group: group, serverURL: APIClient.shared.serverURL)
-                    }
-                    .buttonStyle(.plain)
                 }
 
                 if item.id == items.last?.id, !viewModel.isLoading {
@@ -443,23 +464,25 @@ struct LibraryContentView: View {
     private var listView: some View {
         LazyVStack(spacing: 0) {
             ForEach(items) { item in
-                switch item {
-                case .comic(let comic):
-                    NavigationLink(value: comic.id) {
-                        ComicListRowView(comic: comic, serverURL: APIClient.shared.serverURL)
-                            .padding(.horizontal, 20)
+                Group {
+                    switch item {
+                    case .comic(let comic):
+                        NavigationLink(value: comic.id) {
+                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: APIClient.shared.serverURL)
+                                .padding(.horizontal, 20)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        Divider().padding(.leading, 80)
+                    case .group(let group):
+                        NavigationLink(value: "group_\(group.id)") {
+                            GroupListRowView(group: group, serverURL: APIClient.shared.serverURL)
+                                .padding(.horizontal, 20)
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        Divider().padding(.leading, 80)
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                    Divider().padding(.leading, 80)
-                case .group(let group):
-                    NavigationLink(value: "group_\(group.id)") {
-                        GroupListRowView(group: group, serverURL: APIClient.shared.serverURL)
-                            .padding(.horizontal, 20)
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                    Divider().padding(.leading, 80)
                 }
 
                 if item.id == items.last?.id, !viewModel.isLoading {
@@ -602,9 +625,10 @@ struct GroupListRowView: View {
 // MARK: - 继续观看 ViewModel
 
 @MainActor
-final class ContinueReadingViewModel: ObservableObject {
-    @Published var items: [Comic] = []
-    @Published var errorMessage: String?
+@Observable
+final class ContinueReadingViewModel {
+    var items: [Comic] = []
+    var errorMessage: String?
 
     private var modelContext: ModelContext?
 

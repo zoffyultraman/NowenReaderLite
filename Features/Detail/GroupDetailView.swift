@@ -3,7 +3,7 @@ import SwiftData
 
 struct GroupDetailView: View {
     let groupId: Int
-    @StateObject private var viewModel = GroupDetailViewModel()
+    @State private var viewModel = GroupDetailViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var downloadManager = DownloadManager.shared
@@ -265,10 +265,11 @@ struct VolumeListRowView: View {
 // MARK: - ViewModel
 
 @MainActor
-final class GroupDetailViewModel: ObservableObject {
-    @Published var detail: GroupDetailResponse?
-    @Published var isLoading = false
-    @Published var errorMessage: String?
+@Observable
+final class GroupDetailViewModel {
+    var detail: GroupDetailResponse?
+    var isLoading = false
+    var errorMessage: String?
 
     func load(groupId: Int, context: ModelContext? = nil) async {
         guard !isLoading else { return }
