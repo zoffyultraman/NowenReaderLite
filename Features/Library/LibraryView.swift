@@ -170,12 +170,106 @@ final class LibraryViewModel: ObservableObject {
 
     func updateDisplayItems() {
         if contentType == "comic" {
-            var result: [LibraryItem] = groups.map { .group($0) }
+            // 合集和散本统一混合排序
+            var allItems: [LibraryItem] = []
+            allItems.append(contentsOf: groups.map { .group($0) })
             let ungrouped = comics.filter { !groupedComicIds.contains($0.id) }
-            result.append(contentsOf: ungrouped.map { .comic($0) })
-            displayItems = result
+            allItems.append(contentsOf: ungrouped.map { .comic($0) })
+
+            // 统一排序
+            allItems.sort { lhs, rhs in
+                compareLibraryItems(lhs, rhs, sortBy: sortBy, sortOrder: sortOrder)
+            }
+            displayItems = allItems
         } else {
             displayItems = comics.map { .comic($0) }
+        }
+    }
+
+    // MARK: - 统一排序比较
+
+    /// 合集与散本统一排序比较
+    private func compareLibraryItems(_ lhs: LibraryItem, _ rhs: LibraryItem, sortBy: String, sortOrder: String) -> Bool {
+        let ascending = sortOrder == "asc"
+
+        switch sortBy {
+        case "title":
+            let lt = itemTitle(lhs)
+            let rt = itemTitle(rhs)
+            if lt == rt { return sortOrderValue(lhs) < sortOrderValue(rhs) }
+            return ascending ? (lt < rt) : (lt > rt)
+
+        case "lastReadAt":
+            let ld = itemLastReadDate(lhs)
+            let rd = itemLastReadDate(rhs)
+            // 无日期的排在最后
+            switch (ld, rd) {
+            case (nil, nil): return sortOrderValue(lhs) < sortOrderValue(rhs)
+            case (nil, _): return false
+            case (_, nil): return true
+            case let (l?, r?):
+                if l == r { return sortOrderValue(lhs) < sortOrderValue(rhs) }
+                return ascending ? (l < r) : (l > r)
+            }
+
+        case "rating":
+            let lr = itemRating(lhs)
+            let rr = itemRating(rhs)
+            // 无评分的排在最后
+            switch (lr, rr) {
+            case (nil, nil): return sortOrderValue(lhs) < sortOrderValue(rhs)
+            case (nil, _): return false
+            case (_, nil): return true
+            case let (l?, r?):
+                if l == r { return sortOrderValue(lhs) < sortOrderValue(rhs) }
+                return ascending ? (l < r) : (l > r)
+            }
+
+        case "readTime":
+            let lt = itemReadTime(lhs)
+            let rt = itemReadTime(rhs)
+            if lt == rt { return sortOrderValue(lhs) < sortOrderValue(rhs) }
+            return ascending ? (lt < rt) : (lt > rt)
+
+        default: // addedAt — 使用 sortOrder 作为排序依据
+            let ls = sortOrderValue(lhs)
+            let rs = sortOrderValue(rhs)
+            return ascending ? (ls < rs) : (ls > rs)
+        }
+    }
+
+    private func itemTitle(_ item: LibraryItem) -> String {
+        switch item {
+        case .comic(let c): return c.title
+        case .group(let g): return g.name
+        }
+    }
+
+    private func itemLastReadDate(_ item: LibraryItem) -> Date? {
+        switch item {
+        case .comic(let c): return c.lastReadAt.flatMap { Date.fromISO8601($0) }
+        case .group: return nil
+        }
+    }
+
+    private func itemRating(_ item: LibraryItem) -> Double? {
+        switch item {
+        case .comic(let c): return c.rating
+        case .group: return nil
+        }
+    }
+
+    private func itemReadTime(_ item: LibraryItem) -> Int {
+        switch item {
+        case .comic(let c): return c.totalReadTime ?? 0
+        case .group: return 0
+        }
+    }
+
+    private func sortOrderValue(_ item: LibraryItem) -> Int {
+        switch item {
+        case .comic(let c): return c.sortOrder ?? Int.max
+        case .group(let g): return g.sortOrder ?? Int.max
         }
     }
 
@@ -320,7 +414,10 @@ final class LibraryViewModel: ObservableObject {
     func updateSort(by: String, order: String) {
         sortBy = by
         sortOrder = order
-        Task { await loadComics(refresh: true) }
+        Task {
+            await loadComics(refresh: true)
+            updateDisplayItems()
+        }
     }
 
     func setContentType(_ type: String?) {

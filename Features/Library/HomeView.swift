@@ -328,14 +328,14 @@ struct LibraryContentView: View {
 
     enum ViewMode { case grid, list }
     enum SortOption: String, CaseIterable {
-        case addedAt, title, lastReadAt, rating, pageCount
+        case addedAt, title, lastReadAt, rating, readTime
         var label: String {
             switch self {
             case .addedAt: return "最近添加"
             case .title: return "标题"
             case .lastReadAt: return "最近阅读"
             case .rating: return "评分"
-            case .pageCount: return "页数"
+            case .readTime: return "阅读时间"
             }
         }
     }
