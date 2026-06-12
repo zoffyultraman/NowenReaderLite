@@ -89,6 +89,11 @@ final class APIClient {
         UserDefaults.standard.set(trimmed, forKey: UserDefaultsKey.serverURL)
     }
 
+    /// 手动设置网络可达状态（首次配置服务器时使用）
+    func setNetworkReachable(_ reachable: Bool) {
+        isNetworkReachable = reachable
+    }
+
     func testConnection(_ url: String) async -> Bool {
         let trimmed = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return await withTaskGroup(of: Bool.self) { group in
@@ -217,7 +222,7 @@ final class APIClient {
     // MARK: - 连接测试
 
     /// 测试服务器是否可达（并发检测两个端点，谁先返回用谁）
-    private func testServerReachable() async -> Bool {
+    func testServerReachable() async -> Bool {
         await withTaskGroup(of: Bool.self) { group in
             // /api/health HEAD
             if let url = URL(string: "\(serverURL)/api/health") {

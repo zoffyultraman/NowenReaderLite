@@ -5,7 +5,8 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
-    @State private var cacheSize: Int = 0
+    @State private var coverCacheSize: Int = 0
+    @State private var metaCacheSize: Int = 0
     @State private var novelCacheSize: Int = 0
     @State private var offlineSize: Int64 = 0
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
@@ -159,9 +160,17 @@ struct SettingsView: View {
             // 缓存
             Section("缓存") {
                 HStack {
-                    Label("漫画缓存", systemImage: "internaldrive")
+                    Label("封面缓存", systemImage: "photo")
                     Spacer()
-                    Text(formatFileSize(Int64(cacheSize)))
+                    Text(formatFileSize(Int64(coverCacheSize)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
+                    Label("元数据缓存", systemImage: "doc.text")
+                    Spacer()
+                    Text(formatFileSize(Int64(metaCacheSize)))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -184,7 +193,7 @@ struct SettingsView: View {
                         Spacer()
                     }
                 }
-                .disabled(cacheSize == 0 && novelCacheSize == 0)
+                .disabled(coverCacheSize == 0 && metaCacheSize == 0 && novelCacheSize == 0)
             }
 
             // 已下载
@@ -308,7 +317,7 @@ struct SettingsView: View {
                 clearCache()
             }
         } message: {
-            Text("将释放 \(formatFileSize(Int64(cacheSize + novelCacheSize))) 空间，不影响服务器数据。")
+            Text("将释放 \(formatFileSize(Int64(coverCacheSize + metaCacheSize + novelCacheSize))) 空间，不影响服务器数据。")
         }
     }
 
@@ -324,7 +333,7 @@ struct SettingsView: View {
 
     private func loadCacheSize() {
         let comics = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "加载缓存大小")
-        cacheSize = comics.reduce(0) { total, comic in
+        metaCacheSize = comics.reduce(0) { total, comic in
             total
                 + (comic.id.utf8.count)
                 + (comic.title.utf8.count)
@@ -333,9 +342,8 @@ struct SettingsView: View {
                 + (comic.type?.utf8.count ?? 0)
                 + 8 + 8 + 1 + 8 + 8 + 8 + 8
         }
+        coverCacheSize = Int(ImageCache.shared.diskSize)
         novelCacheSize = ChapterCache.totalNovelCacheBytes
-        // 图片磁盘缓存计入总大小
-        cacheSize += Int(ImageCache.shared.diskSize)
         // 已下载漫画大小
         offlineSize = OfflineFileManager.shared.totalDiskSize
     }
@@ -343,10 +351,11 @@ struct SettingsView: View {
     private func clearCache() {
         try? modelContext.delete(model: CachedComic.self)
         modelContext.saveOrLog()
-        cacheSize = 0
+        metaCacheSize = 0
+        coverCacheSize = 0
+        ImageCache.shared.clear()
         novelCacheSize = 0
         ChapterCache.totalNovelCacheBytes = 0
         NotificationCenter.default.post(name: .novelChapterCacheClear, object: nil)
-        ImageCache.shared.clear()
     }
 }

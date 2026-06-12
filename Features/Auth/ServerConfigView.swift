@@ -206,7 +206,12 @@ struct ServerConfigView: View {
         let trimmed = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         APIClient.shared.setServerURL(trimmed)
         Task {
+            // 首次配置服务器时 isNetworkReachable 为 false（init 时 serverURL 为空未启动监测）
+            // 用户已通过"测试连接"验证可达，直接标记为可达
+            APIClient.shared.setNetworkReachable(true)
+
             await APIClient.shared.checkAuth()
+
             // Save or update server record
             let descriptor = FetchDescriptor<ServerRecord>(
                 predicate: #Predicate<ServerRecord> { $0.url == trimmed }
