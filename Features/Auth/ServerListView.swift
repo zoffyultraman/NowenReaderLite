@@ -149,6 +149,7 @@ struct ServerListView: View {
 
         let previousURL = APIClient.shared.serverURL
         let previousUser = APIClient.shared.currentUser
+        let previousIsLoggedIn = APIClient.shared.isLoggedIn
 
         isSwitching = true
         switchingServerId = record.url
@@ -176,16 +177,17 @@ struct ServerListView: View {
                         return true
                     } catch {
                         AppLogger.error("自动登录失败: \(error)")
+                        return false
                     }
                 }
 
-                // 无绑定账号或自动登录失败
+                // 无绑定账号：检查服务器是否可达 + 是否已有登录态
                 await APIClient.shared.checkAuth()
                 await MainActor.run {
                     record.username = APIClient.shared.currentUser?.username
                 }
                 self.modelContext.saveOrLog(label: "更新服务器用户名")
-                return true
+                return APIClient.shared.isLoggedIn
             }
 
             await MainActor.run {
@@ -195,22 +197,37 @@ struct ServerListView: View {
                 case .timeout:
                     timeoutServerURL = record.url
                     showTimeoutAlert = true
-                    APIClient.shared.clearCookiesForCurrentServer()
-                    APIClient.shared.setServerURL(previousURL)
-                    APIClient.shared.currentUser = previousUser
-                    APIClient.shared.isLoggedIn = previousUser != nil
-                    Task { await APIClient.shared.checkAuth() }
+                    rollbackTo(previousURL: previousURL, previousUser: previousUser, isLoggedIn: previousIsLoggedIn)
                 case .failure:
-                    // 操作完成但登录失败，回退到之前的服务器
-                    APIClient.shared.clearCookiesForCurrentServer()
-                    APIClient.shared.setServerURL(previousURL)
-                    APIClient.shared.currentUser = previousUser
-                    APIClient.shared.isLoggedIn = previousUser != nil
-                    Task { await APIClient.shared.checkAuth() }
+                    // 登录失败或服务器不可达，回退到之前的服务器
+                    rollbackTo(previousURL: previousURL, previousUser: previousUser, isLoggedIn: previousIsLoggedIn)
                 }
                 isSwitching = false
                 switchingServerId = nil
             }
+        }
+    }
+
+    private func rollbackTo(previousURL: String, previousUser: AuthUser?, isLoggedIn: Bool) {
+        APIClient.shared.clearCookiesForCurrentServer()
+        APIClient.shared.setServerURL(previousURL)
+        APIClient.shared.currentUser = previousUser
+        APIClient.shared.isLoggedIn = isLoggedIn
+
+        Task {
+            // cookie 已丢失，尝试用绑定账号重新登录
+            if let record = servers.first(where: { $0.url == previousURL }),
+               let accountId = record.boundAccountId,
+               let account = findAccount(id: accountId) {
+                do {
+                    _ = try await APIClient.shared.quickLogin(account: account)
+                    return
+                } catch {
+                    AppLogger.error("回滚后自动登录失败: \(error)")
+                }
+            }
+            // 无绑定账号或登录失败，仅检查当前状态
+            await APIClient.shared.checkAuth()
         }
     }
 
