@@ -6,13 +6,23 @@ struct FavoritesView: View {
     var body: some View {
         let api = APIClient.shared
         if api.isOfflineMode {
-            offlineUnavailableView
+            OfflineUnavailableView(
+                icon: "wifi.slash",
+                title: "离线模式不可用",
+                subtitle: "收藏功能需要连接服务器"
+            )
         } else {
-            mainContent
+            FavoritesMainContent(viewModel: viewModel)
         }
     }
+}
 
-    private var mainContent: some View {
+// MARK: - 收藏主内容
+
+struct FavoritesMainContent: View {
+    let viewModel: FavoritesViewModel
+
+    var body: some View {
         Group {
             if viewModel.comics.isEmpty && !viewModel.isLoading {
                 VStack(spacing: 12) {
@@ -57,7 +67,6 @@ struct FavoritesView: View {
             await viewModel.loadFavorites()
         }
         .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
-            // 进入离线时立即清空数据和加载态，避免残留加载/空状态
             if isOffline {
                 viewModel.comics = []
                 viewModel.isLoading = false
@@ -69,16 +78,24 @@ struct FavoritesView: View {
             }
         }
     }
+}
 
-    private var offlineUnavailableView: some View {
+// MARK: - 离线不可用视图（复用）
+
+struct OfflineUnavailableView: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+
+    var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "wifi.slash")
+            Image(systemName: icon)
                 .font(.system(size: 44))
                 .foregroundStyle(.tertiary)
-            Text("离线模式不可用")
+            Text(title)
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Text("收藏功能需要连接服务器")
+            Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

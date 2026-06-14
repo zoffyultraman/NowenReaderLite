@@ -50,7 +50,7 @@ struct SearchView: View {
             } else {
                 List(viewModel.results) { comic in
                     NavigationLink(value: comic.id) {
-                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite)
+                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: APIClient.shared.serverURL)
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
@@ -72,10 +72,11 @@ struct SearchResultRow: View {
     let author: String?
     let isNovel: Bool
     let isFavorite: Bool
+    let serverURL: String
 
     var body: some View {
         HStack(spacing: 12) {
-            AuthenticatedImage(serverURL: APIClient.shared.serverURL, comicId: id, thumbnail: true)
+            AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                 .frame(width: 50, height: 70)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 

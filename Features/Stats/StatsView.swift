@@ -7,29 +7,35 @@ struct StatsView: View {
     var body: some View {
         let api = APIClient.shared
         if api.isOfflineMode {
-            offlineUnavailableView
+            OfflineUnavailableView(
+                icon: "wifi.slash",
+                title: "离线模式不可用",
+                subtitle: "统计功能需要连接服务器"
+            )
         } else {
-            mainContent
+            StatsMainContent(viewModel: viewModel, showGoalSheet: $showGoalSheet)
         }
     }
+}
 
-    private var mainContent: some View {
+// MARK: - 统计主内容
+
+struct StatsMainContent: View {
+    let viewModel: StatsViewModel
+    @Binding var showGoalSheet: Bool
+
+    var body: some View {
         ScrollView {
             if let stats = viewModel.enhancedStats {
                 VStack(spacing: 20) {
-                    // 目标进度
                     GoalSectionView(goals: viewModel.goals, onAddGoal: { showGoalSheet = true })
 
-                    // 今日 + 本周概览
                     StatsOverviewCardsView(stats: stats)
 
-                    // 连续阅读
                     StreakCardView(current: stats.currentStreak, longest: stats.longestStreak)
 
-                    // 每日阅读柱状图
                     DailyChartCardView(dailyStats: stats.dailyStats)
 
-                    // 类型偏好
                     if !stats.genreStats.isEmpty {
                         GenreSectionView(genreStats: stats.genreStats)
                     }
@@ -67,22 +73,6 @@ struct StatsView: View {
             )
         }
     }
-
-    private var offlineUnavailableView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "wifi.slash")
-                .font(.system(size: 44))
-                .foregroundStyle(.tertiary)
-            Text("离线模式不可用")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            Text("统计功能需要连接服务器")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
 }
 
 // MARK: - 目标进度卡片

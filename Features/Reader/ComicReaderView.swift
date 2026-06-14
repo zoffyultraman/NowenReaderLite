@@ -86,7 +86,7 @@ struct ComicReaderView: View {
                 overlayUI
             }
         }
-        .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden(!showOverlay)
         .task {
@@ -110,12 +110,36 @@ struct ComicReaderView: View {
     }
 
     private var overlayUI: some View {
+        ReaderOverlayView(
+            currentPage: viewModel.currentPage,
+            totalPages: viewModel.totalPages,
+            sliderValue: $viewModel.sliderValue,
+            hasGroupContext: viewModel.groupContext != nil,
+            volumeLabel: volumeLabel,
+            onDismiss: { dismiss() }
+        )
+    }
+
+    private var volumeLabel: String {
+        guard let ctx = viewModel.groupContext else { return "" }
+        return "\(ctx.currentIndex + 1)/\(ctx.volumeIds.count)"
+    }
+}
+
+// MARK: - 阅读器覆盖层
+
+struct ReaderOverlayView: View {
+    let currentPage: Int
+    let totalPages: Int
+    @Binding var sliderValue: Double
+    let hasGroupContext: Bool
+    let volumeLabel: String
+    let onDismiss: () -> Void
+
+    var body: some View {
         VStack {
-            // 顶部栏
             HStack {
-                Button {
-                    dismiss()
-                } label: {
+                Button(action: onDismiss) {
                     Image(systemName: "chevron.left")
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white)
@@ -125,13 +149,13 @@ struct ComicReaderView: View {
 
                 Spacer()
 
-                Text("\(viewModel.currentPage + 1) / \(viewModel.totalPages)")
+                Text("\(currentPage + 1) / \(totalPages)")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.white)
 
                 Spacer()
 
-                if viewModel.groupContext != nil {
+                if hasGroupContext {
                     Text(volumeLabel)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.7))
@@ -145,18 +169,14 @@ struct ComicReaderView: View {
 
             Spacer()
 
-            // 底部进度条
             VStack(spacing: 8) {
-                Text("第 \(viewModel.currentPage + 1) 页")
+                Text("第 \(currentPage + 1) 页")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.white)
 
                 Slider(
-                    value: Binding(
-                        get: { Double(viewModel.currentPage) },
-                        set: { viewModel.onSliderChanged(Int($0)) }
-                    ),
-                    in: 0...Double(max(0, viewModel.totalPages - 1)),
+                    value: $sliderValue,
+                    in: 0...Double(max(0, totalPages - 1)),
                     step: 1
                 )
                 .tint(Color.accentColor)
@@ -166,7 +186,7 @@ struct ComicReaderView: View {
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.6))
                     Spacer()
-                    Text("\(viewModel.totalPages)")
+                    Text("\(totalPages)")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -177,11 +197,6 @@ struct ComicReaderView: View {
             .background(.ultraThinMaterial.opacity(0.3))
         }
         .transition(.opacity)
-    }
-
-    private var volumeLabel: String {
-        guard let ctx = viewModel.groupContext else { return "" }
-        return "\(ctx.currentIndex + 1)/\(ctx.volumeIds.count)"
     }
 }
 

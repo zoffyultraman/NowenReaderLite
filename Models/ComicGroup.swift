@@ -54,6 +54,6 @@ struct GroupComicItem: Codable, Identifiable, Hashable {
 
     var progress: Int {
         guard pageCount > 0 else { return 0 }
-        return min(100, Int(Double(lastReadPage) / Double(pageCount) * 100))
+        return min(100, Int(Double(lastReadPage + 1) / Double(pageCount) * 100))
     }
 }

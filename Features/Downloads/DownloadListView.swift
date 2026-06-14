@@ -3,11 +3,21 @@ import SwiftData
 
 /// 已下载漫画管理页面
 struct DownloadListView: View {
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @State private var showClearAlert = false
-    @State private var activeTasks: [DownloadTask] = []
-    @State private var completedTasks: [DownloadTask] = []
+
+    private var activeTasks: [DownloadTask] {
+        downloadManager.tasks.values
+            .filter { $0.state == .downloading || $0.state == .waiting || $0.state == .paused }
+            .sorted { $0.title < $1.title }
+    }
+
+    private var completedTasks: [DownloadTask] {
+        downloadManager.tasks.values
+            .filter { $0.state == .completed }
+            .sorted { $0.title < $1.title }
+    }
 
     var body: some View {
         List {
@@ -74,10 +84,6 @@ struct DownloadListView: View {
         .task {
             downloadManager.setModelContext(modelContext)
             downloadManager.restoreFromStore(context: modelContext)
-            refreshTasks()
-        }
-        .onChange(of: downloadManager.downloadVersion) {
-            refreshTasks()
         }
         .alert("清除全部下载", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
@@ -90,22 +96,12 @@ struct DownloadListView: View {
             Text("将删除所有已下载的漫画文件，此操作不可恢复。")
         }
     }
-
-    private func refreshTasks() {
-        let tasks = downloadManager.tasks.values
-        activeTasks = tasks
-            .filter { $0.state == .downloading || $0.state == .waiting || $0.state == .paused }
-            .sorted { $0.title < $1.title }
-        completedTasks = tasks
-            .filter { $0.state == .completed }
-            .sorted { $0.title < $1.title }
-    }
 }
 
 // MARK: - 下载中的任务行
 
 struct DownloadTaskRow: View {
-    @ObservedObject var task: DownloadTask
+    let task: DownloadTask
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -162,7 +158,7 @@ struct DownloadTaskRow: View {
 // MARK: - 已完成的任务行
 
 struct CompletedDownloadRow: View {
-    @ObservedObject var task: DownloadTask
+    let task: DownloadTask
 
     var body: some View {
         NavigationLink {
@@ -186,6 +182,7 @@ struct CompletedDownloadRow: View {
             } label: {
                 Label("删除", systemImage: "trash")
             }
+            .tint(.red)
         }
     }
 }

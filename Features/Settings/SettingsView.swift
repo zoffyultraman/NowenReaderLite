@@ -102,16 +102,16 @@ struct SettingsView: View {
                     } label: {
                         HStack {
                             Text(upscaleMode.rawValue)
-                                .foregroundColor(.primary)
+                                .foregroundStyle(.primary)
                                 .animation(nil, value: upscaleMode)
                             Image(systemName: "chevron.down")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(Color(.systemGray6))
-                        .cornerRadius(8)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
 
@@ -143,16 +143,16 @@ struct SettingsView: View {
                     } label: {
                         HStack {
                             Text(pageTransitionStyle)
-                                .foregroundColor(.primary)
+                                .foregroundStyle(.primary)
                                 .animation(nil, value: pageTransitionStyle)
                             Image(systemName: "chevron.down")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(Color(.systemGray6))
-                        .cornerRadius(8)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
             }
@@ -249,16 +249,16 @@ struct SettingsView: View {
                     } label: {
                         HStack {
                             Text(currentLimitLabel)
-                                .foregroundColor(.primary)
+                                .foregroundStyle(.primary)
                                 .animation(nil, value: storageLimitMB)
                             Image(systemName: "chevron.down")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(Color(.systemGray6))
-                        .cornerRadius(8)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
 

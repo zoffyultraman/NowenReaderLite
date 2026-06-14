@@ -6,7 +6,6 @@ struct GroupDetailView: View {
     @State private var viewModel = GroupDetailViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var downloadManager = DownloadManager.shared
     @State private var isGrid = true
     @State private var showDownloadAllAlert = false
     @State private var showDownloadResult = false
@@ -75,6 +74,7 @@ struct GroupDetailView: View {
                     }
 
                     // 卷列表
+                    let volumeIds = detail.comics.map { $0.id }
                     if isGrid {
                         let cols = Array(repeating: GridItem(.flexible(), spacing: 12), count: sizeClass == .regular ? 5 : 3)
                         LazyVGrid(columns: cols, spacing: 16) {
@@ -84,7 +84,7 @@ struct GroupDetailView: View {
                                         comicId: comic.id,
                                         groupContext: ReadingGroupContext(
                                             groupId: viewModel.detail?.id ?? groupId,
-                                            volumeIds: detail.comics.map { $0.id },
+                                            volumeIds: volumeIds,
                                             currentIndex: index
                                         )
                                     )
@@ -105,7 +105,7 @@ struct GroupDetailView: View {
                                         comicId: comic.id,
                                         groupContext: ReadingGroupContext(
                                             groupId: viewModel.detail?.id ?? groupId,
-                                            volumeIds: detail.comics.map { $0.id },
+                                            volumeIds: volumeIds,
                                             currentIndex: index
                                         )
                                     )
@@ -152,14 +152,14 @@ struct GroupDetailView: View {
             }
         }
         .task {
-            downloadManager.setModelContext(modelContext)
+            DownloadManager.shared.setModelContext(modelContext)
             await viewModel.load(groupId: groupId, context: modelContext)
         }
         .alert("下载全部卷", isPresented: $showDownloadAllAlert) {
             Button("取消", role: .cancel) {}
             Button("下载") {
                 guard let detail = viewModel.detail else { return }
-                let result = downloadManager.downloadAll(comics: detail.comics, groupDetail: detail)
+                let result = DownloadManager.shared.downloadAll(comics: detail.comics, groupDetail: detail)
                 downloadQueued = result.queued
                 downloadSkipped = result.skipped
                 showDownloadResult = true
@@ -167,7 +167,7 @@ struct GroupDetailView: View {
         } message: {
             if let detail = viewModel.detail {
                 let totalPages = detail.comics.reduce(0) { $0 + $1.pageCount }
-                let alreadyDownloaded = detail.comics.filter { downloadManager.isDownloaded(comicId: $0.id) }.count
+                let alreadyDownloaded = detail.comics.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
                 Text("共 \(detail.comics.count) 卷、\(totalPages) 页。已下载 \(alreadyDownloaded) 卷，其余将加入下载队列。")
             }
         }

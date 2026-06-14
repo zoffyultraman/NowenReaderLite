@@ -29,9 +29,18 @@ struct HomeView: View {
         @Bindable var searchVM = searchVM
         Group {
             if isSearching {
-                searchResultsList
+                HomeSearchResults(
+                    searchVM: searchVM,
+                    isSearchFocused: $isSearchFocused
+                )
             } else {
-                mainContent
+                HomeMainContent(
+                    selectedTab: $selectedTab,
+                    continueReadingVM: continueReadingVM,
+                    searchVM: searchVM,
+                    isSearchFocused: $isSearchFocused,
+                    sizeClass: sizeClass
+                )
             }
         }
         .navigationTitle("书架")
@@ -57,17 +66,21 @@ struct HomeView: View {
             if recovered {
                 Task {
                     await continueReadingVM.load()
-                    // 通知 LibraryContentView 刷新
                     NotificationCenter.default.post(name: .networkRecovered, object: nil)
                     api.networkRecovered = false
                 }
             }
         }
     }
+}
 
-    // MARK: - 搜索栏（复用）
+// MARK: - 搜索栏
 
-    private var searchBar: some View {
+struct HomeSearchBar: View {
+    @Bindable var searchVM: SearchViewModel
+    @FocusState.Binding var isSearchFocused: Bool
+
+    var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
@@ -94,10 +107,15 @@ struct HomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 16)
     }
+}
 
-    // MARK: - 搜索结果
+// MARK: - 搜索结果
 
-    private var searchResultsList: some View {
+struct HomeSearchResults: View {
+    @Bindable var searchVM: SearchViewModel
+    @FocusState.Binding var isSearchFocused: Bool
+
+    var body: some View {
         List {
             if searchVM.isLoading {
                 HStack {
@@ -120,7 +138,7 @@ struct HomeView: View {
             } else {
                 ForEach(searchVM.results) { comic in
                     NavigationLink(value: comic.id) {
-                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite)
+                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: APIClient.shared.serverURL)
                     }
                     .buttonStyle(.plain)
                 }
@@ -128,28 +146,35 @@ struct HomeView: View {
         }
         .listStyle(.plain)
         .overlay(alignment: .top) {
-            searchBar.padding(.top, 8)
+            HomeSearchBar(searchVM: searchVM, isSearchFocused: $isSearchFocused)
+                .padding(.top, 8)
         }
     }
+}
 
-    // MARK: - 主内容
+// MARK: - 主内容
 
-    private var mainContent: some View {
+struct HomeMainContent: View {
+    @Binding var selectedTab: HomeView.ContentType
+    let continueReadingVM: ContinueReadingViewModel
+    @Bindable var searchVM: SearchViewModel
+    @FocusState.Binding var isSearchFocused: Bool
+    let sizeClass: UserInterfaceSizeClass?
+
+    var body: some View {
         ZStack(alignment: .bottomTrailing) {
             ScrollView {
-                searchBar
+                HomeSearchBar(searchVM: searchVM, isSearchFocused: $isSearchFocused)
                     .padding(.top, 8)
 
-                // 继续观看
                 ContinueReadingSection(
                     items: continueReadingVM.items,
                     errorMessage: continueReadingVM.errorMessage,
                     sizeClass: sizeClass
                 )
 
-                // 分类切换
                 Picker("类型", selection: $selectedTab) {
-                    ForEach(ContentType.allCases, id: \.self) { type in
+                    ForEach(HomeView.ContentType.allCases, id: \.self) { type in
                         Label(type.title, systemImage: type.icon).tag(type)
                     }
                 }
@@ -157,7 +182,6 @@ struct HomeView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, continueReadingVM.items.isEmpty ? 8 : 16)
 
-                // 内容列表
                 if selectedTab == .comic {
                     LibraryContentView(contentType: "comic")
                 } else {
@@ -168,7 +192,6 @@ struct HomeView: View {
                 await continueReadingVM.load()
             }
 
-            // 离线提示 - 固定在屏幕右下角
             if APIClient.shared.isOfflineMode {
                 Button {
                     Task { await APIClient.shared.retryConnection() }
@@ -412,17 +435,7 @@ struct LibraryContentView: View {
                 await viewModel.loadAll()
             }
         }
-        .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
-            // 进入离线模式时重新加载（用已下载内容替换可能过期的缓存）
-            if isOffline {
-                Task { await viewModel.loadAll(refresh: true) }
-            }
-        }
-        .onChange(of: APIClient.shared.networkRecovered) { _, recovered in
-            if recovered {
-                Task { await viewModel.loadAll(refresh: true) }
-            }
-        }
+        .networkRefresh { await viewModel.loadAll(refresh: true) }
     }
 
     // MARK: - Grid
@@ -431,7 +444,7 @@ struct LibraryContentView: View {
         let columns = gridColumns
         return LazyVGrid(columns: columns, spacing: 16) {
             ForEach(items) { item in
-                Group {
+                VStack {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
@@ -445,10 +458,10 @@ struct LibraryContentView: View {
                         .buttonStyle(.plain)
                     }
                 }
+            }
 
-                if item.id == items.last?.id, !viewModel.isLoading {
-                    Color.clear.onAppear { Task { await viewModel.loadMore() } }
-                }
+            if !viewModel.isLoading {
+                Color.clear.onAppear { Task { await viewModel.loadMore() } }
             }
 
             if viewModel.isLoading {
@@ -464,7 +477,7 @@ struct LibraryContentView: View {
     private var listView: some View {
         LazyVStack(spacing: 0) {
             ForEach(items) { item in
-                Group {
+                VStack {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
@@ -484,10 +497,10 @@ struct LibraryContentView: View {
                         Divider().padding(.leading, 80)
                     }
                 }
+            }
 
-                if item.id == items.last?.id, !viewModel.isLoading {
-                    Color.clear.onAppear { Task { await viewModel.loadMore() } }
-                }
+            if !viewModel.isLoading {
+                Color.clear.onAppear { Task { await viewModel.loadMore() } }
             }
 
             if viewModel.isLoading { ProgressView().padding() }
@@ -681,5 +694,33 @@ final class ContinueReadingViewModel {
             items = allDownloaded
             errorMessage = nil
         }
+    }
+}
+
+// MARK: - 网络刷新 Modifier
+
+/// 将 isOfflineMode/networkRecovered 的 .onChange 副作用从视图 body 中隔离出来，
+/// 避免这些依赖触发整个视图 body 的重新计算。
+struct NetworkRefreshModifier: ViewModifier {
+    let onRefresh: () async -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
+                if isOffline {
+                    Task { await onRefresh() }
+                }
+            }
+            .onChange(of: APIClient.shared.networkRecovered) { _, recovered in
+                if recovered {
+                    Task { await onRefresh() }
+                }
+            }
+    }
+}
+
+extension View {
+    func networkRefresh(_ onRefresh: @escaping () async -> Void) -> some View {
+        modifier(NetworkRefreshModifier(onRefresh: onRefresh))
     }
 }

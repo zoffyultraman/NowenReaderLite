@@ -10,6 +10,12 @@ final class ComicReaderViewModel {
     var currentComicId: String
     var groupContext: ReadingGroupContext?
 
+    /// 供 Slider 使用的 Double 绑定（KeyPath binding 代替闭包 binding）
+    var sliderValue: Double {
+        get { Double(currentPage) }
+        set { onSliderChanged(Int(newValue)) }
+    }
+
     private var sessionId: Int?
     private var sessionStart: Date?
     private var hasEnded = false
@@ -118,7 +124,7 @@ final class ComicReaderViewModel {
         if let first = cached.first {
             first.lastReadPage = page
             if first.pageCount > 0 {
-                first.progress = min(100, Int(Double(page) / Double(first.pageCount) * 100))
+                first.progress = min(100, Int(Double(page + 1) / Double(first.pageCount) * 100))
             }
             first.lastReadAt = Date()
         } else {
@@ -129,7 +135,7 @@ final class ComicReaderViewModel {
             comic.pageCount = totalPages
             comic.lastReadPage = page
             comic.cachedAt = Date()
-            comic.progress = totalPages > 0 ? min(100, Int(Double(page) / Double(totalPages) * 100)) : 0
+            comic.progress = totalPages > 0 ? min(100, Int(Double(page + 1) / Double(totalPages) * 100)) : 0
             comic.lastReadAt = Date()
             context.insert(comic)
         }

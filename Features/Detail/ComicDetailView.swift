@@ -6,17 +6,20 @@ struct ComicDetailView: View {
     var groupContext: ReadingGroupContext? = nil
     @State private var viewModel = DetailViewModel()
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var downloadManager = DownloadManager.shared
 
     var body: some View {
         ScrollView {
             if let comic = viewModel.comic {
-                detailContent(comic: comic)
+                ComicDetailContent(
+                    comic: comic,
+                    groupContext: groupContext,
+                    onToggleFavorite: { Task { await viewModel.toggleFavorite() } }
+                )
             } else if viewModel.isLoading {
                 ProgressView()
                     .padding(.top, 100)
             } else if let error = viewModel.errorMessage {
-                errorState(message: error) {
+                ErrorStateView(message: error) {
                     Task { await viewModel.load(id: comicId) }
                 }
             }
@@ -25,37 +28,60 @@ struct ComicDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             viewModel.setModelContext(modelContext)
-            downloadManager.setModelContext(modelContext)
+            DownloadManager.shared.setModelContext(modelContext)
             await viewModel.load(id: comicId)
         }
     }
+}
 
-    private func detailContent(comic: Comic) -> some View {
+// MARK: - 漫画详情内容
+
+struct ComicDetailContent: View {
+    let comic: Comic
+    let groupContext: ReadingGroupContext?
+    let onToggleFavorite: () -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // 封面 + 信息
-            ComicCoverInfoSection(comic: comic)
+            ComicCoverInfoSection(
+                comicId: comic.id,
+                title: comic.title,
+                author: comic.author,
+                pageCount: comic.pageCount,
+                isNovel: comic.isNovel,
+                fileSize: comic.fileSize,
+                rating: comic.rating
+            )
 
-            // 操作按钮
             ComicActionButtonsSection(
                 comic: comic,
                 groupContext: groupContext,
-                onToggleFavorite: { Task { await viewModel.toggleFavorite() } }
+                onToggleFavorite: onToggleFavorite
             )
 
-            // 进度
-            ComicProgressSection(comic: comic)
+            ComicProgressSection(
+                progress: comic.progress,
+                lastReadPage: comic.lastReadPage,
+                pageCount: comic.pageCount,
+                isNovel: comic.isNovel
+            )
 
-            // 标签
-            ComicTagsSection(comic: comic)
+            ComicTagsSection(tags: comic.tags)
 
-            // 简介
-            ComicDescriptionSection(comic: comic)
+            ComicDescriptionSection(description: comic.description)
 
             Spacer(minLength: 40)
         }
     }
+}
 
-    private func errorState(message: String, retry: @escaping () -> Void) -> some View {
+// MARK: - 错误状态
+
+struct ErrorStateView: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "wifi.slash")
                 .font(.system(size: 40))
@@ -73,7 +99,6 @@ struct ComicDetailView: View {
         }
         .padding(.top, 100)
     }
-
 }
 
 // MARK: - 简易流式布局
@@ -123,39 +148,45 @@ struct FlowLayout: Layout {
 // MARK: - 封面 + 信息段落
 
 struct ComicCoverInfoSection: View {
-    let comic: Comic
+    let comicId: String
+    let title: String
+    let author: String?
+    let pageCount: Int
+    let isNovel: Bool
+    let fileSize: Int64?
+    let rating: Double?
 
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
-            AuthenticatedImage(serverURL: APIClient.shared.serverURL, comicId: comic.id, thumbnail: true)
+            AuthenticatedImage(serverURL: APIClient.shared.serverURL, comicId: comicId, thumbnail: true)
                 .frame(width: 130, height: 190)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(comic.title)
+                Text(title)
                     .font(.title3.weight(.bold))
                     .lineLimit(3)
 
-                if let author = comic.author, !author.isEmpty {
+                if let author, !author.isEmpty {
                     Label(author, systemImage: "person")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
-                if comic.pageCount > 0 {
-                    Label("\(comic.pageCount) \(comic.isNovel ? "章" : "页")", systemImage: "doc.text")
+                if pageCount > 0 {
+                    Label("\(pageCount) \(isNovel ? "章" : "页")", systemImage: "doc.text")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
-                if let size = comic.fileSize, size > 0 {
+                if let size = fileSize, size > 0 {
                     Label(formatFileSize(size), systemImage: "internaldrive")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
-                if let rating = comic.rating, rating > 0 {
+                if let rating, rating > 0 {
                     HStack(spacing: 2) {
                         ForEach(1...5, id: \.self) { i in
                             Image(systemName: i <= Int(rating) ? "star.fill" : "star")
@@ -179,7 +210,6 @@ struct ComicActionButtonsSection: View {
     let comic: Comic
     let groupContext: ReadingGroupContext?
     let onToggleFavorite: () -> Void
-    @ObservedObject private var downloadManager = DownloadManager.shared
 
     var body: some View {
         HStack(spacing: 12) {
@@ -226,7 +256,7 @@ struct ComicActionButtonsSection: View {
 
 struct DownloadButton: View {
     let comic: Comic
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    private let downloadManager = DownloadManager.shared
 
     var body: some View {
         let task = downloadManager.task(for: comic.id)
@@ -291,7 +321,8 @@ struct DownloadButton: View {
                     comicId: comic.id,
                     title: comic.title,
                     pageCount: comic.pageCount,
-                    fileSize: comic.fileSize
+                    fileSize: comic.fileSize,
+                    isNovel: comic.isNovel
                 )
             } label: {
                 Label("下载", systemImage: "arrow.down.circle")
@@ -309,17 +340,20 @@ struct DownloadButton: View {
 // MARK: - 进度段落
 
 struct ComicProgressSection: View {
-    let comic: Comic
+    let progress: Int
+    let lastReadPage: Int
+    let pageCount: Int
+    let isNovel: Bool
 
     var body: some View {
-        if comic.progress > 0 {
+        if progress > 0 {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("阅读进度")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(comic.lastReadPage + 1)/\(comic.pageCount)\(comic.isNovel ? "章" : "页")")
+                    Text("\(lastReadPage + 1)/\(pageCount)\(isNovel ? "章" : "页")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -329,8 +363,8 @@ struct ComicProgressSection: View {
                             .fill(Color(.systemGray5))
                         Capsule()
                             .fill(Color.accentColor)
-                            .frame(width: geo.size.width * CGFloat(comic.progress) / 100)
-                        Text("\(comic.progress)%")
+                            .frame(width: geo.size.width * CGFloat(progress) / 100)
+                        Text("\(progress)%")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white)
                             .shadow(color: .black.opacity(0.3), radius: 1)
@@ -347,10 +381,10 @@ struct ComicProgressSection: View {
 // MARK: - 标签段落
 
 struct ComicTagsSection: View {
-    let comic: Comic
+    let tags: [TagItem]?
 
     var body: some View {
-        if let tags = comic.tags, !tags.isEmpty {
+        if let tags, !tags.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("标签")
                     .font(.caption)
@@ -375,10 +409,10 @@ struct ComicTagsSection: View {
 // MARK: - 简介段落
 
 struct ComicDescriptionSection: View {
-    let comic: Comic
+    let description: String?
 
     var body: some View {
-        if let desc = comic.description, !desc.isEmpty {
+        if let desc = description, !desc.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("简介")
                     .font(.caption)

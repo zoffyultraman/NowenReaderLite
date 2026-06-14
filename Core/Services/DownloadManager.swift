@@ -1,22 +1,20 @@
 import Foundation
 import SwiftUI
 import SwiftData
-import Combine
 
 /// 漫画下载任务管理器
 /// 可插拔设计：独立于 APIClient，仅通过 URL + Cookie 认证下载
 @MainActor
-final class DownloadManager: ObservableObject {
+@Observable
+final class DownloadManager {
     static let shared = DownloadManager()
 
     /// 当前所有下载任务（key = comicId）
-    @Published private(set) var tasks: [String: DownloadTask] = [:]
+    private(set) var tasks: [String: DownloadTask] = [:]
     /// 当前正在下载的任务数（用于 Tab 徽标）
-    @Published private(set) var activeDownloadCount: Int = 0
+    private(set) var activeDownloadCount: Int = 0
     /// 全局下载进度（所有活跃任务的加权平均）
-    @Published private(set) var globalProgress: Double = 0
-    /// 下载状态变更版本号（每次任务状态/进度变化时递增，驱动 SwiftUI 刷新）
-    @Published private(set) var downloadVersion: Int = 0
+    private(set) var globalProgress: Double = 0
 
     /// 最大并发下载数
     private let maxConcurrent = 3
@@ -27,7 +25,6 @@ final class DownloadManager: ObservableObject {
 
     private let fileManager = OfflineFileManager.shared
     private var downloadQueue: [String] = []   // 等待中的 comicId
-    private var taskCancellables: [String: AnyCancellable] = [:]
     private var activeCount: Int { tasks.values.filter { $0.state == .downloading }.count }
 
     // MARK: - 存储上限
@@ -71,33 +68,22 @@ final class DownloadManager: ObservableObject {
             let completedPages = active.reduce(0) { $0 + $1.completedPages }
             globalProgress = totalPages > 0 ? Double(completedPages) / Double(totalPages) : 0
         }
-        downloadVersion += 1
-    }
-
-    /// 监听任务属性变化，转发给自身 objectWillChange（驱动 SwiftUI 刷新）
-    private func observeTask(_ task: DownloadTask) {
-        taskCancellables[task.comicId] = task.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
     }
 
     // MARK: - Public API
 
-    /// 开始下载一本漫画
+    /// 开始下载一本漫画或小说
     @discardableResult
-    func download(comicId: String, title: String, pageCount: Int, fileSize: Int64?) -> Bool {
+    func download(comicId: String, title: String, pageCount: Int, fileSize: Int64?, isNovel: Bool = false) -> Bool {
         // 已完成或正在下载，跳过
         if let task = tasks[comicId], (task.state == .downloading || task.state == .completed) { return false }
         if fileManager.isComicDownloaded(comicId: comicId, pageCount: pageCount) {
-            // 文件已存在但没有 task，同步状态
             let task = DownloadTask(
                 comicId: comicId, title: title,
                 totalPages: pageCount, completedPages: pageCount,
-                state: .completed
+                state: .completed, isNovel: isNovel
             )
             tasks[comicId] = task
-            observeTask(task)
             return false
         }
 
@@ -110,14 +96,12 @@ final class DownloadManager: ObservableObject {
         let task = DownloadTask(
             comicId: comicId, title: title,
             totalPages: pageCount, completedPages: 0,
-            state: .waiting
+            state: .waiting, isNovel: isNovel
         )
         tasks[comicId] = task
-        observeTask(task)
         downloadQueue.append(comicId)
         refreshStats()
         processQueue()
-        // 异步保存合集信息（不阻塞下载）
         Task { await saveGroupInfoIfNeeded(comicId: comicId) }
         return true
     }
@@ -225,7 +209,6 @@ final class DownloadManager: ObservableObject {
     /// 删除已下载漫画
     func deleteDownload(comicId: String) {
         tasks.removeValue(forKey: comicId)
-        taskCancellables.removeValue(forKey: comicId)
         fileManager.deleteComic(comicId: comicId)
         syncDeleteFromStore(comicId: comicId)
         refreshStats()
@@ -253,7 +236,6 @@ final class DownloadManager: ObservableObject {
                         state: .completed
                     )
                     tasks[record.comicId] = task
-                    observeTask(task)
                 }
             } else {
                 // meta.json 丢失，检查是否有页面文件可恢复
@@ -278,7 +260,6 @@ final class DownloadManager: ObservableObject {
                             state: .completed
                         )
                         tasks[record.comicId] = task
-                        observeTask(task)
                     }
                 } else {
                     context.delete(record)
@@ -299,7 +280,6 @@ final class DownloadManager: ObservableObject {
                     state: .completed
                 )
                 tasks[comicId] = task
-                observeTask(task)
                 syncToStore(task: task)
             }
         }
@@ -322,7 +302,11 @@ final class DownloadManager: ObservableObject {
         refreshStats()
         task.downloadTask = Task { [weak self] in
             guard let self else { return }
-            await self.downloadPages(for: task)
+            if task.isNovel {
+                await self.downloadChapters(for: task)
+            } else {
+                await self.downloadPages(for: task)
+            }
         }
     }
 
@@ -429,6 +413,68 @@ final class DownloadManager: ObservableObject {
         }
     }
 
+    // MARK: - 小说章节下载
+
+    private func downloadChapters(for task: DownloadTask) async {
+        let comicId = task.comicId
+        let totalChapters = task.totalPages
+
+        // 保存元数据
+        let meta = OfflineComicMeta(
+            comicId: comicId,
+            title: task.title,
+            pageCount: totalChapters,
+            downloadedAt: Date(),
+            fileSize: nil
+        )
+        try? fileManager.saveMeta(meta, comicId: comicId)
+        syncComicToCache(comicId: comicId, title: task.title, pageCount: totalChapters)
+
+        // 断点续传：找到第一个未下载的章节
+        var startChapter = 0
+        for chapter in 0..<totalChapters {
+            if !fileManager.isPageDownloaded(comicId: comicId, page: chapter) {
+                startChapter = chapter
+                break
+            }
+        }
+        task.completedPages = startChapter
+
+        for chapter in startChapter..<totalChapters {
+            guard task.state == .downloading else { return }
+            if Task.isCancelled { return }
+
+            if !hasStorageSpace {
+                AppLogger.error("存储空间已满，暂停下载: \(task.title)")
+                task.state = .paused
+                refreshStats()
+                return
+            }
+
+            if fileManager.isPageDownloaded(comicId: comicId, page: chapter) {
+                continue
+            }
+
+            // 下载章节文本内容
+            do {
+                let content = try await APIClient.shared.fetchChapter(comicId: comicId, index: chapter)
+                if let text = content.content, let data = text.data(using: .utf8) {
+                    try fileManager.savePageData(data, comicId: comicId, page: chapter)
+                    task.completedPages += 1
+                    refreshStats()
+                }
+            } catch {
+                AppLogger.error("下载小说章节失败 \(comicId)/\(chapter): \(error)")
+            }
+        }
+
+        guard task.state == .downloading else { return }
+        task.state = .completed
+        refreshStats()
+        syncToStore(task: task)
+        AppLogger.log("小说下载完成: \(task.title) (\(totalChapters)章)")
+    }
+
     // MARK: - SwiftData 同步
 
     private var modelContext: ModelContext?
@@ -497,13 +543,15 @@ final class DownloadManager: ObservableObject {
 // MARK: - DownloadTask
 
 @MainActor
-final class DownloadTask: ObservableObject, Identifiable {
+@Observable
+final class DownloadTask: Identifiable {
     let id: String  // comicId
     let comicId: String
     let title: String
     let totalPages: Int
-    @Published var completedPages: Int
-    @Published var state: DownloadState
+    let isNovel: Bool
+    var completedPages: Int
+    var state: DownloadState
 
     var downloadTask: Task<Void, Never>?
 
@@ -512,13 +560,14 @@ final class DownloadTask: ObservableObject, Identifiable {
         return Double(completedPages) / Double(totalPages)
     }
 
-    init(comicId: String, title: String, totalPages: Int, completedPages: Int, state: DownloadState) {
+    init(comicId: String, title: String, totalPages: Int, completedPages: Int, state: DownloadState, isNovel: Bool = false) {
         self.id = comicId
         self.comicId = comicId
         self.title = title
         self.totalPages = totalPages
         self.completedPages = completedPages
         self.state = state
+        self.isNovel = isNovel
     }
 }
 

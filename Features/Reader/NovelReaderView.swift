@@ -67,7 +67,7 @@ struct NovelReaderView: View {
                 .ignoresSafeArea()
             }
         }
-        .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .task {
             // 以本地记录为准，没有记录则用 initialChapter
@@ -100,10 +100,14 @@ struct NovelReaderView: View {
         }
         .onTapGesture { showOverlay.toggle() }
         .overlay(alignment: .top) {
-            if showOverlay { topOverlay }
+            topOverlay
+                .opacity(showOverlay ? 1 : 0)
+                .allowsHitTesting(showOverlay)
         }
         .overlay(alignment: .bottom) {
-            if showOverlay { bottomOverlay }
+            bottomOverlay
+                .opacity(showOverlay ? 1 : 0)
+                .allowsHitTesting(showOverlay)
         }
         .sheet(isPresented: $showChapterList) {
             ChapterListView(
@@ -163,11 +167,54 @@ struct NovelReaderView: View {
     }
 
     private var topOverlay: some View {
+        NovelTopOverlay(
+            darkMode: viewModel.darkMode,
+            currentChapter: viewModel.currentChapter,
+            relativePage: viewModel.relativePageInChapter(currentPage),
+            chapterPageCount: viewModel.currentChapterPageCount(),
+            onDismiss: { dismiss() },
+            onToggleDarkMode: { viewModel.darkMode.toggle() }
+        )
+    }
+
+    private var bottomOverlay: some View {
+        NovelBottomOverlay(
+            fontSize: $fontSize,
+            isAtChapterEnd: currentPage >= (viewModel.chapterPageOffsets[viewModel.currentChapter] ?? 0) + viewModel.currentChapterPageCount() - 1,
+            hasPrevChapter: viewModel.currentChapter > 0 || viewModel.groupContext?.previousVolumeId != nil,
+            onPrevChapter: {
+                showOverlay = false
+                saveRecord()
+                currentPage = 99999
+                Task { await viewModel.prevChapter(fontSize: fontSize) }
+            },
+            onNextChapter: {
+                showOverlay = false
+                saveRecord()
+                currentPage = 0
+                Task { await viewModel.nextChapter(fontSize: fontSize) }
+            },
+            onShowChapterList: { showChapterList = true }
+        )
+    }
+}
+
+// MARK: - 小说阅读器顶部覆盖层
+
+struct NovelTopOverlay: View {
+    let darkMode: Bool
+    let currentChapter: Int
+    let relativePage: Int
+    let chapterPageCount: Int
+    let onDismiss: () -> Void
+    let onToggleDarkMode: () -> Void
+
+    var body: some View {
         HStack {
-            Button { dismiss() } label: {
+            Button(action: onDismiss) {
                 Image(systemName: "chevron.left")
                     .font(.title3.weight(.medium))
-                    .foregroundStyle(viewModel.darkMode ? .white : .primary)
+                    .foregroundStyle(darkMode ? .white : .primary)
                     .padding(10)
                     .background(.ultraThinMaterial.opacity(0.4), in: Circle())
             }
@@ -175,20 +222,20 @@ struct NovelReaderView: View {
             Spacer()
 
             VStack(spacing: 2) {
-                Text("第 \(viewModel.currentChapter + 1) 章")
+                Text("第 \(currentChapter + 1) 章")
                     .font(.callout.weight(.medium))
-                Text("\(viewModel.relativePageInChapter(currentPage)) / \(viewModel.currentChapterPageCount())")
+                Text("\(relativePage) / \(chapterPageCount)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .foregroundStyle(viewModel.darkMode ? .white : .primary)
+            .foregroundStyle(darkMode ? .white : .primary)
 
             Spacer()
 
-            Button { viewModel.darkMode.toggle() } label: {
-                Image(systemName: viewModel.darkMode ? "sun.max" : "moon")
+            Button(action: onToggleDarkMode) {
+                Image(systemName: darkMode ? "sun.max" : "moon")
                     .font(.title3)
-                    .foregroundStyle(viewModel.darkMode ? .white : .primary)
+                    .foregroundStyle(darkMode ? .white : .primary)
                     .padding(10)
                     .background(.ultraThinMaterial.opacity(0.4), in: Circle())
             }
@@ -196,13 +243,24 @@ struct NovelReaderView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .background(
-            (viewModel.darkMode ? Color.black : Color.white)
+            (darkMode ? Color.black : Color.white)
                 .opacity(0.8)
                 .ignoresSafeArea(edges: .top)
         )
     }
+}
 
-    private var bottomOverlay: some View {
+// MARK: - 小说阅读器底部覆盖层
+
+struct NovelBottomOverlay: View {
+    @Binding var fontSize: Double
+    let isAtChapterEnd: Bool
+    let hasPrevChapter: Bool
+    let onPrevChapter: () -> Void
+    let onNextChapter: () -> Void
+    let onShowChapterList: () -> Void
+
+    var body: some View {
         VStack(spacing: 12) {
             HStack {
                 Text("A").font(.caption2)
@@ -217,54 +275,29 @@ struct NovelReaderView: View {
             .padding(.horizontal, 24)
 
             HStack {
-                Button {
-                    showOverlay = false
-                    saveRecord()
-                    currentPage = 99999
-                    Task { await viewModel.prevChapter(fontSize: fontSize) }
-                } label: {
+                Button(action: onPrevChapter) {
                     Label("上一章", systemImage: "chevron.left")
                         .font(.subheadline)
                 }
-                .disabled(viewModel.currentChapter <= 0 && viewModel.groupContext?.previousVolumeId == nil)
+                .disabled(!hasPrevChapter)
 
                 Spacer()
 
-                Button {
-                    showChapterList = true
-                } label: {
+                Button(action: onShowChapterList) {
                     Label("目录", systemImage: "list.bullet")
                         .font(.subheadline)
                 }
 
                 Spacer()
 
-                let isAtChapterEnd = currentPage >= (viewModel.chapterPageOffsets[viewModel.currentChapter] ?? 0) + viewModel.currentChapterPageCount() - 1
-                if isAtChapterEnd {
-                    Button {
-                        showOverlay = false
-                        saveRecord()
-                        currentPage = 0
-                        Task { await viewModel.nextChapter(fontSize: fontSize) }
-                    } label: {
-                        Label("下一章", systemImage: "chevron.right")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(Color.accentColor)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                } else {
-                    Button {
-                        showOverlay = false
-                        saveRecord()
-                        currentPage = 0
-                        Task { await viewModel.nextChapter(fontSize: fontSize) }
-                    } label: {
-                        Label("下一章", systemImage: "chevron.right")
-                            .font(.subheadline)
-                    }
+                Button(action: onNextChapter) {
+                    Label("下一章", systemImage: "chevron.right")
+                        .font(isAtChapterEnd ? .subheadline.weight(.semibold) : .subheadline)
+                        .foregroundStyle(isAtChapterEnd ? .white : .primary)
+                        .padding(.horizontal, isAtChapterEnd ? 16 : 0)
+                        .padding(.vertical, isAtChapterEnd ? 8 : 0)
+                        .background(isAtChapterEnd ? Color.accentColor : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
             .padding(.horizontal, 24)

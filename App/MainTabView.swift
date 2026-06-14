@@ -3,7 +3,7 @@ import SwiftData
 import Network
 
 struct MainTabView: View {
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @State private var selectedTab = 0
 
@@ -55,9 +55,7 @@ struct MainTabView: View {
         .onAppear {
             downloadManager.setModelContext(modelContext)
             downloadManager.restoreFromStore(context: modelContext)
-            // 启动网络恢复监听
             api.startNetworkRecovery()
-            // 启动时尝试同步离线进度
             syncPendingProgress()
         }
         .onChange(of: api.networkRecovered) { _, recovered in
