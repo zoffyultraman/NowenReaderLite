@@ -8,6 +8,7 @@ struct LoginView: View {
     @State private var isLoading = false
     @State private var showError = false
     @State private var errorMessage = ""
+    @Environment(APIClient.self) private var api
 
     var onLoginSuccess: () -> Void
 
@@ -31,10 +32,10 @@ struct LoginView: View {
                         navigateToServerConfig = true
                     } label: {
                         HStack(spacing: 4) {
-                            let isHTTPS = APIClient.shared.serverURL.lowercased().hasPrefix("https://")
+                            let isHTTPS = api.serverURL.lowercased().hasPrefix("https://")
                             Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
                                 .foregroundStyle(isHTTPS ? .green : .red)
-                            Text(APIClient.shared.serverURL)
+                            Text(api.serverURL)
                                 .lineLimit(1)
                             Image(systemName: "chevron.right")
                                 .font(.caption2)
@@ -141,8 +142,8 @@ struct LoginView: View {
             .navigationDestination(isPresented: $navigateToServerConfig) {
                 ServerListView()
             }
-            .onChange(of: APIClient.shared.isLoggedIn) {
-                if APIClient.shared.isLoggedIn {
+            .onChange(of: api.isLoggedIn) {
+                if api.isLoggedIn {
                     // 从服务器列表自动登录成功，清除导航栈回到根视图
                     navigateToServerConfig = false
                     onLoginSuccess()

@@ -3,9 +3,9 @@ import SwiftUI
 struct StatsView: View {
     @State private var viewModel = StatsViewModel()
     @State private var showGoalSheet = false
+    @Environment(APIClient.self) private var api
 
     var body: some View {
-        let api = APIClient.shared
         if api.isOfflineMode {
             OfflineUnavailableView(
                 icon: "wifi.slash",
@@ -23,6 +23,7 @@ struct StatsView: View {
 struct StatsMainContent: View {
     let viewModel: StatsViewModel
     @Binding var showGoalSheet: Bool
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         ScrollView {
@@ -51,7 +52,7 @@ struct StatsMainContent: View {
         .task {
             await viewModel.loadAll()
         }
-        .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
+        .onChange(of: api.isOfflineMode) { _, isOffline in
             if isOffline {
                 viewModel.isLoading = false
                 viewModel.enhancedStats = nil

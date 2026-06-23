@@ -3,6 +3,7 @@ import SwiftData
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
     @State private var coverCacheSize: Int = 0
@@ -34,9 +35,9 @@ struct SettingsView: View {
                         .foregroundStyle(Color.accentColor)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(APIClient.shared.currentUser?.nickname ?? APIClient.shared.currentUser?.username ?? "用户")
+                        Text(api.currentUser?.nickname ?? api.currentUser?.username ?? "用户")
                             .font(.headline)
-                        Text(APIClient.shared.currentUser?.username ?? "")
+                        Text(api.currentUser?.username ?? "")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -50,7 +51,7 @@ struct SettingsView: View {
                     ServerListView()
                 } label: {
                     HStack {
-                        let isHTTPS = APIClient.shared.serverURL.lowercased().hasPrefix("https://")
+                        let isHTTPS = api.serverURL.lowercased().hasPrefix("https://")
                         Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
                             .foregroundStyle(isHTTPS ? .green : .red)
                             .font(.caption)
@@ -58,7 +59,7 @@ struct SettingsView: View {
                         Label("服务器", systemImage: "server.rack")
                             .foregroundStyle(.primary)
                         Spacer()
-                        Text(APIClient.shared.serverURL)
+                        Text(api.serverURL)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -76,7 +77,7 @@ struct SettingsView: View {
                     }
                 }
 
-                if !APIClient.shared.serverURL.isEmpty && !APIClient.shared.serverURL.lowercased().hasPrefix("https://") {
+                if !api.serverURL.isEmpty && !api.serverURL.lowercased().hasPrefix("https://") {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)

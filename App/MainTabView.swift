@@ -5,10 +5,10 @@ import Network
 struct MainTabView: View {
     private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
     @State private var selectedTab = 0
 
     var body: some View {
-        let api = APIClient.shared
         TabView(selection: $selectedTab) {
             NavigationStack {
                 HomeView()

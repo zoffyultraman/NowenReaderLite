@@ -7,6 +7,7 @@ struct ServerListView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(APIClient.self) private var api
 
     @State private var showAddServer = false
     @State private var isSwitching = false
@@ -47,7 +48,7 @@ struct ServerListView: View {
                                     .foregroundStyle(isHTTPS ? .green : .red)
                                 Image(systemName: "server.rack")
                                     .font(.title3)
-                                    .foregroundStyle(APIClient.shared.serverURL == server.url ? Color.accentColor : .secondary)
+                                    .foregroundStyle(api.serverURL == server.url ? Color.accentColor : .secondary)
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(server.url)
@@ -76,7 +77,7 @@ struct ServerListView: View {
                                 if isSwitching && switchingServerId == server.url {
                                     ProgressView()
                                         .scaleEffect(0.8)
-                                } else if APIClient.shared.serverURL == server.url {
+                                } else if api.serverURL == server.url {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(Color.accentColor)
                                 }

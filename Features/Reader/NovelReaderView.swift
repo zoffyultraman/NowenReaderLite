@@ -13,7 +13,7 @@ struct NovelReaderView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showOverlay = false
     @State private var showChapterList = false
-    @State private var fontSize: Double = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
+    @State private var fontSize: Double = 17
     @State private var currentPage = 0
     private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
     @State private var restoredChapter = -1
@@ -70,6 +70,8 @@ struct NovelReaderView: View {
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .task {
+            // 从 UserDefaults 恢复字号设置（避免在 @State 初始化时产生副作用）
+            fontSize = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
             // 以本地记录为准，没有记录则用 initialChapter
             let savedChapter = recordManager.load(comicId: viewModel.currentComicId.isEmpty ? comicId : viewModel.currentComicId)?.chapter ?? initialChapter
             await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize, groupContext: groupContext)
@@ -166,6 +168,7 @@ struct NovelReaderView: View {
         viewModel.darkMode ? Color(white: 0.1) : Color(.systemBackground)
     }
 
+    // 轻量覆盖层：闭包每次 body 求值时重建，但视图简单，不会引起可见问题
     private var topOverlay: some View {
         NovelTopOverlay(
             darkMode: viewModel.darkMode,
@@ -177,6 +180,7 @@ struct NovelReaderView: View {
         )
     }
 
+    // 轻量覆盖层：闭包每次 body 求值时重建，但视图简单，不会引起可见问题
     private var bottomOverlay: some View {
         NovelBottomOverlay(
             fontSize: $fontSize,
@@ -322,6 +326,7 @@ struct ChapterListView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 List {
+                    // 章节列表在切换漫画时整体重建，index-based identity 不会导致 diff 异常
                     ForEach(0..<totalChapters, id: \.self) { index in
                         Button {
                             onSelect(index)
@@ -604,12 +609,28 @@ final class NovelReaderViewModel {
 
     // MARK: - 屏幕尺寸（供分页使用）
 
+    /// 缓存的分页尺寸，首次使用时计算一次
+    private var cachedPageSize: (maxW: CGFloat, maxH: CGFloat)?
+
     private var pageSize: (maxW: CGFloat, maxH: CGFloat) {
-        let screen = UIScreen.main.bounds
-        let safeAreaTop = UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow?.safeAreaInsets.top }
-            .first ?? 0
-        return (screen.width - 40, screen.height - safeAreaTop - 40)
+        if let cached = cachedPageSize { return cached }
+        let size = computePageSize()
+        cachedPageSize = size
+        return size
+    }
+
+    private func computePageSize() -> (maxW: CGFloat, maxH: CGFloat) {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.keyWindow else {
+            // 回退到屏幕尺寸
+            let screen = UIScreen.main.bounds
+            return (screen.width - 40, screen.height - 40)
+        }
+        let width = window.bounds.width
+        let height = window.bounds.height
+        let safeAreaTop = window.safeAreaInsets.top
+        return (width - 40, height - safeAreaTop - 40)
     }
 
     // MARK: - 缓存便捷方法

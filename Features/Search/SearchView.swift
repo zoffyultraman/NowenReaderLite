@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SearchView: View {
     @State private var viewModel = SearchViewModel()
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -50,7 +51,7 @@ struct SearchView: View {
             } else {
                 List(viewModel.results) { comic in
                     NavigationLink(value: comic.id) {
-                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: APIClient.shared.serverURL)
+                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: api.serverURL)
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())

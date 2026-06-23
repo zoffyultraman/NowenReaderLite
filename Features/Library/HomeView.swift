@@ -11,6 +11,7 @@ struct HomeView: View {
     @State private var searchVM = SearchViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
     @FocusState private var isSearchFocused: Bool
 
     enum ContentType: String, CaseIterable {
@@ -25,7 +26,6 @@ struct HomeView: View {
     }
 
     var body: some View {
-        let api = APIClient.shared
         @Bindable var searchVM = searchVM
         Group {
             if isSearching {
@@ -114,6 +114,7 @@ struct HomeSearchBar: View {
 struct HomeSearchResults: View {
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         List {
@@ -138,7 +139,7 @@ struct HomeSearchResults: View {
             } else {
                 ForEach(searchVM.results) { comic in
                     NavigationLink(value: comic.id) {
-                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: APIClient.shared.serverURL)
+                        SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: api.serverURL)
                     }
                     .buttonStyle(.plain)
                 }
@@ -160,6 +161,7 @@ struct HomeMainContent: View {
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
     let sizeClass: UserInterfaceSizeClass?
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -192,9 +194,9 @@ struct HomeMainContent: View {
                 await continueReadingVM.load()
             }
 
-            if APIClient.shared.isOfflineMode {
+            if api.isOfflineMode {
                 Button {
-                    Task { await APIClient.shared.retryConnection() }
+                    Task { await api.retryConnection() }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "wifi.slash")
@@ -221,6 +223,7 @@ struct ContinueReadingSection: View {
     let items: [Comic]
     let errorMessage: String?
     let sizeClass: UserInterfaceSizeClass?
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -236,7 +239,7 @@ struct ContinueReadingSection: View {
                                 NavigationLink {
                                     comic.readerView()
                                 } label: {
-                                    ContinueReadingCard(id: comic.id, title: comic.title, progress: comic.progress, serverURL: APIClient.shared.serverURL)
+                                    ContinueReadingCard(id: comic.id, title: comic.title, progress: comic.progress, serverURL: api.serverURL)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -367,6 +370,7 @@ struct LibraryContentView: View {
     @State private var sortOption: SortOption = .addedAt
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
 
     enum ViewMode { case grid, list }
     enum SortOption: String, CaseIterable {
@@ -448,12 +452,12 @@ struct LibraryContentView: View {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
-                            ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: APIClient.shared.serverURL)
+                            ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL)
                         }
                         .buttonStyle(.plain)
                     case .group(let group):
                         NavigationLink(value: "group_\(group.id)") {
-                            GroupCardView(group: group, serverURL: APIClient.shared.serverURL)
+                            GroupCardView(group: group, serverURL: api.serverURL)
                         }
                         .buttonStyle(.plain)
                     }
@@ -481,7 +485,7 @@ struct LibraryContentView: View {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
-                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: APIClient.shared.serverURL)
+                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL)
                                 .padding(.horizontal, 20)
                         }
                         .buttonStyle(.plain)
@@ -489,7 +493,7 @@ struct LibraryContentView: View {
                         Divider().padding(.leading, 80)
                     case .group(let group):
                         NavigationLink(value: "group_\(group.id)") {
-                            GroupListRowView(group: group, serverURL: APIClient.shared.serverURL)
+                            GroupListRowView(group: group, serverURL: api.serverURL)
                                 .padding(.horizontal, 20)
                         }
                         .buttonStyle(.plain)
@@ -701,17 +705,19 @@ final class ContinueReadingViewModel {
 
 /// 将 isOfflineMode/networkRecovered 的 .onChange 副作用从视图 body 中隔离出来，
 /// 避免这些依赖触发整个视图 body 的重新计算。
+/// 闭包在 modifier 存储属性中捕获一次，SwiftUI 复用 modifier 实例，不会引起失效。
 struct NetworkRefreshModifier: ViewModifier {
     let onRefresh: () async -> Void
+    @Environment(APIClient.self) private var api
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
+            .onChange(of: api.isOfflineMode) { _, isOffline in
                 if isOffline {
                     Task { await onRefresh() }
                 }
             }
-            .onChange(of: APIClient.shared.networkRecovered) { _, recovered in
+            .onChange(of: api.networkRecovered) { _, recovered in
                 if recovered {
                     Task { await onRefresh() }
                 }

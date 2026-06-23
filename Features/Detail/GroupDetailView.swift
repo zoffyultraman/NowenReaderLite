@@ -6,6 +6,7 @@ struct GroupDetailView: View {
     @State private var viewModel = GroupDetailViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
     @State private var isGrid = true
     @State private var showDownloadAllAlert = false
     @State private var showDownloadResult = false
@@ -25,13 +26,13 @@ struct GroupDetailView: View {
                             // 封面固定宽度，左对齐
                             Group {
                                 if let cover = detail.coverUrl, !cover.isEmpty {
-                                    let urlString = cover.hasPrefix("http") ? cover : "\(APIClient.shared.serverURL)\(cover)"
+                                    let urlString = cover.hasPrefix("http") ? cover : "\(api.serverURL)\(cover)"
                                     if let url = URL(string: urlString) {
                                         AuthenticatedImage(url: url)
                                     }
                                 } else if let first = detail.comics.first {
                                     AuthenticatedImage(
-                                        serverURL: APIClient.shared.serverURL,
+                                        serverURL: api.serverURL,
                                         comicId: first.id,
                                         thumbnail: true
                                     )
@@ -89,7 +90,7 @@ struct GroupDetailView: View {
                                         )
                                     )
                                 } label: {
-                                    VolumeCardView(comic: comic, serverURL: APIClient.shared.serverURL)
+                                    VolumeCardView(comic: comic, serverURL: api.serverURL)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -110,7 +111,7 @@ struct GroupDetailView: View {
                                         )
                                     )
                                 } label: {
-                                    VolumeListRowView(comic: comic, serverURL: APIClient.shared.serverURL)
+                                    VolumeListRowView(comic: comic, serverURL: api.serverURL)
                                         .padding(.horizontal, 20)
                                 }
                                 .buttonStyle(.plain)

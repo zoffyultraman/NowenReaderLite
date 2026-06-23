@@ -13,7 +13,7 @@ struct ComicDetailView: View {
                 ComicDetailContent(
                     comic: comic,
                     groupContext: groupContext,
-                    onToggleFavorite: { Task { await viewModel.toggleFavorite() } }
+                    viewModel: viewModel
                 )
             } else if viewModel.isLoading {
                 ProgressView()
@@ -39,7 +39,7 @@ struct ComicDetailView: View {
 struct ComicDetailContent: View {
     let comic: Comic
     let groupContext: ReadingGroupContext?
-    let onToggleFavorite: () -> Void
+    let viewModel: DetailViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -56,7 +56,7 @@ struct ComicDetailContent: View {
             ComicActionButtonsSection(
                 comic: comic,
                 groupContext: groupContext,
-                onToggleFavorite: onToggleFavorite
+                viewModel: viewModel
             )
 
             ComicProgressSection(
@@ -76,6 +76,7 @@ struct ComicDetailContent: View {
 }
 
 // MARK: - 错误状态
+// 轻量视图：retry 闭包每次 body 求值时重建，但视图简单，不会引起可见问题
 
 struct ErrorStateView: View {
     let message: String
@@ -155,10 +156,11 @@ struct ComicCoverInfoSection: View {
     let isNovel: Bool
     let fileSize: Int64?
     let rating: Double?
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
-            AuthenticatedImage(serverURL: APIClient.shared.serverURL, comicId: comicId, thumbnail: true)
+            AuthenticatedImage(serverURL: api.serverURL, comicId: comicId, thumbnail: true)
                 .frame(width: 130, height: 190)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
@@ -209,13 +211,13 @@ struct ComicCoverInfoSection: View {
 struct ComicActionButtonsSection: View {
     let comic: Comic
     let groupContext: ReadingGroupContext?
-    let onToggleFavorite: () -> Void
+    let viewModel: DetailViewModel
 
     var body: some View {
         HStack(spacing: 12) {
             // 收藏按钮
             Button {
-                onToggleFavorite()
+                Task { await viewModel.toggleFavorite() }
             } label: {
                 Label(
                     comic.isFavorite ? "已收藏" : "收藏",

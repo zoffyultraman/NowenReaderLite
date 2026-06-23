@@ -25,7 +25,6 @@ struct ComicReaderView: View {
                 ProgressView()
                     .tint(.white)
             } else if viewModel.totalPages <= 0 {
-                // 无可用页面（离线且无本地数据）
                 VStack(spacing: 16) {
                     Image(systemName: "photo")
                         .font(.system(size: 40))
@@ -34,9 +33,7 @@ struct ComicReaderView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    Button {
-                        dismiss()
-                    } label: {
+                    Button { dismiss() } label: {
                         Text("返回")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.white)
@@ -53,9 +50,7 @@ struct ComicReaderView: View {
                     currentPage: $viewModel.currentPage,
                     transitionStyle: pageTransitionStyle,
                     onToggleOverlay: { showOverlay.toggle() },
-                    onPageChange: { page in
-                        viewModel.onPageChanged(page)
-                    },
+                    onPageChange: { page in viewModel.onPageChanged(page) },
                     onReachEnd: {
                         guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
                         Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
@@ -63,17 +58,11 @@ struct ComicReaderView: View {
                     onSwipeToPrev: {
                         guard let prevId = viewModel.groupContext?.previousVolumeId else { return }
                         Task {
-                            // 先获取上一卷页数，跳到末尾（网络优先，离线 fallback 本地 meta）
-                            let totalPages: Int
-                            if let pages = try? await APIClient.shared.fetchPages(comicId: prevId) {
-                                totalPages = pages.totalPages
-                            } else if let meta = OfflineFileManager.shared.loadMeta(comicId: prevId) {
-                                totalPages = meta.pageCount
-                            } else {
-                                totalPages = 1
-                            }
-                            let lastPage = max(0, totalPages - 1)
-                            await viewModel.loadVolume(comicId: prevId, initialPage: lastPage)
+                            let tp: Int
+                            if let pages = try? await APIClient.shared.fetchPages(comicId: prevId) { tp = pages.totalPages }
+                            else if let meta = OfflineFileManager.shared.loadMeta(comicId: prevId) { tp = meta.pageCount }
+                            else { tp = 1 }
+                            await viewModel.loadVolume(comicId: prevId, initialPage: max(0, tp - 1))
                         }
                     }
                 )
@@ -109,6 +98,7 @@ struct ComicReaderView: View {
         }
     }
 
+    // 轻量覆盖层：闭包每次 body 求值时重建，但视图简单，不会引起可见问题
     private var overlayUI: some View {
         ReaderOverlayView(
             currentPage: viewModel.currentPage,
@@ -127,6 +117,7 @@ struct ComicReaderView: View {
 }
 
 // MARK: - 阅读器覆盖层
+// 轻量视图：onDismiss 闭包每次 body 求值时重建，但视图简单，不会引起可见问题
 
 struct ReaderOverlayView: View {
     let currentPage: Int

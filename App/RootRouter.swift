@@ -1,8 +1,9 @@
 import SwiftUI
 
 struct RootRouter: View {
+    @Environment(APIClient.self) private var api
+
     var body: some View {
-        let api = APIClient.shared
         Group {
             if api.serverURL.isEmpty {
                 ServerConfigView(onConnected: {})

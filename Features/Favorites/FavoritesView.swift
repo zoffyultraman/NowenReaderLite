@@ -2,9 +2,9 @@ import SwiftUI
 
 struct FavoritesView: View {
     @State private var viewModel = FavoritesViewModel()
+    @Environment(APIClient.self) private var api
 
     var body: some View {
-        let api = APIClient.shared
         if api.isOfflineMode {
             OfflineUnavailableView(
                 icon: "wifi.slash",
@@ -21,6 +21,7 @@ struct FavoritesView: View {
 
 struct FavoritesMainContent: View {
     let viewModel: FavoritesViewModel
+    @Environment(APIClient.self) private var api
 
     var body: some View {
         Group {
@@ -45,7 +46,7 @@ struct FavoritesMainContent: View {
                     ], spacing: 16) {
                         ForEach(viewModel.comics) { comic in
                             NavigationLink(value: comic.id) {
-                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: APIClient.shared.serverURL)
+                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL)
                             }
                             .buttonStyle(.plain)
                         }
@@ -66,7 +67,7 @@ struct FavoritesMainContent: View {
         .task {
             await viewModel.loadFavorites()
         }
-        .onChange(of: APIClient.shared.isOfflineMode) { _, isOffline in
+        .onChange(of: api.isOfflineMode) { _, isOffline in
             if isOffline {
                 viewModel.comics = []
                 viewModel.isLoading = false

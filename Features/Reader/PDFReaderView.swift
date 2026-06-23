@@ -4,6 +4,7 @@ import PDFKit
 struct PDFReaderView: View {
     let comicId: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(APIClient.self) private var api
     @State private var isLoading = false
     @State private var loadError = false
     @State private var reloadID = UUID()
@@ -13,7 +14,7 @@ struct PDFReaderView: View {
             Color.black.ignoresSafeArea()
 
             PDFKitView(
-                url: APIClient.shared.pdfURL(comicId: comicId),
+                url: api.pdfURL(comicId: comicId),
                 reloadID: reloadID,
                 isLoading: $isLoading,
                 loadError: $loadError
