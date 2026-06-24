@@ -107,9 +107,25 @@ struct HomeSearchBar: View {
 struct LibraryPickerView: View {
     @Environment(APIClient.self) private var api
 
+    private var selectedName: String {
+        guard let id = api.selectedLibraryId,
+              let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
+            return "全部"
+        }
+        return lib.name
+    }
+
+    private var selectedIcon: String {
+        guard let id = api.selectedLibraryId,
+              let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
+            return "square.grid.2x2"
+        }
+        return iconForLibraryType(lib.type)
+    }
+
     var body: some View {
         if api.accessibleLibraries.count > 1 {
-            VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 HStack(spacing: 4) {
                     Image(systemName: "books.vertical")
                         .font(.subheadline)
@@ -118,31 +134,41 @@ struct LibraryPickerView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 16)
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        LibraryChip(
-                            title: "全部",
-                            icon: "square.grid.2x2",
-                            isSelected: api.selectedLibraryId == nil,
-                            action: { withAnimation(.easeInOut(duration: 0.2)) { api.selectedLibraryId = nil } }
-                        )
-
-                        ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
-                            LibraryChip(
-                                title: library.name,
-                                icon: iconForLibraryType(library.type),
-                                isSelected: api.selectedLibraryId == library.id,
-                                action: { withAnimation(.easeInOut(duration: 0.2)) { api.selectedLibraryId = library.id } }
-                            )
+                Menu {
+                    Button("全部", systemImage: "square.grid.2x2") {
+                        api.selectedLibraryId = nil
+                    }
+                    ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
+                        Button(library.name, systemImage: iconForLibraryType(library.type)) {
+                            api.selectedLibraryId = library.id
                         }
                     }
-                    .padding(.horizontal, 16)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: selectedIcon)
+                            .font(.system(size: 11))
+                        Text(selectedName)
+                            .font(.subheadline.weight(.medium))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color(.systemGray6))
+                    .clipShape(Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color(.systemGray4), lineWidth: 0.5)
+                    )
                 }
+
+                Spacer()
             }
-            .padding(.top, 4)
-            .padding(.bottom, 4)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
         }
     }
 
@@ -152,35 +178,6 @@ struct LibraryPickerView: View {
         case "novel": return "text.book.closed"
         default: return "rectangle.stack"
         }
-    }
-}
-
-struct LibraryChip: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 11))
-                Text(title)
-                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
-            }
-            .foregroundStyle(isSelected ? .white : .primary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(isSelected ? Color.accentColor : Color(.systemGray6))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(isSelected ? Color.clear : Color(.systemGray4), lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
