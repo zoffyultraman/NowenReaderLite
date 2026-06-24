@@ -24,15 +24,10 @@ final class APIClient {
         get { UserDefaults.standard.string(forKey: "siteName_\(serverURL)") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "siteName_\(serverURL)") }
     }
-    /// 服务器站点图标 URL 路径（按 serverURL 缓存）
-    var siteIconPath: String {
-        get { UserDefaults.standard.string(forKey: "siteIcon_\(serverURL)") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "siteIcon_\(serverURL)") }
-    }
-    /// 站点图标完整 URL
+    /// 站点图标 URL（固定端点 /api/site-settings/icon）
     var siteIconURL: URL? {
-        guard !siteIconPath.isEmpty, !serverURL.isEmpty else { return nil }
-        return URL(string: "\(serverURL)\(siteIconPath)")
+        guard !serverURL.isEmpty else { return nil }
+        return URL(string: "\(serverURL)/api/site-settings/icon")
     }
 
     /// 用户可访问的书库列表
@@ -150,9 +145,6 @@ final class APIClient {
             let resp: SiteSettingsResponse = try await get("/api/site-settings")
             if let name = resp.siteName, !name.isEmpty {
                 siteName = name
-            }
-            if let icon = resp.siteIcon, !icon.isEmpty {
-                siteIconPath = icon
             }
         } catch {
             // 静默失败，不影响主流程
@@ -738,7 +730,6 @@ struct AuthLoginResponse: Decodable {
 
 struct SiteSettingsResponse: Decodable {
     let siteName: String?
-    let siteIcon: String?
 }
 
 struct RatingBody: Encodable {
