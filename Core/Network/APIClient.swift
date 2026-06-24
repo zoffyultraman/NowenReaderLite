@@ -24,6 +24,16 @@ final class APIClient {
         get { UserDefaults.standard.string(forKey: "siteName_\(serverURL)") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "siteName_\(serverURL)") }
     }
+    /// 服务器站点图标 URL 路径（按 serverURL 缓存）
+    var siteIconPath: String {
+        get { UserDefaults.standard.string(forKey: "siteIcon_\(serverURL)") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "siteIcon_\(serverURL)") }
+    }
+    /// 站点图标完整 URL
+    var siteIconURL: URL? {
+        guard !siteIconPath.isEmpty, !serverURL.isEmpty else { return nil }
+        return URL(string: "\(serverURL)\(siteIconPath)")
+    }
 
     /// 用户可访问的书库列表
     var accessibleLibraries: [Library] = []
@@ -140,6 +150,9 @@ final class APIClient {
             let resp: SiteSettingsResponse = try await get("/api/site-settings")
             if let name = resp.siteName, !name.isEmpty {
                 siteName = name
+            }
+            if let icon = resp.siteIcon, !icon.isEmpty {
+                siteIconPath = icon
             }
         } catch {
             // 静默失败，不影响主流程

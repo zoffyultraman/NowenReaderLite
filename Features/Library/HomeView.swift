@@ -426,9 +426,16 @@ struct LibraryContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    if let iconURL = api.siteIconURL {
+                        AuthenticatedImage(url: iconURL)
+                            .frame(width: 22, height: 22)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                }
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
