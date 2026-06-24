@@ -547,3 +547,80 @@
 **改动**：`CFBundleShortVersionString`、`CURRENT_PROJECT_VERSION`、`MARKETING_VERSION` 从 1.1.2 升级至 1.1.3。
 
 **修改文件**：`Info.plist` · `NowenReaderLite.xcodeproj/project.pbxproj`
+
+---
+
+### 37. 阅读状态 UI
+
+**新增**：阅读状态功能（想看/在读/已读/搁置）完整 UI 实现。
+
+**改动**：
+- 详情页新增 `ReadingStatusSection`（Capsule Chips 选择器，点击切换，再次点击取消）
+- `DetailViewModel` 新增 `updateReadingStatus`、`syncReadingStatusToCache`
+- `Comic` 新增 `withReadingStatus` 扩展
+- `ComicCardView` 封面底部显示彩色状态标签（黑色半透明底 + 彩色圆点）
+- `ComicListRowView` 作者下方显示彩色状态文字
+- 提取 `ReadingStatus` 枚举统一 `label(for:)` / `color(for:)` 方法
+- `CachedComic` 新增 `readingStatus` 属性，`from()` / `toComic()` 同步映射
+
+**修改文件**：`Features/Detail/ComicDetailView.swift` · `Features/Library/LibraryView.swift` · `Features/Library/HomeView.swift` · `Features/Favorites/FavoritesView.swift` · `Core/Storage/SwiftDataSchema.swift`
+
+---
+
+### 38. 阅读状态 UI 对齐设计规范
+
+**修复**：阅读状态相关 UI 元素与应用设计规范对齐。
+
+**改动**：
+- `ReadingStatusSection` 芯片样式与 `LibraryChip` 统一（padding 14/7、spacing 5、边框、无障碍）
+- 状态标签 section padding 16→20pt 匹配详情页兄弟节点
+- 卡片状态标签字号 8→9pt，与"小说"标签统一
+- 状态标签与进度条合并为单一 VStack 消除重叠
+- 状态标签样式统一：黑色半透明底 + 彩色圆点指示器
+- 提取 `ReadingStatus` 枚举消除重复的 `statusLabel` / `statusColor`
+
+**修改文件**：`Features/Library/LibraryView.swift` · `Features/Detail/ComicDetailView.swift`
+
+---
+
+### 39. 书库选择器重构
+
+**改动**：书库选择器从水平 Capsule Chips 改为 iOS Menu 下拉菜单。
+
+**改动**：
+- 水平滚动 Capsule Chips 替换为 Menu + 全宽选择器（搜索框同款样式：`RoundedRectangle(cornerRadius: 12)`、`systemGray6`、`padding(12)`）
+- 节省约 40pt 垂直空间
+- 菜单项带类型图标（`photo.stack` / `text.book.closed` / `rectangle.stack`）
+- 移除不再使用的 `LibraryChip` 组件
+- 选择器移至继续观看上方
+- 提取 `selectedLibraryName`、`selectedLibraryIcon`、`libraryIcon(for:)` 到 `APIClient` 消除重复
+
+**修改文件**：`Features/Library/HomeView.swift` · `Core/Network/APIClient.swift`
+
+---
+
+### 40. 导航栏站点名称与 Logo
+
+**改动**：导航栏居中显示服务器站点名称和 Logo。
+
+**改动**：
+- `APIClient` 新增 `siteName` 属性（按 serverURL 缓存到 UserDefaults）
+- 新增 `fetchSiteSettings()` 方法，登录/认证成功后调用 `GET /api/site-settings` 获取站点名称
+- `siteIconURL` 指向固定端点 `{serverURL}/api/site-settings/icon`
+- 导航栏 `.principal` 位置显示站点 Logo（22×22，4pt 圆角）+ 站点名称（`.headline`，`.primary`）
+- 无缓存时回退到服务器域名
+- 移除原"书架"导航标题
+
+**修改文件**：`Core/Network/APIClient.swift` · `Features/Library/HomeView.swift`
+
+---
+
+### 41. 书架视图布局优化
+
+**改动**：
+- 导航栏显示站点 Logo + 名称（居中）+ 视图切换/排序按钮（右侧）
+- 内容区上方显示当前书库名称标题（`books.vertical` 图标 + `title3.weight(.bold)`）
+- 书库下拉选择器位于搜索栏下方、继续观看上方
+- 服务器域名作为导航栏标题回退方案
+
+**修改文件**：`Features/Library/HomeView.swift`
