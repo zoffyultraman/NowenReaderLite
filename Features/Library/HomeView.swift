@@ -459,7 +459,7 @@ struct LibraryContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Text(URL(string: api.serverURL)?.host ?? "")
+                Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
             }

@@ -19,6 +19,12 @@ final class APIClient {
     private(set) var isNetworkReachable: Bool = false
     /// 网络恢复标记（用于通知 UI 刷新）
     var networkRecovered: Bool = false
+    /// 服务器站点名称（从 /api/site-settings 获取，按 serverURL 缓存）
+    var siteName: String {
+        get { UserDefaults.standard.string(forKey: "siteName_\(serverURL)") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "siteName_\(serverURL)") }
+    }
+
     /// 用户可访问的书库列表
     var accessibleLibraries: [Library] = []
     /// 当前选中的书库 ID（nil = 全部）
@@ -101,6 +107,21 @@ final class APIClient {
         isNetworkReachable = reachable
     }
 
+    /// 获取服务器站点信息并缓存
+    func fetchSiteSettings() async {
+        guard !serverURL.isEmpty, isNetworkReachable else { return }
+        // 已有缓存则跳过
+        guard siteName.isEmpty else { return }
+        do {
+            let resp: SiteSettingsResponse = try await get("/api/site-settings")
+            if let name = resp.siteName, !name.isEmpty {
+                siteName = name
+            }
+        } catch {
+            // 静默失败，不影响主流程
+        }
+    }
+
     func testConnection(_ url: String) async -> Bool {
         let trimmed = url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         return await withTaskGroup(of: Bool.self) { group in
@@ -149,6 +170,7 @@ final class APIClient {
                 isLoggedIn = true
                 isOfflineMode = false
                 markHasLoggedInBefore()
+                await fetchSiteSettings()
             } else {
                 // 服务器明确返回未登录 → 清除历史记录
                 isLoggedIn = false
@@ -176,6 +198,7 @@ final class APIClient {
         isLoggedIn = true
         isOfflineMode = false
         markHasLoggedInBefore()
+        await fetchSiteSettings()
         return resp.user
     }
 
@@ -674,6 +697,11 @@ struct AuthMeResponse: Decodable {
 
 struct AuthLoginResponse: Decodable {
     let user: AuthUser
+}
+
+struct SiteSettingsResponse: Decodable {
+    let siteName: String?
+    let siteIcon: String?
 }
 
 struct RatingBody: Encodable {
