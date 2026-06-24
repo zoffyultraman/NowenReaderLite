@@ -6,19 +6,11 @@ extension Notification.Name {
 }
 
 struct HomeView: View {
-    @State private var selectedTab: ContentType = .comic
     @State private var continueReadingVM = ContinueReadingViewModel()
     @State private var searchVM = SearchViewModel()
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
     @FocusState private var isSearchFocused: Bool
-
-    enum ContentType: String, CaseIterable {
-        case comic, novel
-        var title: String { self == .comic ? "漫画" : "小说" }
-        var icon: String { self == .comic ? "photo.stack" : "text.book.closed" }
-    }
 
     /// 是否处于搜索状态
     private var isSearching: Bool {
@@ -35,11 +27,9 @@ struct HomeView: View {
                 )
             } else {
                 HomeMainContent(
-                    selectedTab: $selectedTab,
                     continueReadingVM: continueReadingVM,
                     searchVM: searchVM,
-                    isSearchFocused: $isSearchFocused,
-                    sizeClass: sizeClass
+                    isSearchFocused: $isSearchFocused
                 )
             }
         }
@@ -70,6 +60,9 @@ struct HomeView: View {
                     api.networkRecovered = false
                 }
             }
+        }
+        .onChange(of: api.selectedLibraryId) { _, _ in
+            Task { await continueReadingVM.load() }
         }
     }
 }
@@ -106,6 +99,88 @@ struct HomeSearchBar: View {
         .background(Color(.systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 16)
+    }
+}
+
+// MARK: - 书库选择器
+
+struct LibraryPickerView: View {
+    @Environment(APIClient.self) private var api
+
+    var body: some View {
+        if api.accessibleLibraries.count > 1 {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 4) {
+                    Image(systemName: "books.vertical")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("书库")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        LibraryChip(
+                            title: "全部",
+                            icon: "square.grid.2x2",
+                            isSelected: api.selectedLibraryId == nil,
+                            action: { withAnimation(.easeInOut(duration: 0.2)) { api.selectedLibraryId = nil } }
+                        )
+
+                        ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
+                            LibraryChip(
+                                title: library.name,
+                                icon: iconForLibraryType(library.type),
+                                isSelected: api.selectedLibraryId == library.id,
+                                action: { withAnimation(.easeInOut(duration: 0.2)) { api.selectedLibraryId = library.id } }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+        }
+    }
+
+    private func iconForLibraryType(_ type: String) -> String {
+        switch type {
+        case "comic": return "photo.stack"
+        case "novel": return "text.book.closed"
+        default: return "rectangle.stack"
+        }
+    }
+}
+
+struct LibraryChip: View {
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                Text(title)
+                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
+            }
+            .foregroundStyle(isSelected ? .white : .primary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(isSelected ? Color.accentColor : Color(.systemGray6))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(isSelected ? Color.clear : Color(.systemGray4), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -156,39 +231,35 @@ struct HomeSearchResults: View {
 // MARK: - 主内容
 
 struct HomeMainContent: View {
-    @Binding var selectedTab: HomeView.ContentType
     let continueReadingVM: ContinueReadingViewModel
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
-    let sizeClass: UserInterfaceSizeClass?
     @Environment(APIClient.self) private var api
+
+    /// 根据选中的书库类型决定内容筛选
+    private var selectedLibraryType: String? {
+        guard let selectedId = api.selectedLibraryId,
+              let library = api.accessibleLibraries.first(where: { $0.id == selectedId }) else {
+            return nil  // "全部" — 不筛选类型
+        }
+        if library.type == "mixed" { return nil }
+        return library.type  // "comic" or "novel"
+    }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             ScrollView {
                 HomeSearchBar(searchVM: searchVM, isSearchFocused: $isSearchFocused)
-                    .padding(.top, 8)
+                    .padding(.top, 16)
 
                 ContinueReadingSection(
                     items: continueReadingVM.items,
-                    errorMessage: continueReadingVM.errorMessage,
-                    sizeClass: sizeClass
+                    errorMessage: continueReadingVM.errorMessage
                 )
 
-                Picker("类型", selection: $selectedTab) {
-                    ForEach(HomeView.ContentType.allCases, id: \.self) { type in
-                        Label(type.title, systemImage: type.icon).tag(type)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 20)
-                .padding(.top, continueReadingVM.items.isEmpty ? 8 : 16)
+                LibraryPickerView()
 
-                if selectedTab == .comic {
-                    LibraryContentView(contentType: "comic")
-                } else {
-                    LibraryContentView(contentType: "novel")
-                }
+                LibraryContentView(contentType: selectedLibraryType)
             }
             .refreshable {
                 await continueReadingVM.load()
@@ -222,19 +293,22 @@ struct HomeMainContent: View {
 struct ContinueReadingSection: View {
     let items: [Comic]
     let errorMessage: String?
-    let sizeClass: UserInterfaceSizeClass?
     @Environment(APIClient.self) private var api
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("继续观看")
-                        .font(.headline)
-                        .padding(.horizontal, 20)
+                    HStack {
+                        Image(systemName: "book.fill")
+                            .foregroundStyle(Color.accentColor)
+                        Text("继续观看")
+                            .font(.title3.weight(.bold))
+                    }
+                    .padding(.horizontal, 16)
 
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 14) {
+                        LazyHStack(spacing: 12) {
                             ForEach(items) { comic in
                                 NavigationLink {
                                     comic.readerView()
@@ -244,11 +318,11 @@ struct ContinueReadingSection: View {
                                 .buttonStyle(.plain)
                             }
                         }
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, 16)
                     }
-                    .frame(height: sizeClass == .regular ? 260 : 220)
+                    .frame(height: 160)
                 }
-                .padding(.top, 8)
+                .padding(.top, 16)
             }
 
             if let error = errorMessage {
@@ -261,89 +335,68 @@ struct ContinueReadingSection: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
                 .padding(.top, 4)
             }
         }
+        .padding(.bottom, 12)
     }
 }
 
-// MARK: - 继续观看卡片
+// MARK: - 继续观看卡片（Hero 横向卡片）
 
 struct ContinueReadingCard: View {
     let id: String
     let title: String
     let progress: Int
     let serverURL: String
-    @Environment(\.horizontalSizeClass) private var sizeClass
-
-    var cardWidth: CGFloat { sizeClass == .regular ? 160 : 140 }
-    var cardHeight: CGFloat { sizeClass == .regular ? 220 : 190 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .bottomLeading) {
-                AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: cardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+        HStack(spacing: 12) {
+            // 封面
+            AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
+                .aspectRatio(3/4, contentMode: .fill)
+                .frame(width: 90, height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                // 离线标识
-                if DownloadManager.shared.isDownloaded(comicId: id) {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.white)
-                                .background(Circle().fill(.green).frame(width: 18, height: 18))
-                                .padding(6)
-                        }
-                        Spacer()
+            // 信息区
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Spacer()
+
+                // 进度信息
+                HStack(spacing: 6) {
+                    Image(systemName: "book.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                    Text("\(progress)% 已读")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // 进度条
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color(.systemGray5))
+                        Capsule()
+                            .fill(Color.accentColor)
+                            .frame(width: geo.size.width * CGFloat(progress) / 100)
                     }
-                    .frame(width: cardWidth, height: cardHeight)
                 }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Spacer()
-                    Text("\(progress)%")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 6)
-                }
-                .frame(width: cardWidth)
-                .background(
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.6)],
-                        startPoint: .center,
-                        endPoint: .bottom
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                )
-
-                VStack {
-                    Spacer()
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Rectangle().fill(.black.opacity(0.3))
-                            Rectangle()
-                                .fill(Color.accentColor)
-                                .frame(width: geo.size.width * CGFloat(progress) / 100)
-                        }
-                    }
-                    .frame(height: 3)
-                    .clipShape(RoundedRectangle(cornerRadius: 1.5))
-                }
+                .frame(height: 3)
             }
-
-            Text(title)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .frame(width: cardWidth, alignment: .leading)
-                .padding(.top, 6)
+            .padding(.vertical, 8)
         }
+        .padding(10)
+        .frame(width: 240, height: 140)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
     }
 }
 
@@ -364,7 +417,7 @@ enum LibraryItem: Identifiable {
 // MARK: - 内容列表（漫画 or 小说）
 
 struct LibraryContentView: View {
-    let contentType: String
+    let contentType: String?
     @State private var viewModel = LibraryViewModel()
     @State private var viewMode: ViewMode = .grid
     @State private var sortOption: SortOption = .addedAt
@@ -435,9 +488,9 @@ struct LibraryContentView: View {
         .task {
             viewModel.setModelContext(modelContext)
             viewModel.setContentType(contentType)
-            if viewModel.comics.isEmpty && viewModel.groups.isEmpty {
-                await viewModel.loadAll()
-            }
+        }
+        .onChange(of: api.selectedLibraryId) { _, _ in
+            viewModel.setContentType(contentType)
         }
         .networkRefresh { await viewModel.loadAll(refresh: true) }
     }
@@ -455,11 +508,13 @@ struct LibraryContentView: View {
                             ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL)
                         }
                         .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                     case .group(let group):
                         NavigationLink(value: "group_\(group.id)") {
                             GroupCardView(group: group, serverURL: api.serverURL)
                         }
                         .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                     }
                 }
             }
@@ -473,7 +528,7 @@ struct LibraryContentView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 12)
     }
 
     // MARK: - List
@@ -486,7 +541,7 @@ struct LibraryContentView: View {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
                             ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL)
-                                .padding(.horizontal, 20)
+                                .padding(.horizontal, 16)
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
@@ -494,7 +549,7 @@ struct LibraryContentView: View {
                     case .group(let group):
                         NavigationLink(value: "group_\(group.id)") {
                             GroupListRowView(group: group, serverURL: api.serverURL)
-                                .padding(.horizontal, 20)
+                                .padding(.horizontal, 16)
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
@@ -507,16 +562,20 @@ struct LibraryContentView: View {
                 Color.clear.onAppear { Task { await viewModel.loadMore() } }
             }
 
+            if !viewModel.isLoading {
+                Color.clear.onAppear { Task { await viewModel.loadMore() } }
+            }
+
             if viewModel.isLoading { ProgressView().padding() }
         }
     }
 
     private var emptyState: some View {
         VStack(spacing: 12) {
-            Image(systemName: contentType == "comic" ? "photo.stack" : "text.book.closed")
+            Image(systemName: contentType == "novel" ? "text.book.closed" : "photo.stack")
                 .font(.system(size: 44))
                 .foregroundStyle(.tertiary)
-            Text(contentType == "comic" ? "还没有漫画" : "还没有小说")
+            Text(contentType == "novel" ? "还没有小说" : "还没有漫画")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -545,13 +604,12 @@ struct GroupCardView: View {
             ZStack(alignment: .bottomTrailing) {
                 if let url = coverImageURL {
                     AuthenticatedImage(url: url)
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 180)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .aspectRatio(3/4, contentMode: .fill)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: 12)
                         .fill(Color(.systemGray5))
-                        .frame(height: 180)
+                        .aspectRatio(3/4, contentMode: .fill)
                         .overlay {
                             Image(systemName: "rectangle.stack")
                                 .font(.title2)
@@ -580,8 +638,9 @@ struct GroupCardView: View {
                 .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
     }
+}
 
 
 // MARK: - 合集行（列表）
@@ -605,12 +664,12 @@ struct GroupListRowView: View {
             if let url = coverImageURL {
                 AuthenticatedImage(url: url)
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 56, height: 80)
+                    .frame(width: 56, height: 75)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color(.systemGray5))
-                    .frame(width: 56, height: 80)
+                    .frame(width: 56, height: 75)
                     .overlay {
                         Image(systemName: "rectangle.stack")
                             .font(.caption)

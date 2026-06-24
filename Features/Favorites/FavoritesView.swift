@@ -73,6 +73,9 @@ struct FavoritesMainContent: View {
                 viewModel.isLoading = false
             }
         }
+        .onChange(of: api.selectedLibraryId) { _, _ in
+            Task { await viewModel.loadFavorites() }
+        }
         .overlay {
             if viewModel.isLoading && viewModel.comics.isEmpty {
                 ProgressView()

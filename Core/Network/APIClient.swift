@@ -19,6 +19,12 @@ final class APIClient {
     private(set) var isNetworkReachable: Bool = false
     /// 网络恢复标记（用于通知 UI 刷新）
     var networkRecovered: Bool = false
+    /// 用户可访问的书库列表
+    var accessibleLibraries: [Library] = []
+    /// 当前选中的书库 ID（nil = 全部）
+    var selectedLibraryId: String? {
+        didSet { UserDefaults.standard.set(selectedLibraryId, forKey: "selectedLibraryId") }
+    }
 
     private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared
@@ -32,6 +38,7 @@ final class APIClient {
         config.timeoutIntervalForRequest = 5
         config.timeoutIntervalForResource = 30
         self.session = URLSession(configuration: config)
+        self.selectedLibraryId = UserDefaults.standard.string(forKey: "selectedLibraryId")
 
         guard !serverURL.isEmpty else { return }
 
@@ -365,7 +372,9 @@ final class APIClient {
         favorites: Bool? = nil,
         readingStatus: String? = nil,
         tag: String? = nil,
-        category: String? = nil
+        category: String? = nil,
+        excludeGrouped: Bool? = nil,
+        libraryId: String? = nil
     ) async throws -> ComicListResponse {
         var params: [String: String] = [
             "page": "\(page)",
@@ -379,6 +388,8 @@ final class APIClient {
         if let s = readingStatus { params["readingStatus"] = s }
         if let t = tag { params["tags"] = t }
         if let c = category { params["category"] = c }
+        if excludeGrouped == true { params["excludeGrouped"] = "true" }
+        if let lid = libraryId ?? selectedLibraryId { params["libraryId"] = lid }
         return try await get("/api/comics", query: params)
     }
 
@@ -454,6 +465,12 @@ final class APIClient {
         try await get("/api/stats/enhanced")
     }
 
+    func fetchYearlyStats(year: Int? = nil) async throws -> YearlyReadingStats {
+        var params: [String: String]?
+        if let year { params = ["year": "\(year)"] }
+        return try await get("/api/stats/yearly", query: params)
+    }
+
     // MARK: - Goals
 
     func fetchGoals() async throws -> [ReadingGoalProgress] {
@@ -481,7 +498,7 @@ final class APIClient {
     // MARK: - Reading Status
 
     func updateReadingStatus(comicId: String, status: String) async throws {
-        let body = ReadingStatusRequest(readingStatus: status)
+        let body = ReadingStatusRequest(status: status)
         let _: EmptyResponse = try await put("/api/comics/\(comicId)/reading-status", body: body)
     }
 
@@ -501,8 +518,17 @@ final class APIClient {
 
     func fetchGroups(contentType: String? = nil) async throws -> [ComicGroup] {
         var params: [String: String]?
-        if let t = contentType { params = ["contentType": t] }
-        let resp: GroupListResponse = try await get("/api/groups", query: params)
+        var hasParams = false
+        if let t = contentType {
+            params = ["contentType": t]
+            hasParams = true
+        }
+        if let lid = selectedLibraryId {
+            if params == nil { params = [:] }
+            params!["libraryId"] = lid
+            hasParams = true
+        }
+        let resp: GroupListResponse = try await get("/api/groups", query: hasParams ? params : nil)
         return resp.groups
     }
 
@@ -512,14 +538,36 @@ final class APIClient {
 
     /// 返回已分组的漫画 ID 集合
     func fetchComicGroupMap() async throws -> Set<String> {
-        let resp: ComicMapResponse = try await get("/api/groups/comic-map")
+        var params: [String: String]?
+        if let lid = selectedLibraryId {
+            params = ["libraryId": lid]
+        }
+        let resp: ComicMapResponse = try await get("/api/groups/comic-map", query: params)
         return Set(resp.map.keys)
     }
 
     /// 获取漫画 ID → 合集 ID 列表的完整映射
     func fetchComicGroupMapFull() async throws -> [String: [Int]] {
-        let resp: ComicMapResponse = try await get("/api/groups/comic-map")
+        var params: [String: String]?
+        if let lid = selectedLibraryId {
+            params = ["libraryId": lid]
+        }
+        let resp: ComicMapResponse = try await get("/api/groups/comic-map", query: params)
         return resp.map
+    }
+
+    // MARK: - Libraries
+
+    /// 获取用户可访问的书库列表
+    func fetchAccessibleLibraries() async throws -> [Library] {
+        let resp: LibraryListResponse = try await get("/api/libraries/accessible")
+        accessibleLibraries = resp.libraries
+        // 如果当前选中的书库不在可访问列表中，重置为 nil
+        if let selectedId = selectedLibraryId,
+           !accessibleLibraries.contains(where: { $0.id == selectedId }) {
+            selectedLibraryId = nil
+        }
+        return resp.libraries
     }
 
     // MARK: - HTTP Methods

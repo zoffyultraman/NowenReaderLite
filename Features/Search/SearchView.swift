@@ -64,6 +64,10 @@ struct SearchView: View {
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
         }
+        .onChange(of: api.selectedLibraryId) { _, _ in
+            viewModel.query = ""
+            viewModel.results = []
+        }
     }
 }
 

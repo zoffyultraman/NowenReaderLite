@@ -102,4 +102,5 @@ struct ChapterContent: Codable {
     let content: String?
     let chapterIndex: Int?
     let totalChapters: Int?
+    let mimeType: String?
 }

@@ -52,14 +52,20 @@ struct MainTabView: View {
             .tag(4)
         }
         .tint(Color.accentColor)
+        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
         .onAppear {
             downloadManager.setModelContext(modelContext)
             downloadManager.restoreFromStore(context: modelContext)
             api.startNetworkRecovery()
             syncPendingProgress()
+            // 加载可访问书库列表
+            Task { try? await api.fetchAccessibleLibraries() }
         }
         .onChange(of: api.networkRecovered) { _, recovered in
-            if recovered { syncPendingProgress() }
+            if recovered {
+                syncPendingProgress()
+                Task { try? await api.fetchAccessibleLibraries() }
+            }
         }
     }
 

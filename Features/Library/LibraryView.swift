@@ -13,15 +13,14 @@ struct ComicCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 封面
+            // 封面 3:4 比例
             ZStack(alignment: .topTrailing) {
                 AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
-                    .aspectRatio(contentMode: .fill)
-                    .frame(height: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .aspectRatio(3/4, contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(.gray.opacity(0.15), lineWidth: 0.5)
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(.gray.opacity(0.12), lineWidth: 0.5)
                     )
 
                 // 收藏标记
@@ -47,14 +46,14 @@ struct ComicCardView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
 
-                // 进度条
+                // 低干扰进度条
                 if progress > 0 {
                     VStack {
                         Spacer()
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Rectangle()
-                                    .fill(.black.opacity(0.3))
+                                    .fill(.black.opacity(0.2))
                                 Rectangle()
                                     .fill(Color.accentColor)
                                     .frame(width: geo.size.width * CGFloat(progress) / 100)
@@ -73,6 +72,7 @@ struct ComicCardView: View {
                 .lineLimit(2)
                 .padding(.top, 8)
         }
+        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
     }
 }
 
@@ -92,7 +92,7 @@ struct ComicListRowView: View {
         HStack(spacing: 12) {
             AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 56, height: 80)
+                .frame(width: 56, height: 75)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 4) {
@@ -135,7 +135,6 @@ struct ComicListRowView: View {
 final class LibraryViewModel {
     var comics: [Comic] = []
     var groups: [ComicGroup] = []
-    var groupedComicIds: Set<String> = []
     var isLoading = false
     var hasMore = true
     var errorMessage: String?
@@ -169,7 +168,6 @@ final class LibraryViewModel {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.loadGroups() }
             group.addTask { await self.loadComics(refresh: refresh) }
-            group.addTask { await self.loadGroupMap() }
         }
         // 如果已被更新的 loadAll 取代，不覆盖状态
         guard version == loadVersion else { return }
@@ -178,21 +176,16 @@ final class LibraryViewModel {
     }
 
     func updateDisplayItems() {
-        if contentType == "comic" {
-            // 合集和散本统一混合排序
-            var allItems: [LibraryItem] = []
-            allItems.append(contentsOf: groups.map { .group($0) })
-            let ungrouped = comics.filter { !groupedComicIds.contains($0.id) }
-            allItems.append(contentsOf: ungrouped.map { .comic($0) })
+        // 合集和散本统一混合排序（comics 已通过 excludeGrouped 过滤，全是散本）
+        var allItems: [LibraryItem] = []
+        allItems.append(contentsOf: groups.map { .group($0) })
+        allItems.append(contentsOf: comics.map { .comic($0) })
 
-            // 统一排序
-            allItems.sort { lhs, rhs in
-                compareLibraryItems(lhs, rhs, sortBy: sortBy, sortOrder: sortOrder)
-            }
-            displayItems = allItems
-        } else {
-            displayItems = comics.map { .comic($0) }
+        // 统一排序
+        allItems.sort { lhs, rhs in
+            compareLibraryItems(lhs, rhs, sortBy: sortBy, sortOrder: sortOrder)
         }
+        displayItems = allItems
     }
 
     // MARK: - 统一排序比较
@@ -308,7 +301,8 @@ final class LibraryViewModel {
                 page: currentPage,
                 sortBy: sortBy,
                 sortOrder: sortOrder,
-                contentType: contentType
+                contentType: contentType,
+                excludeGrouped: true
             )
             if refresh || currentPage == 1 {
                 comics = resp.comics
@@ -365,7 +359,6 @@ final class LibraryViewModel {
     }
 
     func loadGroups() async {
-        guard contentType == "comic" else { groups = []; return }
         guard !api.isOfflineMode, api.isNetworkReachable else {
             // 离线：从本地加载已保存的合集，只显示有已下载漫画的合集
             let local = OfflineFileManager.shared.loadGroups()
@@ -383,41 +376,29 @@ final class LibraryViewModel {
             return
         }
         do {
-            groups = try await api.fetchGroups(contentType: contentType)
+            if contentType == nil {
+                // "全部"模式：分别加载漫画和小说合集，合并去重
+                async let comicGroups = api.fetchGroups(contentType: "comic")
+                async let novelGroups = api.fetchGroups(contentType: "novel")
+                let allGroups = try await comicGroups + novelGroups
+                var seen = Set<Int>()
+                groups = allGroups.filter { seen.insert($0.id).inserted }
+            } else {
+                groups = try await api.fetchGroups(contentType: contentType)
+            }
         } catch {
             AppLogger.error("加载合集失败: \(error)")
             groups = []
         }
     }
 
-    func loadGroupMap() async {
-        guard contentType == "comic" else { groupedComicIds = []; return }
-        guard !api.isOfflineMode, api.isNetworkReachable else {
-            // 离线：从本地合集数据重建 groupedComicIds
-            let local = OfflineFileManager.shared.loadGroups()
-            let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-            var ids = Set<String>()
-            for g in local {
-                for comicId in g.comicIds where downloadedIds.contains(comicId) {
-                    ids.insert(comicId)
-                }
-            }
-            groupedComicIds = ids
-            return
-        }
-        do {
-            groupedComicIds = try await api.fetchComicGroupMap()
-        } catch {
-            AppLogger.error("加载分组映射失败: \(error)")
-            groupedComicIds = []
-        }
-    }
-
     func loadMore() async {
         guard hasMore, !isLoading else { return }
+        isLoading = true
         currentPage += 1
         await loadComics()
         updateDisplayItems()
+        isLoading = false
     }
 
     func updateSort(by: String, order: String) {
