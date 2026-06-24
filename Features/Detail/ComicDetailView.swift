@@ -393,11 +393,11 @@ struct ReadingStatusSection: View {
     let currentStatus: String?
     let onSelect: (String?) -> Void
 
-    private let statuses: [(key: String, label: String, icon: String)] = [
-        ("want", "想看", "heart"),
-        ("reading", "在读", "book.fill"),
-        ("finished", "已读", "checkmark.circle.fill"),
-        ("shelved", "搁置", "archivebox"),
+    private let statuses: [(key: String, icon: String)] = [
+        ("want", "heart"),
+        ("reading", "book.fill"),
+        ("finished", "checkmark.circle.fill"),
+        ("shelved", "archivebox"),
     ]
 
     var body: some View {
@@ -413,24 +413,26 @@ struct ReadingStatusSection: View {
                         Button {
                             onSelect(isSelected ? nil : status.key)
                         } label: {
-                            HStack(spacing: 4) {
+                            HStack(spacing: 5) {
                                 Image(systemName: status.icon)
                                     .font(.system(size: 11))
-                                Text(status.label)
+                                Text(ReadingStatus.label(for: status.key))
                                     .font(.subheadline.weight(isSelected ? .semibold : .regular))
                             }
                             .foregroundStyle(isSelected ? .white : .primary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
                             .background(isSelected ? Color.accentColor : Color(.systemGray6))
                             .clipShape(Capsule())
+                            .overlay(Capsule().stroke(isSelected ? Color.clear : Color(.systemGray4), lineWidth: 0.5))
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
     }
 }
 
