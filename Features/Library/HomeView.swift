@@ -458,7 +458,7 @@ struct LibraryContentView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .principal) {
                 Text(URL(string: api.serverURL)?.host ?? "")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
