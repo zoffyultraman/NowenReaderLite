@@ -371,7 +371,7 @@ struct ContinueReadingCard: View {
                 .frame(height: 3)
             }
             .padding(.vertical, 8)
-        }
+        } 
         .padding(10)
         .frame(width: 240, height: 140)
         .background(Color(.systemBackground))
@@ -439,10 +439,14 @@ struct LibraryContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // 书库名称标题
-            Text(currentLibraryName)
-                .font(.title3.weight(.bold))
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+            HStack {
+                Image(systemName: "books.vertical")
+                    .foregroundStyle(Color.accentColor)
+                Text(currentLibraryName)
+                    .font(.title3.weight(.bold))
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
 
             Group {
                 if items.isEmpty && !viewModel.isLoading {
