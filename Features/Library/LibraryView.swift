@@ -10,6 +10,7 @@ struct ComicCardView: View {
     let isNovel: Bool
     let progress: Int
     let serverURL: String
+    let readingStatus: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -63,6 +64,24 @@ struct ComicCardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 1.5))
                     }
                 }
+
+                // 阅读状态标记
+                if let status = readingStatus, !status.isEmpty {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Text(statusLabel(status))
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(statusColor(status))
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                                .padding(6)
+                            Spacer()
+                        }
+                    }
+                }
             }
 
             // 标题
@@ -73,6 +92,26 @@ struct ComicCardView: View {
                 .padding(.top, 8)
         }
         .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+    }
+
+    private func statusLabel(_ status: String) -> String {
+        switch status {
+        case "want": return "想看"
+        case "reading": return "在读"
+        case "finished": return "已读"
+        case "shelved": return "搁置"
+        default: return status
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "want": return .orange
+        case "reading": return .green
+        case "finished": return .blue
+        case "shelved": return .gray
+        default: return .gray
+        }
     }
 }
 
@@ -87,6 +126,7 @@ struct ComicListRowView: View {
     let progress: Int
     let isFavorite: Bool
     let serverURL: String
+    let readingStatus: String?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -108,6 +148,12 @@ struct ComicListRowView: View {
                         .lineLimit(1)
                 }
 
+                if let status = readingStatus, !status.isEmpty {
+                    Text(statusLabel(status))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(statusColor(status))
+                }
+
                 if pageCount > 0 {
                     let sizeText = fileSize.map { formatFileSize($0) } ?? ""
                     Text("\(pageCount) 页 · \(progress)% 已读\(sizeText.isEmpty ? "" : " · \(sizeText)")")
@@ -125,6 +171,26 @@ struct ComicListRowView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func statusLabel(_ status: String) -> String {
+        switch status {
+        case "want": return "想看"
+        case "reading": return "在读"
+        case "finished": return "已读"
+        case "shelved": return "搁置"
+        default: return status
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "want": return .orange
+        case "reading": return .green
+        case "finished": return .blue
+        case "shelved": return .gray
+        default: return .gray
+        }
     }
 }
 

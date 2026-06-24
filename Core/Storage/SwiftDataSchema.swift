@@ -73,6 +73,7 @@ final class CachedComic {
     var pageCount: Int
     var lastReadPage: Int
     var isFavorite: Bool
+    var readingStatus: String?
     var rating: Double?
     var type: String?
     var progress: Int
@@ -98,6 +99,7 @@ final class CachedComic {
         c.pageCount = comic.pageCount
         c.lastReadPage = comic.lastReadPage
         c.isFavorite = comic.isFavorite
+        c.readingStatus = comic.readingStatus
         c.rating = comic.rating
         c.type = comic.type
         c.progress = comic.progress
@@ -121,7 +123,7 @@ final class CachedComic {
             fileSize: nil,
             lastReadPage: lastReadPage,
             totalReadTime: nil,
-            readingStatus: nil,
+            readingStatus: readingStatus,
             lastReadAt: lastReadAt?.iso8601String,
             metadataSource: nil,
             coverUrl: coverUrl,

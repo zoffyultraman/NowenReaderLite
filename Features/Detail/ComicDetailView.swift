@@ -66,6 +66,13 @@ struct ComicDetailContent: View {
                 isNovel: comic.isNovel
             )
 
+            ReadingStatusSection(
+                currentStatus: comic.readingStatus,
+                onSelect: { status in
+                    Task { await viewModel.updateReadingStatus(status) }
+                }
+            )
+
             ComicTagsSection(tags: comic.tags)
 
             ComicDescriptionSection(description: comic.description)
@@ -380,6 +387,53 @@ struct ComicProgressSection: View {
     }
 }
 
+// MARK: - 阅读状态
+
+struct ReadingStatusSection: View {
+    let currentStatus: String?
+    let onSelect: (String?) -> Void
+
+    private let statuses: [(key: String, label: String, icon: String)] = [
+        ("want", "想看", "heart"),
+        ("reading", "在读", "book.fill"),
+        ("finished", "已读", "checkmark.circle.fill"),
+        ("shelved", "搁置", "archivebox"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("阅读状态")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(statuses, id: \.key) { status in
+                        let isSelected = currentStatus == status.key
+                        Button {
+                            onSelect(isSelected ? nil : status.key)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: status.icon)
+                                    .font(.system(size: 11))
+                                Text(status.label)
+                                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                            }
+                            .foregroundStyle(isSelected ? .white : .primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+}
+
 // MARK: - 标签段落
 
 struct ComicTagsSection: View {
@@ -499,6 +553,26 @@ final class DetailViewModel {
         }
     }
 
+    func updateReadingStatus(_ status: String?) async {
+        guard let comic else { return }
+        do {
+            try await api.updateReadingStatus(comicId: comic.id, status: status ?? "")
+            self.comic = comic.withReadingStatus(status)
+            syncReadingStatusToCache(comicId: comic.id, status: status)
+        } catch {
+            AppLogger.error("更新阅读状态失败: \(error)")
+        }
+    }
+
+    private func syncReadingStatusToCache(comicId: String, status: String?) {
+        guard let context = modelContext else { return }
+        let id = comicId
+        let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        guard let first = context.fetchOrLog(descriptor, label: "同步阅读状态").first else { return }
+        first.readingStatus = status
+        context.saveOrLog()
+    }
+
     private func syncFavoriteToCache(comicId: String, isFavorite: Bool) {
         guard let context = modelContext else { return }
         let id = comicId
@@ -510,6 +584,20 @@ final class DetailViewModel {
 }
 
 extension Comic {
+    func withReadingStatus(_ status: String?) -> Comic {
+        Comic(
+            id: id, title: title, author: author, publisher: publisher,
+            description: description, genre: genre, language: language,
+            year: year, pageCount: pageCount, fileSize: fileSize,
+            lastReadPage: lastReadPage, totalReadTime: totalReadTime,
+            readingStatus: status, lastReadAt: lastReadAt,
+            metadataSource: metadataSource, coverUrl: coverUrl,
+            coverAspectRatio: coverAspectRatio, rating: rating,
+            isFavorite: isFavorite, type: type, filename: filename,
+            sortOrder: sortOrder, tags: tags, categories: categories
+        )
+    }
+
     func withFavorite(_ fav: Bool) -> Comic {
         Comic(
             id: id, title: title, author: author, publisher: publisher,
