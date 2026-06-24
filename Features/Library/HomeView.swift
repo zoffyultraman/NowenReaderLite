@@ -427,38 +427,23 @@ struct LibraryContentView: View {
         return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
     }
 
-    /// 当前书库名称
-    private var currentLibraryName: String {
-        guard let id = api.selectedLibraryId,
-              let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
-            return "全部书库"
-        }
-        return lib.name
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // 书库名称标题
-            HStack {
-                Image(systemName: "books.vertical")
-                    .foregroundStyle(Color.accentColor)
-                Text(currentLibraryName)
-                    .font(.title3.weight(.bold))
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-
-            Group {
-                if items.isEmpty && !viewModel.isLoading {
-                    emptyState
-                } else if viewMode == .grid {
-                    gridView
-                } else {
-                    listView
-                }
+        Group {
+            if items.isEmpty && !viewModel.isLoading {
+                emptyState
+            } else if viewMode == .grid {
+                gridView
+            } else {
+                listView
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Text(URL(string: api.serverURL)?.host ?? api.serverURL)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     withAnimation { viewMode = viewMode == .grid ? .list : .grid }
