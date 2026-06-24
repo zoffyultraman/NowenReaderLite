@@ -107,22 +107,6 @@ struct HomeSearchBar: View {
 struct LibraryPickerView: View {
     @Environment(APIClient.self) private var api
 
-    private var selectedName: String {
-        guard let id = api.selectedLibraryId,
-              let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
-            return "全部书库"
-        }
-        return lib.name
-    }
-
-    private var selectedIcon: String {
-        guard let id = api.selectedLibraryId,
-              let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
-            return "square.grid.2x2"
-        }
-        return iconForLibraryType(lib.type)
-    }
-
     var body: some View {
         if api.accessibleLibraries.count > 1 {
             Menu {
@@ -130,15 +114,15 @@ struct LibraryPickerView: View {
                     api.selectedLibraryId = nil
                 }
                 ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
-                    Button(library.name, systemImage: iconForLibraryType(library.type)) {
+                    Button(library.name, systemImage: api.libraryIcon(for: library.type)) {
                         api.selectedLibraryId = library.id
                     }
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: selectedIcon)
+                    Image(systemName: api.selectedLibraryIcon)
                         .foregroundStyle(.secondary)
-                    Text(selectedName)
+                    Text(api.selectedLibraryName)
                         .font(.subheadline)
                         .foregroundStyle(.primary)
                     Spacer()
@@ -152,14 +136,6 @@ struct LibraryPickerView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
-        }
-    }
-
-    private func iconForLibraryType(_ type: String) -> String {
-        switch type {
-        case "comic": return "photo.stack"
-        case "novel": return "text.book.closed"
-        default: return "rectangle.stack"
         }
     }
 }
@@ -427,21 +403,12 @@ struct LibraryContentView: View {
         return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
     }
 
-    /// 当前书库名称
-    private var currentLibraryName: String {
-        guard let id = api.selectedLibraryId,
-              let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
-            return "全部书库"
-        }
-        return lib.name
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "books.vertical")
                     .foregroundStyle(Color.accentColor)
-                Text(currentLibraryName)
+                Text(api.selectedLibraryName)
                     .font(.title3.weight(.bold))
             }
             .padding(.horizontal, 16)

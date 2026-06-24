@@ -31,6 +31,30 @@ final class APIClient {
     var selectedLibraryId: String? {
         didSet { UserDefaults.standard.set(selectedLibraryId, forKey: "selectedLibraryId") }
     }
+    /// 当前选中书库名称（nil 时返回"全部书库"）
+    var selectedLibraryName: String {
+        guard let id = selectedLibraryId,
+              let lib = accessibleLibraries.first(where: { $0.id == id }) else {
+            return "全部书库"
+        }
+        return lib.name
+    }
+    /// 当前选中书库类型图标（nil 时返回 grid 图标）
+    var selectedLibraryIcon: String {
+        guard let id = selectedLibraryId,
+              let lib = accessibleLibraries.first(where: { $0.id == id }) else {
+            return "square.grid.2x2"
+        }
+        return libraryIcon(for: lib.type)
+    }
+    /// 书库类型对应图标
+    func libraryIcon(for type: String) -> String {
+        switch type {
+        case "comic": return "photo.stack"
+        case "novel": return "text.book.closed"
+        default: return "rectangle.stack"
+        }
+    }
 
     private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared
