@@ -427,8 +427,8 @@ struct LibraryContentView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
