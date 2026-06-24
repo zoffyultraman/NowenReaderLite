@@ -34,7 +34,7 @@ struct HomeView: View {
             }
         }
         .navigationTitle(URL(string: api.serverURL)?.host ?? "")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: String.self) { value in
             if value.hasPrefix("group_") {
                 let id = Int(value.replacingOccurrences(of: "group_", with: "")) ?? 0
