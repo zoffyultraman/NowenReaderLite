@@ -33,7 +33,7 @@ struct HomeView: View {
                 )
             }
         }
-        .navigationTitle(URL(string: api.serverURL)?.host ?? "")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: String.self) { value in
             if value.hasPrefix("group_") {
@@ -458,6 +458,12 @@ struct LibraryContentView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Text(URL(string: api.serverURL)?.host ?? "")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     withAnimation { viewMode = viewMode == .grid ? .list : .grid }
