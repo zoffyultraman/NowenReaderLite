@@ -110,7 +110,7 @@ struct LibraryPickerView: View {
     private var selectedName: String {
         guard let id = api.selectedLibraryId,
               let lib = api.accessibleLibraries.first(where: { $0.id == id }) else {
-            return "全部"
+            return "全部书库"
         }
         return lib.name
     }
@@ -125,50 +125,33 @@ struct LibraryPickerView: View {
 
     var body: some View {
         if api.accessibleLibraries.count > 1 {
-            HStack(spacing: 8) {
-                HStack(spacing: 4) {
-                    Image(systemName: "books.vertical")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text("书库")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+            Menu {
+                Button("全部书库", systemImage: "square.grid.2x2") {
+                    api.selectedLibraryId = nil
                 }
-
-                Menu {
-                    Button("全部", systemImage: "square.grid.2x2") {
-                        api.selectedLibraryId = nil
+                ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
+                    Button(library.name, systemImage: iconForLibraryType(library.type)) {
+                        api.selectedLibraryId = library.id
                     }
-                    ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
-                        Button(library.name, systemImage: iconForLibraryType(library.type)) {
-                            api.selectedLibraryId = library.id
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: selectedIcon)
-                            .font(.system(size: 11))
-                        Text(selectedName)
-                            .font(.subheadline.weight(.medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color(.systemGray6))
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color(.systemGray4), lineWidth: 0.5)
-                    )
                 }
-
-                Spacer()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: selectedIcon)
+                        .foregroundStyle(.secondary)
+                    Text(selectedName)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(12)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 4)
+            .padding(.top, 4)
         }
     }
 
