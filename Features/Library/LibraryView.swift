@@ -35,6 +35,7 @@ struct ComicCardView: View {
     let progress: Int
     let serverURL: String
     let readingStatus: String?
+    let rating: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -116,6 +117,18 @@ struct ComicCardView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .padding(.top, 8)
+
+            // 评分
+            if let rating, rating > 0 {
+                HStack(spacing: 1) {
+                    ForEach(1...5, id: \.self) { i in
+                        Image(systemName: i <= Int(rating) ? "star.fill" : "star")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.yellow)
+                    }
+                }
+                .padding(.top, 2)
+            }
         }
         .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
     }
@@ -133,6 +146,7 @@ struct ComicListRowView: View {
     let isFavorite: Bool
     let serverURL: String
     let readingStatus: String?
+    let rating: Double?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -152,6 +166,16 @@ struct ComicListRowView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+
+                if let rating, rating > 0 {
+                    HStack(spacing: 1) {
+                        ForEach(1...5, id: \.self) { i in
+                            Image(systemName: i <= Int(rating) ? "star.fill" : "star")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.yellow)
+                        }
+                    }
                 }
 
                 if let status = readingStatus, !status.isEmpty {

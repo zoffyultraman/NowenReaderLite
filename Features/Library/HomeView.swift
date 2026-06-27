@@ -485,7 +485,7 @@ struct LibraryContentView: View {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
-                            ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus)
+                            ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
@@ -520,7 +520,7 @@ struct LibraryContentView: View {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
-                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus)
+                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
                                 .padding(.horizontal, 16)
                         }
                         .buttonStyle(.plain)

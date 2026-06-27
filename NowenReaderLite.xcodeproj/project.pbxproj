@@ -25,7 +25,6 @@
 		95882555E3015F53A499BA35 /* NovelReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57BAE200908585CFAEF2F29F /* NovelReaderView.swift */; };
 		A8CB77540EE3B2CA7781AAEE /* PDFReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BE60152235EF1C13E85021D /* PDFReaderView.swift */; };
 		AA002233445566778800BB02 /* ComicGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA002233445566778800BB01 /* ComicGroup.swift */; };
-		LL0000000000000000000002 /* Library.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0000000000000000000001 /* Library.swift */; };
 		AA002233445566778800BB04 /* GroupDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA002233445566778800BB03 /* GroupDetailView.swift */; };
 		AABB00030000000000000001 /* ServerListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00040000000000000001 /* ServerListView.swift */; };
 		BE27FFB197D2C1E2B8F11870 /* Comic.swift in Sources */ = {isa = PBXBuildFile; fileRef = D804FBE0A5F92DA8770C8FC7 /* Comic.swift */; };
@@ -51,6 +50,7 @@
 		F5A74BBAAACB8D0184EF7BE6 /* ImageUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */; };
 		F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */; };
 		FF112233445566778899AABB /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE112233445566778899AABB /* HomeView.swift */; };
+		LL0000000000000000000002 /* Library.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0000000000000000000001 /* Library.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,7 +68,6 @@
 		6F3CF63A95EE284100F32221 /* ReadingStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingStats.swift; sourceTree = "<group>"; };
 		77AA1122334455667700AA00 /* AuthenticatedImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatedImage.swift; sourceTree = "<group>"; };
 		79CC617D5F7C868FFF90F75C /* Tag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tag.swift; sourceTree = "<group>"; };
-		LL0000000000000000000001 /* Library.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Library.swift; sourceTree = "<group>"; };
 		800BA4DE21472DAEE9BD72A5 /* ComicDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicDetailView.swift; sourceTree = "<group>"; };
 		91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicReaderView.swift; sourceTree = "<group>"; };
 		AA002233445566778800BB01 /* ComicGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComicGroup.swift; sourceTree = "<group>"; };
@@ -100,6 +99,7 @@
 		F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = mlpackage; path = RealESRGAN_x4plus_Anime.mlpackage; sourceTree = "<group>"; };
 		FCB28DBA10692EB6A3641686 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		FD448C133F7E79A1106AC69D /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		LL0000000000000000000001 /* Library.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Library.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -437,7 +437,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.1.3;
+				CURRENT_PROJECT_VERSION = 1.1.4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -449,7 +449,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.1.3;
+				MARKETING_VERSION = 1.1.4;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -503,7 +503,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1.3;
+				MARKETING_VERSION = 1.1.4;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -559,7 +559,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1.3;
+				MARKETING_VERSION = 1.1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -578,7 +578,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.1.3;
+				CURRENT_PROJECT_VERSION = 1.1.4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_TESTABILITY = YES;
@@ -590,7 +590,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.1.3;
+				MARKETING_VERSION = 1.1.4;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";

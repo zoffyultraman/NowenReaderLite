@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+
 import SwiftData
 
 // MARK: - 漫画阅读器（SwiftUI 入口）
@@ -10,6 +11,7 @@ struct ComicReaderView: View {
     var groupContext: ReadingGroupContext? = nil
 
     @State private var viewModel = ComicReaderViewModel()
+    @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -44,30 +46,35 @@ struct ComicReaderView: View {
                     }
                 }
             } else {
-                PageViewController(
-                    comicId: viewModel.currentComicId,
-                    totalPages: viewModel.totalPages,
-                    currentPage: $viewModel.currentPage,
-                    transitionStyle: pageTransitionStyle,
-                    onToggleOverlay: { showOverlay.toggle() },
-                    onPageChange: { page in viewModel.onPageChanged(page) },
-                    onReachEnd: {
-                        guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
-                        Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
-                    },
-                    onSwipeToPrev: {
-                        guard let prevId = viewModel.groupContext?.previousVolumeId else { return }
-                        Task {
-                            let tp: Int
-                            if let pages = try? await APIClient.shared.fetchPages(comicId: prevId) { tp = pages.totalPages }
-                            else if let meta = OfflineFileManager.shared.loadMeta(comicId: prevId) { tp = meta.pageCount }
-                            else { tp = 1 }
-                            await viewModel.loadVolume(comicId: prevId, initialPage: max(0, tp - 1))
+                GeometryReader { geometry in
+                    let isLandscape = geometry.size.width > geometry.size.height
+                    UnifiedComicPager(
+                        comicId: viewModel.currentComicId,
+                        totalPages: viewModel.totalPages,
+                        currentPage: $viewModel.currentPage,
+                        isDoublePageMode: isLandscape,
+                        isRTL: UserDefaults.standard.bool(forKey: "isRTL"),
+                        upscaleMode: upscaleMode,
+                        onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
+                        onPageChange: { page in viewModel.onPageChanged(page) },
+                        onReachEnd: {
+                            guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
+                            Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
+                        },
+                        onSwipeToPrev: {
+                            guard let prevId = viewModel.groupContext?.previousVolumeId else { return }
+                            Task {
+                                let tp: Int
+                                if let pages = try? await APIClient.shared.fetchPages(comicId: prevId) { tp = pages.totalPages }
+                                else if let meta = OfflineFileManager.shared.loadMeta(comicId: prevId) { tp = meta.pageCount }
+                                else { tp = 1 }
+                                await viewModel.loadVolume(comicId: prevId, initialPage: max(0, tp - 1))
+                            }
                         }
-                    }
-                )
-                .id("\(viewModel.currentComicId)_\(pageTransitionStyle)")
-                .ignoresSafeArea()
+                    )
+                    .id("\(viewModel.currentComicId)_\(isLandscape ? "double" : "single")")
+                    .ignoresSafeArea()
+                }
             }
 
             // 工具栏覆盖层
@@ -127,22 +134,18 @@ struct ReaderOverlayView: View {
     let volumeLabel: String
     let onDismiss: () -> Void
 
+    @AppStorage("isRTL") private var isRTL: Bool = true
+    @State private var showSettings = false
+
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
+            // Top Toolbar
             HStack {
                 Button(action: onDismiss) {
                     Image(systemName: "chevron.left")
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white)
-                        .padding(10)
-                        .background(.ultraThinMaterial.opacity(0.4), in: Circle())
                 }
-
-                Spacer()
-
-                Text("\(currentPage + 1) / \(totalPages)")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.white)
 
                 Spacer()
 
@@ -150,501 +153,60 @@ struct ReaderOverlayView: View {
                     Text(volumeLabel)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.7))
-                        .padding(.trailing, 4)
-                } else {
-                    Color.clear.frame(width: 44, height: 44)
+                        .padding(.trailing, 8)
+                }
+
+                Button(action: { showSettings = true }) {
+                    Image(systemName: "gearshape")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.white)
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.vertical, 12)
+            .background(
+                LinearGradient(
+                    colors: [.black.opacity(0.85), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea(edges: .top)
+            )
 
             Spacer()
 
-            VStack(spacing: 8) {
-                Text("第 \(currentPage + 1) 页")
-                    .font(.caption.weight(.medium))
+            // Bottom Toolbar
+            HStack {
+                Text("Page \(currentPage + 1) / \(totalPages)")
+                    .font(.callout.weight(.medium))
                     .foregroundStyle(.white)
 
-                Slider(
-                    value: $sliderValue,
-                    in: 0...Double(max(0, totalPages - 1)),
-                    step: 1
-                )
-                .tint(Color.accentColor)
+                Spacer()
 
-                HStack {
-                    Text("1")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.6))
-                    Spacer()
-                    Text("\(totalPages)")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.6))
+                Toggle(isOn: $isRTL) {
+                    Text("RTL Mode")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white)
                 }
+                .toggleStyle(.switch)
+                .tint(.accentColor)
+                .fixedSize()
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
-            .padding(.top, 8)
-            .background(.ultraThinMaterial.opacity(0.3))
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+            .background(
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.85)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea(edges: .bottom)
+            )
         }
         .transition(.opacity)
-    }
-}
-
-// MARK: - UIKit 翻页控制器（桥接）
-
-struct PageViewController: UIViewControllerRepresentable {
-    let comicId: String
-    let totalPages: Int
-    @Binding var currentPage: Int
-    let transitionStyle: String
-    let onToggleOverlay: () -> Void
-    let onPageChange: (Int) -> Void
-    var onReachEnd: (() -> Void)?
-    var onSwipeToPrev: (() -> Void)?
-
-    func makeUIViewController(context: Context) -> PageViewControllerImpl {
-        let style: UIPageViewController.TransitionStyle = transitionStyle == "平移" ? .scroll : .pageCurl
-        let vc = PageViewControllerImpl(
-            comicId: comicId,
-            totalPages: totalPages,
-            currentPage: currentPage,
-            transitionStyle: style,
-            onToggleOverlay: onToggleOverlay,
-            onPageChange: { page in
-                currentPage = page
-                onPageChange(page)
-            },
-            onReachEnd: onReachEnd,
-            onSwipeToPrev: onSwipeToPrev
-        )
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: PageViewControllerImpl, context: Context) {
-        uiViewController.totalPages = totalPages
-        uiViewController.comicId = comicId
-        uiViewController.onReachEnd = onReachEnd
-        uiViewController.onSwipeToPrev = onSwipeToPrev
-        uiViewController.goToPage(currentPage)
-    }
-}
-
-// MARK: - UIPageViewController 实现
-
-@MainActor
-class PageViewControllerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
-    var comicId: String
-    var totalPages: Int
-    var currentIdx: Int
-    let onToggleOverlay: () -> Void
-    let onPageChange: (Int) -> Void
-    var onReachEnd: (() -> Void)?
-    var onSwipeToPrev: (() -> Void)?
-
-    /// 页面图片内存缓存（限制 10 页，避免长时间阅读内存暴涨）
-    private let imageCache: NSCache<NSString, UIImage> = {
-        let cache = NSCache<NSString, UIImage>()
-        cache.countLimit = 10
-        return cache
-    }()
-    /// 超分结果缓存（限制 10 页，避免频繁淘汰）
-    private let upscaledCache: NSCache<NSString, UIImage> = {
-        let cache = NSCache<NSString, UIImage>()
-        cache.countLimit = 10
-        return cache
-    }()
-    /// 当前正在预加载的任务
-    nonisolated(unsafe) private var preloadTasks: [Int: Task<Void, Never>] = [:]
-    /// 当前正在超分的任务（key: "page_mode"）
-    nonisolated(unsafe) private var upscaleTasks: [String: Task<Void, Never>] = [:]
-
-    /// 缓存的超分设置（避免频繁读取 UserDefaults）
-    private var _cachedUpscaleMode: UpscaleMode?
-    private var _cachedKeepOriginalSize: Bool?
-
-    /// 超分设置
-    private var upscaleMode: UpscaleMode {
-        if let cached = _cachedUpscaleMode { return cached }
-        let mode: UpscaleMode
-        if let stored = UserDefaults.standard.string(forKey: "upscaleMode"),
-           let m = UpscaleMode(rawValue: stored) {
-            mode = m
-        } else {
-            mode = .off
-        }
-        _cachedUpscaleMode = mode
-        return mode
-    }
-
-    private var keepOriginalSize: Bool {
-        if let cached = _cachedKeepOriginalSize { return cached }
-        let value = UserDefaults.standard.bool(forKey: "keepOriginalSize")
-        _cachedKeepOriginalSize = value
-        return value
-    }
-
-    init(
-        comicId: String,
-        totalPages: Int,
-        currentPage: Int,
-        transitionStyle: UIPageViewController.TransitionStyle = .pageCurl,
-        onToggleOverlay: @escaping () -> Void,
-        onPageChange: @escaping (Int) -> Void,
-        onReachEnd: (() -> Void)?,
-        onSwipeToPrev: (() -> Void)?
-    ) {
-        self.comicId = comicId
-        self.totalPages = totalPages
-        self.currentIdx = currentPage
-        self.onToggleOverlay = onToggleOverlay
-        self.onPageChange = onPageChange
-        self.onReachEnd = onReachEnd
-        self.onSwipeToPrev = onSwipeToPrev
-        super.init(transitionStyle: transitionStyle, navigationOrientation: .horizontal, options: nil)
-        self.dataSource = self
-        self.delegate = self
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        preloadTasks.values.forEach { $0.cancel() }
-        upscaleTasks.values.forEach { $0.cancel() }
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-
-        if let initial = makePage(for: currentIdx) {
-            setViewControllers([initial], direction: .forward, animated: false)
-        }
-
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        tap.cancelsTouchesInView = false
-        view.addGestureRecognizer(tap)
-
-        // ✅ 监听 UserDefaults 变化
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(userDefaultsDidChange),
-            name: UserDefaults.didChangeNotification,
-            object: nil
-        )
-
-        // ✅ 首次进入时预加载周围页面
-        preloadPages(around: currentIdx)
-    }
-
-    // ✅ 内存压力处理
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-
-        // 取消所有后台任务
-        preloadTasks.values.forEach { $0.cancel() }
-        preloadTasks.removeAll()
-
-        upscaleTasks.values.forEach { $0.cancel() }
-        upscaleTasks.removeAll()
-
-        // 保留当前页，清理其他缓存
-        let currentKey = cacheKey(for: currentIdx)
-        let currentUpscaledKey = upscaledCacheKey(for: currentIdx)
-
-        // 临时保存当前页
-        let currentImage = imageCache.object(forKey: currentKey)
-        let currentUpscaled = upscaledCache.object(forKey: currentUpscaledKey)
-
-        // 清空缓存
-        imageCache.removeAllObjects()
-        upscaledCache.removeAllObjects()
-
-        // 恢复当前页
-        if let image = currentImage {
-            imageCache.setObject(image, forKey: currentKey)
-        }
-        if let upscaled = currentUpscaled {
-            upscaledCache.setObject(upscaled, forKey: currentUpscaledKey)
-        }
-    }
-
-    @objc private func userDefaultsDidChange() {
-        // ✅ 清除缓存，下次访问时会重新读取
-        _cachedUpscaleMode = nil
-        _cachedKeepOriginalSize = nil
-    }
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        let point = gesture.location(in: view)
-        let width = view.bounds.width
-        // 左右 1/3 区域翻页，中间 1/3 区域切换覆盖层
-        if point.x < width / 3 {
-            // 点击左侧：上一页
-            guard currentIdx > 0 else {
-                DispatchQueue.main.async { self.onSwipeToPrev?() }
-                return
-            }
-            currentIdx -= 1
-            if let vc = makePage(for: currentIdx) {
-                setViewControllers([vc], direction: .reverse, animated: true)
-                onPageChange(currentIdx)
-                preloadPages(around: currentIdx)
-                checkAndShowUpscaledImage(for: currentIdx)
-            }
-        } else if point.x > width * 2 / 3 {
-            // 点击右侧：下一页
-            guard currentIdx < totalPages - 1 else {
-                DispatchQueue.main.async { self.onReachEnd?() }
-                return
-            }
-            currentIdx += 1
-            if let vc = makePage(for: currentIdx) {
-                setViewControllers([vc], direction: .forward, animated: true)
-                onPageChange(currentIdx)
-                preloadPages(around: currentIdx)
-                checkAndShowUpscaledImage(for: currentIdx)
-            }
-        } else {
-            // 点击中间：切换覆盖层
-            onToggleOverlay()
-        }
-    }
-
-    func goToPage(_ page: Int) {
-        guard viewIfLoaded != nil, page != currentIdx, page >= 0, page < totalPages else { return }
-        let direction: NavigationDirection = page > currentIdx ? .forward : .reverse
-        if let vc = makePage(for: page) {
-            setViewControllers([vc], direction: direction, animated: true)
-            currentIdx = page
-            onPageChange(page)
-            preloadPages(around: page)
-
-            // ✅ 跳页后，立即检查是否有超分结果可以显示（移除 0.1 秒延迟）
-            checkAndShowUpscaledImage(for: page)
-        }
-    }
-
-    // MARK: - DataSource
-
-    func pageViewController(_ pvc: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        guard let vc = viewController as? ZoomablePageVC else { return nil }
-        let idx = vc.pageIndex - 1
-        if idx < 0 {
-            DispatchQueue.main.async { self.onSwipeToPrev?() }
-            return nil
-        }
-        return makePage(for: idx)
-    }
-
-    func pageViewController(_ pvc: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
-        guard let vc = viewController as? ZoomablePageVC else { return nil }
-        let idx = vc.pageIndex + 1
-        if idx >= totalPages {
-            DispatchQueue.main.async { self.onReachEnd?() }
-            return nil
-        }
-        return makePage(for: idx)
-    }
-
-    // MARK: - Delegate
-
-    func pageViewController(_ pvc: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
-        guard completed, let vc = pvc.viewControllers?.first as? ZoomablePageVC else { return }
-        currentIdx = vc.pageIndex
-        onPageChange(vc.pageIndex)
-        preloadPages(around: vc.pageIndex)
-
-        // ✅ 翻页完成后，检查是否有超分结果可以显示
-        checkAndShowUpscaledImage(for: vc.pageIndex)
-    }
-
-    // MARK: - Page Factory
-
-    private func makePage(for index: Int) -> ZoomablePageVC? {
-        guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: index) else {
-            AppLogger.log("无法创建页面 URL: \(comicId) page \(index)")
-            return nil
-        }
-        let cached = imageCache.object(forKey: cacheKey(for: index))
-        let upscaled = upscaledCache.object(forKey: upscaledCacheKey(for: index))
-        let vc = ZoomablePageVC(imageURL: url, pageIndex: index, comicId: comicId, cachedImage: upscaled ?? cached)
-        vc.onImageLoaded = { [weak self] image in
-            guard let self else { return }
-            self.imageCache.setObject(image, forKey: self.cacheKey(for: index))
-            self.startUpscaleIfNeeded(for: index, image: image)
-        }
-
-        // ✅ 如果使用了原图缓存但没有超分缓存，立即开始超分
-        if let cachedImage = cached, upscaled == nil {
-            startUpscaleIfNeeded(for: index, image: cachedImage)
-        }
-
-        return vc
-    }
-
-    private func cacheKey(for page: Int) -> NSString {
-        "\(comicId)_\(page)" as NSString
-    }
-
-    private func upscaledCacheKey(for page: Int) -> NSString {
-        "\(comicId)_\(page)_\(upscaleMode.rawValue)" as NSString
-    }
-
-    private func upscaleTaskKey(for page: Int, mode: UpscaleMode) -> String {
-        "\(page)_\(mode.rawValue)"
-    }
-
-    // MARK: - Upscale
-
-    private func startUpscaleIfNeeded(for page: Int, image: UIImage, isPreload: Bool = false) {
-        let mode = upscaleMode
-        guard mode != .off else { return }
-        let key = upscaledCacheKey(for: page)
-        let taskKey = upscaleTaskKey(for: page, mode: mode)
-        if upscaledCache.object(forKey: key) != nil { return }
-        // ✅ 检查是否已有任务在运行（使用包含 mode 的 key）
-        if let existingTask = upscaleTasks[taskKey], !existingTask.isCancelled { return }
-
-        // ✅ 当前页面使用更高优先级，预加载页面使用较低优先级
-        let priority: TaskPriority = (page == currentIdx && !isPreload) ? .high : .medium
-
-        upscaleTasks[taskKey] = Task { [weak self] in
-            guard let self else { return }
-            let shouldKeepOriginalSize = self.keepOriginalSize
-            let result: UIImage
-            do {
-                // ✅ 使用 Task.detached 在后台执行，不继承 MainActor
-                result = try await Task.detached(priority: priority) {
-                    try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
-                }.value
-            } catch is CancellationError {
-                // ✅ 任务被取消，静默处理
-                self.upscaleTasks.removeValue(forKey: taskKey)
-                return
-            } catch {
-                self.upscaleTasks.removeValue(forKey: taskKey)
-                return
-            }
-            // ✅ 缓存结果
-            self.upscaledCache.setObject(result, forKey: key)
-            self.upscaleTasks.removeValue(forKey: taskKey)
-            // ✅ 如果是当前页面，立即更新显示（无论任务是否被取消）
-            if page == self.currentIdx {
-                self.updateCurrentPageImage(result)
-            }
-        }
-    }
-
-    private func updateCurrentPageImage(_ image: UIImage) {
-        guard let currentVC = viewControllers?.first as? ZoomablePageVC else { return }
-        currentVC.updateImage(image)
-    }
-
-    // ✅ 新增：检查并显示当前页面的超分结果
-    private func checkAndShowUpscaledImage(for page: Int) {
-        let upscaledKey = upscaledCacheKey(for: page)
-        if let upscaled = upscaledCache.object(forKey: upscaledKey) {
-            updateCurrentPageImage(upscaled)
-        }
-    }
-
-    // MARK: - Preloading
-
-    /// 预加载：前 1 页，后 3 页（共 5 页）
-    func preloadPages(around current: Int) {
-        // ✅ 只取消范围外的预加载任务，保留范围内的
-        let keepRange = max(0, current - 1)...min(totalPages - 1, current + 3)
-
-        // 先收集要删除的 key，再删除（避免迭代时修改字典）
-        let preloadKeysToRemove = preloadTasks.keys.filter { !keepRange.contains($0) }
-        for page in preloadKeysToRemove {
-            preloadTasks[page]?.cancel()
-            preloadTasks.removeValue(forKey: page)
-        }
-
-        // ✅ 清理不在当前范围内的超分任务（key 现在是 "page_mode" 格式）
-        let upscaleKeysToRemove = upscaleTasks.keys.filter { taskKey in
-            let parts = taskKey.split(separator: "_")
-            if let pageStr = parts.first, let page = Int(pageStr) {
-                return !keepRange.contains(page)
-            }
-            return false
-        }
-        for taskKey in upscaleKeysToRemove {
-            upscaleTasks[taskKey]?.cancel()
-            upscaleTasks.removeValue(forKey: taskKey)
-        }
-
-        let mode = upscaleMode
-        let range = keepRange
-        for page in range {
-            guard page != current else { continue }
-            let key = cacheKey(for: page)
-            let upscaledKey = upscaledCacheKey(for: page)
-
-            // ✅ 如果预加载任务已存在，跳过
-            if preloadTasks[page] != nil { continue }
-
-            // 检查原图是否已缓存
-            if let cachedImage = imageCache.object(forKey: key) {
-                // 原图已缓存，检查是否需要超分（使用包含 mode 的 key 检查）
-                let taskKey = upscaleTaskKey(for: page, mode: mode)
-                if mode != .off && upscaledCache.object(forKey: upscaledKey) == nil && upscaleTasks[taskKey] == nil {
-                    startUpscaleIfNeeded(for: page, image: cachedImage, isPreload: true)
-                }
-                continue
-            }
-
-            guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: page) else { continue }
-
-            preloadTasks[page] = Task { [weak self] in
-                guard let self else { return }
-
-                // 离线优先：先检查本地文件
-                if let localData = OfflineFileManager.shared.loadPageData(comicId: self.comicId, page: page),
-                   let image = UIImage(data: localData) {
-                    guard !Task.isCancelled else { return }
-                    await MainActor.run { () -> Void in
-                        self.imageCache.setObject(image, forKey: key)
-                        if mode != .off {
-                            self.startUpscaleIfNeeded(for: page, image: image, isPreload: true)
-                        }
-                        self.preloadTasks.removeValue(forKey: page)
-                    }
-                    return
-                }
-
-                // 网络不可达时跳过预加载
-                let isReachable = await MainActor.run { APIClient.shared.isNetworkReachable }
-                guard isReachable else {
-                    await MainActor.run { () -> Void in
-                        self.preloadTasks.removeValue(forKey: page)
-                    }
-                    return
-                }
-
-                let request = APIClient.shared.authenticatedRequest(url: url)
-                do {
-                    let (data, _) = try await URLSession.shared.data(for: request)
-                    guard !Task.isCancelled, let image = UIImage(data: data) else { return }
-                    // ✅ 回到 MainActor 更新缓存和启动超分
-                    await MainActor.run { () -> Void in
-                        self.imageCache.setObject(image, forKey: key)
-                        // 预加载完成后，通过统一方法进行超分
-                        if mode != .off {
-                            self.startUpscaleIfNeeded(for: page, image: image, isPreload: true)
-                        }
-                        self.preloadTasks.removeValue(forKey: page)
-                    }
-                } catch {
-                    // 预加载失败静默忽略，回到 MainActor 清理
-                    await MainActor.run { () -> Void in
-                        self.preloadTasks.removeValue(forKey: page)
-                    }
-                }
-            }
+        .sheet(isPresented: $showSettings) {
+            ReaderSettingsView()
         }
     }
 }
@@ -812,5 +374,515 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
         let w = scrollView.bounds.width / scale
         let h = scrollView.bounds.height / scale
         return CGRect(x: center.x - w / 2, y: center.y - h / 2, width: w, height: h)
+    }
+}
+
+// MARK: - 全局阅读器缓存
+class ReaderCacheManager {
+    static let shared = ReaderCacheManager()
+    let imageCache = NSCache<NSString, UIImage>()
+    let upscaledCache = NSCache<NSString, UIImage>()
+    
+    func clear() {
+        imageCache.removeAllObjects()
+        upscaledCache.removeAllObjects()
+    }
+}
+
+// MARK: - 统一翻页控制器（SwiftUI 桥接）
+struct UnifiedComicPager: UIViewControllerRepresentable {
+    let comicId: String
+    let totalPages: Int
+    @Binding var currentPage: Int
+    let isDoublePageMode: Bool
+    let isRTL: Bool
+    let upscaleMode: UpscaleMode
+    let onToggleOverlay: () -> Void
+    let onPageChange: (Int) -> Void
+    var onReachEnd: (() -> Void)?
+    var onSwipeToPrev: (() -> Void)?
+
+    func makeUIViewController(context: Context) -> UnifiedComicPagerImpl {
+        let vc = UnifiedComicPagerImpl(
+            comicId: comicId,
+            totalPages: totalPages,
+            initialPage: currentPage,
+            isDoublePageMode: isDoublePageMode,
+            isRTL: isRTL,
+            upscaleMode: upscaleMode
+        )
+        vc.onToggleOverlay = onToggleOverlay
+        vc.onPageChange = { page in
+            self.currentPage = page
+            self.onPageChange(page)
+        }
+        vc.onReachEnd = onReachEnd
+        vc.onSwipeToPrev = onSwipeToPrev
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: UnifiedComicPagerImpl, context: Context) {
+        if uiViewController.basePageIndex != currentPage {
+            uiViewController.goToPage(currentPage)
+        }
+        
+        // Handle changes in mode and RTL
+        var needsReload = false
+        if uiViewController.isDoublePageMode != isDoublePageMode {
+            uiViewController.isDoublePageMode = isDoublePageMode
+            needsReload = true
+        }
+        if uiViewController.isRTL != isRTL {
+            uiViewController.isRTL = isRTL
+            needsReload = true
+        }
+        if uiViewController.upscaleMode != upscaleMode {
+            uiViewController.upscaleMode = upscaleMode
+            uiViewController.onUpscaleModeChanged()
+        }
+        
+        if needsReload {
+            uiViewController.reloadPages()
+        }
+    }
+}
+
+// MARK: - UIPageViewController 统一实现
+class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    let comicId: String
+    let totalPages: Int
+    var isDoublePageMode: Bool
+    var isRTL: Bool
+    var upscaleMode: UpscaleMode
+    
+    var onToggleOverlay: (() -> Void)?
+    var onPageChange: ((Int) -> Void)?
+    var onReachEnd: (() -> Void)?
+    var onSwipeToPrev: (() -> Void)?
+    
+    var basePageIndex: Int = 0
+    private var preloadingTasks: [Int: Task<Void, Never>] = [:]
+    private var upscalingTasks: [Int: Task<Void, Never>] = [:]
+    
+    init(comicId: String, totalPages: Int, initialPage: Int, isDoublePageMode: Bool, isRTL: Bool, upscaleMode: UpscaleMode) {
+        self.comicId = comicId
+        self.totalPages = totalPages
+        self.basePageIndex = initialPage
+        self.isDoublePageMode = isDoublePageMode
+        self.isRTL = isRTL
+        self.upscaleMode = upscaleMode
+        
+        let spineLoc: UIPageViewController.SpineLocation = isDoublePageMode ? .mid : (isRTL ? .max : .min)
+        super.init(transitionStyle: .pageCurl, navigationOrientation: .horizontal, options: [
+            .spineLocation: NSNumber(value: spineLoc.rawValue)
+        ])
+    }
+    
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    
+    deinit {
+        preloadingTasks.values.forEach { $0.cancel() }
+        upscalingTasks.values.forEach { $0.cancel() }
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        self.dataSource = self
+        self.delegate = self
+        self.view.backgroundColor = .black
+        
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        self.view.addGestureRecognizer(tapGesture)
+        
+        // Initial Load
+        reloadPages()
+    }
+    
+    func goToPage(_ page: Int) {
+        guard page >= 0, page < totalPages else { return }
+        
+        let targetBase = isDoublePageMode ? (page - (page % 2)) : page
+        if targetBase == basePageIndex { return }
+        
+        // Calculate direction based on target page and RTL
+        let isMovingForward = targetBase > basePageIndex
+        let direction: UIPageViewController.NavigationDirection
+        
+        if isRTL {
+            direction = isMovingForward ? .reverse : .forward
+        } else {
+            direction = isMovingForward ? .forward : .reverse
+        }
+        
+        self.basePageIndex = targetBase
+        let vcs = makePages(for: basePageIndex)
+        
+        setViewControllers(vcs, direction: direction, animated: true) { [weak self] _ in
+            self?.notifyPageChange()
+        }
+        preloadPages(around: basePageIndex)
+    }
+    
+    func reloadPages() {
+        // Enforce even index for double page mode
+        if isDoublePageMode && basePageIndex % 2 != 0 {
+            basePageIndex -= 1
+        }
+        basePageIndex = max(0, min(basePageIndex, totalPages - 1))
+        
+        self.isDoubleSided = isDoublePageMode
+        let vcs = makePages(for: basePageIndex)
+        
+        // We use .forward here as default for reloading inplace
+        setViewControllers(vcs, direction: .forward, animated: false) { [weak self] _ in
+            self?.notifyPageChange()
+        }
+        preloadPages(around: basePageIndex)
+    }
+    
+    // MARK: - Spine Location (Dynamic switching)
+    func pageViewController(_ pageViewController: UIPageViewController, spineLocationFor orientation: UIInterfaceOrientation) -> UIPageViewController.SpineLocation {
+        if isDoublePageMode {
+            pageViewController.isDoubleSided = true
+            return .mid
+        } else {
+            pageViewController.isDoubleSided = false
+            return isRTL ? .max : .min
+        }
+    }
+    
+    // MARK: - Touch Handling
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: view)
+        let width = view.bounds.width
+        
+        if location.x < width * 0.3 {
+            // Tapped Left
+            if isRTL {
+                // Next Page
+                if isDoublePageMode {
+                    if basePageIndex + 2 < totalPages { goToPage(basePageIndex + 2) }
+                    else { onReachEnd?() }
+                } else {
+                    if basePageIndex + 1 < totalPages { goToPage(basePageIndex + 1) }
+                    else { onReachEnd?() }
+                }
+            } else {
+                // Prev Page
+                if isDoublePageMode {
+                    if basePageIndex - 2 >= 0 { goToPage(basePageIndex - 2) }
+                    else { onSwipeToPrev?() }
+                } else {
+                    if basePageIndex - 1 >= 0 { goToPage(basePageIndex - 1) }
+                    else { onSwipeToPrev?() }
+                }
+            }
+        } else if location.x > width * 0.7 {
+            // Tapped Right
+            if isRTL {
+                // Prev Page
+                if isDoublePageMode {
+                    if basePageIndex - 2 >= 0 { goToPage(basePageIndex - 2) }
+                    else { onSwipeToPrev?() }
+                } else {
+                    if basePageIndex - 1 >= 0 { goToPage(basePageIndex - 1) }
+                    else { onSwipeToPrev?() }
+                }
+            } else {
+                // Next Page
+                if isDoublePageMode {
+                    if basePageIndex + 2 < totalPages { goToPage(basePageIndex + 2) }
+                    else { onReachEnd?() }
+                } else {
+                    if basePageIndex + 1 < totalPages { goToPage(basePageIndex + 1) }
+                    else { onReachEnd?() }
+                }
+            }
+        } else {
+            onToggleOverlay?()
+        }
+    }
+    
+    // MARK: - Delegate
+    func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+        guard completed, let currentVCs = pageViewController.viewControllers else { return }
+        
+        if isDoublePageMode {
+            let leftVC = currentVCs.first
+            let rightVC = currentVCs.last
+            
+            // In double page mode, RTL means rightVC is basePageIndex, leftVC is basePageIndex+1
+            var computedBase = -1
+            if let rVC = rightVC as? ZoomablePageVC, let lVC = leftVC as? ZoomablePageVC {
+                computedBase = isRTL ? rVC.pageIndex : lVC.pageIndex
+            } else if let rVC = rightVC as? ZoomablePageVC, leftVC is BlankPageVC {
+                computedBase = rVC.pageIndex
+            } else if let lVC = leftVC as? ZoomablePageVC, rightVC is BlankPageVC {
+                computedBase = isRTL ? (lVC.pageIndex - 1) : lVC.pageIndex
+            }
+            
+            if computedBase >= 0 {
+                self.basePageIndex = computedBase - (computedBase % 2)
+            }
+        } else {
+            if let vc = currentVCs.first as? ZoomablePageVC {
+                self.basePageIndex = vc.pageIndex
+            }
+        }
+        
+        notifyPageChange()
+        preloadPages(around: basePageIndex)
+        
+        // Show upscaled if ready
+        if isDoublePageMode {
+            checkAndShowUpscaledImage(for: basePageIndex)
+            checkAndShowUpscaledImage(for: basePageIndex + 1)
+        } else {
+            checkAndShowUpscaledImage(for: basePageIndex)
+        }
+    }
+    
+    private func notifyPageChange() {
+        onPageChange?(basePageIndex)
+    }
+    
+    // MARK: - DataSource
+    func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
+        let currentIndex: Int
+        if let zvc = viewController as? ZoomablePageVC {
+            currentIndex = zvc.pageIndex
+        } else if let bvc = viewController as? BlankPageVC {
+            currentIndex = bvc.pageIndex
+        } else {
+            return nil
+        }
+        
+        let targetIndex = isRTL ? currentIndex + 1 : currentIndex - 1
+        
+        if isDoublePageMode {
+            // In double page mode, we allow up to totalPages (which is the blank page index)
+            // But only if the base page index of that spread would be valid.
+            // Actually, an easier way is to allow targetIndex == totalPages if the OTHER page in the spread is totalPages - 1.
+            let targetBase = targetIndex - (targetIndex % 2)
+            if targetBase >= totalPages { return nil }
+            if targetIndex < 0 { return nil }
+            return makeSinglePage(for: targetIndex)
+        } else {
+            if targetIndex < 0 || targetIndex >= totalPages { return nil }
+            return makeSinglePage(for: targetIndex)
+        }
+    }
+    
+    func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
+        let currentIndex: Int
+        if let zvc = viewController as? ZoomablePageVC {
+            currentIndex = zvc.pageIndex
+        } else if let bvc = viewController as? BlankPageVC {
+            currentIndex = bvc.pageIndex
+        } else {
+            return nil
+        }
+        
+        let targetIndex = isRTL ? currentIndex - 1 : currentIndex + 1
+        
+        if isDoublePageMode {
+            let targetBase = targetIndex - (targetIndex % 2)
+            if targetBase >= totalPages { return nil }
+            if targetIndex < 0 { return nil }
+            return makeSinglePage(for: targetIndex)
+        } else {
+            if targetIndex < 0 || targetIndex >= totalPages { return nil }
+            return makeSinglePage(for: targetIndex)
+        }
+    }
+    
+    // MARK: - Page Factory
+    private func makePages(for index: Int) -> [UIViewController] {
+        if isDoublePageMode {
+            let base = index - (index % 2)
+            let page1 = makeSinglePage(for: base)
+            let page2 = makeSinglePage(for: base + 1)
+            return isRTL ? [page2, page1] : [page1, page2]
+        } else {
+            return [makeSinglePage(for: index)]
+        }
+    }
+    
+    private func makeSinglePage(for index: Int) -> UIViewController {
+        if index >= totalPages {
+            return BlankPageVC(pageIndex: index)
+        }
+        guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: index) else {
+            AppLogger.log("无法创建页面 URL: \(comicId) page \(index)")
+            return BlankPageVC(pageIndex: index)
+        }
+        
+        let cached = ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: index))
+        let upscaled = ReaderCacheManager.shared.upscaledCache.object(forKey: upscaledCacheKey(for: index))
+        let vc = ZoomablePageVC(imageURL: url, pageIndex: index, comicId: comicId, cachedImage: upscaled ?? cached)
+        vc.onImageLoaded = { [weak self] image in
+            guard let self else { return }
+            ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: index))
+            self.startUpscaleIfNeeded(for: index, image: image)
+        }
+        if let cachedImage = cached, upscaled == nil {
+            startUpscaleIfNeeded(for: index, image: cachedImage)
+        }
+        return vc
+    }
+    
+    // MARK: - Caching & Upscaling
+    private func cacheKey(for index: Int) -> NSString {
+        return "\(comicId)_page_\(index)" as NSString
+    }
+    
+    private func upscaleTaskKey(for index: Int, mode: UpscaleMode) -> String {
+        return "\(comicId)_\(index)_\(mode.rawValue)"
+    }
+    
+    private func upscaledCacheKey(for index: Int) -> NSString {
+        return "\(comicId)_upscaled_\(index)" as NSString
+    }
+    
+    private func preloadPages(around currentIndex: Int) {
+        let preloadRange = isDoublePageMode ? (currentIndex-4...currentIndex+5) : (currentIndex-2...currentIndex+2)
+        for i in preloadRange {
+            guard i >= 0 && i < totalPages else { continue }
+            if ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: i)) == nil && preloadingTasks[i] == nil {
+                let task = Task {
+                    if Task.isCancelled { return }
+                    if let _ = OfflineFileManager.shared.loadPageData(comicId: comicId, page: i) { return }
+                    if let url = APIClient.shared.pageImageURL(comicId: comicId, page: i),
+                       let data = try? await URLSession.shared.data(from: url).0,
+                       let image = UIImage(data: data) {
+                        if !Task.isCancelled {
+                            ReaderCacheManager.shared.imageCache.setObject(image, forKey: cacheKey(for: i))
+                        }
+                    }
+                    preloadingTasks[i] = nil
+                }
+                preloadingTasks[i] = task
+            }
+        }
+    }
+    
+    private func startUpscaleIfNeeded(for index: Int, image: UIImage) {
+        let mode = self.upscaleMode
+        guard mode != .off else { return }
+        let key = upscaledCacheKey(for: index)
+        let taskKey = upscaleTaskKey(for: index, mode: mode)
+        
+        if ReaderCacheManager.shared.upscaledCache.object(forKey: key) != nil { return }
+        
+        // 检查是否已有任务在运行（使用包含 mode 的 key）
+        if let existingTask = upscalingTasks[index], !existingTask.isCancelled { return }
+        
+        let priority: TaskPriority = (index == basePageIndex || index == basePageIndex + 1) ? .high : .medium
+        
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let shouldKeepOriginalSize = UserDefaults.standard.bool(forKey: "keepOriginalSize")
+            
+            do {
+                // 使用 Task.detached 在后台执行，不继承 MainActor
+                let result = try await Task.detached(priority: priority) {
+                    try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
+                }.value
+                
+                if !Task.isCancelled {
+                    ReaderCacheManager.shared.upscaledCache.setObject(result, forKey: key)
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.checkAndShowUpscaledImage(for: index)
+                    }
+                }
+            } catch {
+                print(">>> Upscale failed for page \(index): \(error)")
+            }
+            
+            DispatchQueue.main.async { [weak self] in
+                self?.upscalingTasks.removeValue(forKey: index)
+            }
+        }
+        upscalingTasks[index] = task
+    }
+    
+    
+    func onUpscaleModeChanged() {
+        ReaderCacheManager.shared.upscaledCache.removeAllObjects()
+        upscalingTasks.values.forEach { $0.cancel() }
+        upscalingTasks.removeAll()
+        
+        guard let viewControllers = self.viewControllers else { return }
+        for vc in viewControllers {
+            if let zvc = vc as? ZoomablePageVC {
+                // Remove upscaled image currently showing
+                if let cached = ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: zvc.pageIndex)) {
+                    zvc.updateImage(cached)
+                    startUpscaleIfNeeded(for: zvc.pageIndex, image: cached)
+                }
+            }
+        }
+    }
+
+    private func checkAndShowUpscaledImage(for index: Int) {
+        guard let upscaled = ReaderCacheManager.shared.upscaledCache.object(forKey: upscaledCacheKey(for: index)) else { return }
+        guard let viewControllers = self.viewControllers else { return }
+        
+        for vc in viewControllers {
+            if let zvc = vc as? ZoomablePageVC, zvc.pageIndex == index {
+                zvc.updateImage(upscaled)
+            }
+        }
+    }
+}
+
+// MARK: - 空白占位页 VC
+class BlankPageVC: UIViewController {
+    let pageIndex: Int
+    init(pageIndex: Int) {
+        self.pageIndex = pageIndex
+        super.init(nibName: nil, bundle: nil)
+        self.view.backgroundColor = .black
+    }
+    required init?(coder: NSCoder) { fatalError() }
+}
+import SwiftUI
+
+struct ReaderSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("pageTransitionStyle") private var pageTransitionStyle: String = "翻书"
+    @AppStorage("isRTL") private var isRTL: Bool = true
+    @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("阅读设置")) {
+                    Picker("翻页效果", selection: $pageTransitionStyle) {
+                        Text("翻书").tag("翻书")
+                        Text("平移").tag("平移")
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    Toggle("从右向左阅读 (RTL)", isOn: $isRTL)
+                    
+                    Picker("超分辨率", selection: $upscaleMode) {
+                        ForEach(UpscaleMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("阅读设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
