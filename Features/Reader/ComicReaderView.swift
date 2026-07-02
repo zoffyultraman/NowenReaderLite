@@ -770,11 +770,10 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         let mode = self.upscaleMode
         guard mode != .off else { return }
         let key = upscaledCacheKey(for: index)
-        let taskKey = upscaleTaskKey(for: index, mode: mode)
         
         if ReaderCacheManager.shared.upscaledCache.object(forKey: key) != nil { return }
         
-        // 检查是否已有任务在运行（使用包含 mode 的 key）
+        // 检查是否已有任务在运行
         if let existingTask = upscalingTasks[index], !existingTask.isCancelled { return }
         
         let priority: TaskPriority = (index == basePageIndex || index == basePageIndex + 1) ? .high : .medium

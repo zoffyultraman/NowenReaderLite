@@ -29,7 +29,11 @@ struct StatsMainContent: View {
         ScrollView {
             if let stats = viewModel.enhancedStats {
                 VStack(spacing: 20) {
-                    GoalSectionView(goals: viewModel.goals, onAddGoal: { showGoalSheet = true })
+                    GoalSectionView(
+                        goals: viewModel.goals,
+                        canManage: api.currentUser?.isAdmin == true,
+                        onAddGoal: { showGoalSheet = true }
+                    )
 
                     StatsOverviewCardsView(stats: stats)
 
@@ -262,6 +266,7 @@ struct GoalSettingSheet: View {
 
 struct GoalSectionView: View {
     let goals: [ReadingGoalProgress]
+    let canManage: Bool
     let onAddGoal: () -> Void
 
     var body: some View {
@@ -270,27 +275,49 @@ struct GoalSectionView: View {
                 Text("阅读目标")
                     .font(.headline)
                 Spacer()
-                Button {
-                    onAddGoal()
-                } label: {
-                    Image(systemName: "plus.circle")
-                        .foregroundStyle(Color.accentColor)
+                if canManage {
+                    Button {
+                        onAddGoal()
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
             }
             .padding(.horizontal, 20)
 
             if goals.isEmpty {
-                Button {
-                    onAddGoal()
-                } label: {
+                if canManage {
+                    Button {
+                        onAddGoal()
+                    } label: {
+                        VStack(spacing: 8) {
+                            Image(systemName: "target")
+                                .font(.title2)
+                                .foregroundStyle(.tertiary)
+                            Text("设定阅读目标")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Text("追踪每日或每周阅读进度")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                } else {
                     VStack(spacing: 8) {
                         Image(systemName: "target")
                             .font(.title2)
                             .foregroundStyle(.tertiary)
-                        Text("设定阅读目标")
+                        Text("暂无阅读目标")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
-                        Text("追踪每日或每周阅读进度")
+                        Text("管理员可设置每日或每周目标")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -298,9 +325,8 @@ struct GoalSectionView: View {
                     .padding(.vertical, 24)
                     .background(Color(.systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 16)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 16)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {

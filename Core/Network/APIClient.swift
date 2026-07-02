@@ -441,7 +441,7 @@ final class APIClient {
         if let t = tag { params["tags"] = t }
         if let c = category { params["category"] = c }
         if excludeGrouped == true { params["excludeGrouped"] = "true" }
-        if let lid = libraryId ?? selectedLibraryId { params["libraryId"] = lid }
+        if let lid = libraryId ?? selectedLibraryId { params["libraryIds"] = lid }
         return try await get("/api/comics", query: params)
     }
 
@@ -458,8 +458,9 @@ final class APIClient {
         let _: EmptyResponse = try await put("/api/comics/\(comicId)/rating", body: body)
     }
 
-    func updateProgress(comicId: String, page: Int) async throws {
-        let _: EmptyResponse = try await put("/api/comics/\(comicId)/progress", body: PageBody(page: page))
+    func updateProgress(comicId: String, page: Int, totalPages: Int? = nil) async throws {
+        let body = PageBody(page: page, totalPages: totalPages)
+        let _: EmptyResponse = try await put("/api/comics/\(comicId)/progress", body: body)
     }
 
     // MARK: - Pages & Content
@@ -577,7 +578,7 @@ final class APIClient {
         }
         if let lid = selectedLibraryId {
             if params == nil { params = [:] }
-            params!["libraryId"] = lid
+            params!["libraryIds"] = lid
             hasParams = true
         }
         let resp: GroupListResponse = try await get("/api/groups", query: hasParams ? params : nil)
@@ -592,7 +593,7 @@ final class APIClient {
     func fetchComicGroupMap() async throws -> Set<String> {
         var params: [String: String]?
         if let lid = selectedLibraryId {
-            params = ["libraryId": lid]
+            params = ["libraryIds": lid]
         }
         let resp: ComicMapResponse = try await get("/api/groups/comic-map", query: params)
         return Set(resp.map.keys)
@@ -602,7 +603,7 @@ final class APIClient {
     func fetchComicGroupMapFull() async throws -> [String: [Int]] {
         var params: [String: String]?
         if let lid = selectedLibraryId {
-            params = ["libraryId": lid]
+            params = ["libraryIds": lid]
         }
         let resp: ComicMapResponse = try await get("/api/groups/comic-map", query: params)
         return resp.map
@@ -738,6 +739,7 @@ struct RatingBody: Encodable {
 
 struct PageBody: Encodable {
     let page: Int
+    let totalPages: Int?
 }
 
 struct SessionEndBody: Encodable {

@@ -168,8 +168,103 @@ struct ReadingStatusRequest: Encodable {
 
 struct YearlyReadingStats: Codable {
     let year: Int
-    let monthlyStats: [MonthlyStat]  // 复用已有的 MonthlyStat
+    let monthlyStats: [MonthlyStat]
     let totalSessions: Int
     let totalReadTime: Int
     let totalBooks: Int
+
+    enum CodingKeys: String, CodingKey {
+        case year, monthlyStats, totalSessions, totalReadTime, totalBooks
+        case totalComicsRead
+    }
+
+    init(
+        year: Int,
+        monthlyStats: [MonthlyStat],
+        totalSessions: Int,
+        totalReadTime: Int,
+        totalBooks: Int
+    ) {
+        self.year = year
+        self.monthlyStats = monthlyStats
+        self.totalSessions = totalSessions
+        self.totalReadTime = totalReadTime
+        self.totalBooks = totalBooks
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedYear = try container.decodeIfPresent(Int.self, forKey: .year) ?? Calendar.current.component(.year, from: Date())
+        let decodedTotalSessions = try container.decodeIfPresent(Int.self, forKey: .totalSessions) ?? 0
+        let decodedTotalReadTime = try container.decodeIfPresent(Int.self, forKey: .totalReadTime) ?? 0
+        let decodedTotalBooks = try container.decodeIfPresent(Int.self, forKey: .totalBooks)
+        let decodedTotalComicsRead = try container.decodeIfPresent(Int.self, forKey: .totalComicsRead)
+
+        let rawMonthlyStats = try container.decodeIfPresent([YearlyMonthlyStat].self, forKey: .monthlyStats) ?? []
+        let decodedMonthlyStats = rawMonthlyStats.map {
+            MonthlyStat(
+                month: $0.month.displayValue(year: decodedYear),
+                duration: $0.duration,
+                sessions: $0.sessions,
+                comics: $0.comics
+            )
+        }
+
+        year = decodedYear
+        monthlyStats = decodedMonthlyStats
+        totalSessions = decodedTotalSessions
+        totalReadTime = decodedTotalReadTime
+        totalBooks = decodedTotalBooks ?? decodedTotalComicsRead ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(year, forKey: .year)
+        try container.encode(monthlyStats, forKey: .monthlyStats)
+        try container.encode(totalSessions, forKey: .totalSessions)
+        try container.encode(totalReadTime, forKey: .totalReadTime)
+        try container.encode(totalBooks, forKey: .totalBooks)
+    }
+}
+
+private struct YearlyMonthlyStat: Decodable {
+    let month: YearlyMonthValue
+    let duration: Int
+    let sessions: Int
+    let comics: Int
+
+    enum CodingKeys: String, CodingKey {
+        case month, duration, sessions, comics
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        month = try container.decode(YearlyMonthValue.self, forKey: .month)
+        duration = try container.decodeIfPresent(Int.self, forKey: .duration) ?? 0
+        sessions = try container.decodeIfPresent(Int.self, forKey: .sessions) ?? 0
+        comics = try container.decodeIfPresent(Int.self, forKey: .comics) ?? 0
+    }
+}
+
+private enum YearlyMonthValue: Decodable {
+    case number(Int)
+    case text(String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Int.self) {
+            self = .number(value)
+            return
+        }
+        self = .text(try container.decode(String.self))
+    }
+
+    func displayValue(year: Int) -> String {
+        switch self {
+        case .number(let value):
+            return String(format: "%04d-%02d", year, value)
+        case .text(let value):
+            return value
+        }
+    }
 }

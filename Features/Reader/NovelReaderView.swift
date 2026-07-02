@@ -751,7 +751,11 @@ final class NovelReaderViewModel {
     }
 
     func saveProgress(currentPage: Int = 0) async {
-        try? await api.updateProgress(comicId: currentComicId, page: currentChapter)
+        try? await api.updateProgress(
+            comicId: currentComicId,
+            page: currentChapter,
+            totalPages: totalChapters > 0 ? totalChapters : nil
+        )
     }
 
     // MARK: - 分页

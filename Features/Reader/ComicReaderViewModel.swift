@@ -101,16 +101,17 @@ final class ComicReaderViewModel {
         saveTask?.cancel()
         let page = currentPage
         let comicId = currentComicId
+        let resolvedTotalPages = totalPages
         saveTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
             do {
-                try await api.updateProgress(comicId: comicId, page: page)
+                try await api.updateProgress(comicId: comicId, page: page, totalPages: resolvedTotalPages > 0 ? resolvedTotalPages : nil)
                 // 服务器保存成功后才更新本地缓存
                 self.updateCachedProgress(comicId: comicId, page: page)
             } catch {
                 AppLogger.log("保存进度失败（离线暂存）: \(error.localizedDescription)")
-                PendingProgressManager.shared.save(comicId: comicId, page: page)
+                PendingProgressManager.shared.save(comicId: comicId, page: page, totalPages: resolvedTotalPages > 0 ? resolvedTotalPages : nil)
                 self.updateCachedProgress(comicId: comicId, page: page)
             }
         }
@@ -146,10 +147,10 @@ final class ComicReaderViewModel {
     func saveProgressAndWait() async {
         saveTask?.cancel()
         do {
-            try await api.updateProgress(comicId: currentComicId, page: currentPage)
+            try await api.updateProgress(comicId: currentComicId, page: currentPage, totalPages: totalPages > 0 ? totalPages : nil)
             updateCachedProgress(comicId: currentComicId, page: currentPage)
         } catch {
-            PendingProgressManager.shared.save(comicId: currentComicId, page: currentPage)
+            PendingProgressManager.shared.save(comicId: currentComicId, page: currentPage, totalPages: totalPages > 0 ? totalPages : nil)
             updateCachedProgress(comicId: currentComicId, page: currentPage)
         }
     }

@@ -9,7 +9,7 @@ struct DownloadListView: View {
 
     private var activeTasks: [DownloadTask] {
         downloadManager.tasks.values
-            .filter { $0.state == .downloading || $0.state == .waiting || $0.state == .paused }
+            .filter { $0.state != .completed }
             .sorted { $0.title < $1.title }
     }
 
@@ -127,6 +127,14 @@ struct DownloadTaskRow: View {
             }
         }
         .padding(.vertical, 4)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                DownloadManager.shared.cancel(comicId: task.comicId)
+            } label: {
+                Label("取消", systemImage: "xmark.circle")
+            }
+            .tint(.red)
+        }
     }
 
     @ViewBuilder
@@ -149,6 +157,19 @@ struct DownloadTaskRow: View {
         case .waiting:
             Image(systemName: "clock")
                 .foregroundStyle(.secondary)
+        case .failed:
+            Button {
+                DownloadManager.shared.download(
+                    comicId: task.comicId,
+                    title: task.title,
+                    pageCount: task.totalPages,
+                    fileSize: nil,
+                    isNovel: task.isNovel
+                )
+            } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .foregroundStyle(.red)
+            }
         default:
             EmptyView()
         }

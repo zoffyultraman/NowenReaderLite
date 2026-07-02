@@ -78,7 +78,7 @@ struct MainTabView: View {
         for (comicId, record) in pending {
             Task {
                 do {
-                    try await api.updateProgress(comicId: comicId, page: record.page)
+                    try await api.updateProgress(comicId: comicId, page: record.page, totalPages: record.totalPages)
                     PendingProgressManager.shared.remove(comicId: comicId)
                     AppLogger.log("离线进度已同步: \(comicId) page=\(record.page)")
                 } catch {

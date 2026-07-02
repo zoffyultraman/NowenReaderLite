@@ -16,38 +16,31 @@ final class DownloadManager {
     /// 全局下载进度（所有活跃任务的加权平均）
     private(set) var globalProgress: Double = 0
 
-    /// 最大并发下载数
-    private let maxConcurrent = 3
-    /// 单页下载超时
-    private let pageTimeout: TimeInterval = 30
-    /// 每批并发下载页数
-    private let batchSize = 5
-
     private let fileManager = OfflineFileManager.shared
     private var downloadQueue: [String] = []   // 等待中的 comicId
     private var activeCount: Int { tasks.values.filter { $0.state == .downloading }.count }
 
+    /// 最大并发下载任务数（对于 background session，OS 会自行调度，但这控制着“同时处在 downloading 状态的整书任务数”）
+    private let maxConcurrent = 3
+    private let pageTimeout: TimeInterval = 30
+
     // MARK: - 存储上限
 
-    /// 存储上限（字节），0 = 无限制
     var storageLimitBytes: Int64 {
         let mb = UserDefaults.standard.integer(forKey: "offlineStorageLimitMB")
         return mb > 0 ? Int64(mb) * 1024 * 1024 : 0
     }
 
-    /// 当前已用离线存储（字节）
     var usedStorageBytes: Int64 {
         fileManager.totalDiskSize
     }
 
-    /// 是否还有剩余空间可下载
     var hasStorageSpace: Bool {
         let limit = storageLimitBytes
         guard limit > 0 else { return true }
         return usedStorageBytes < limit
     }
 
-    /// 估算某本漫画下载后是否会超限（按每页 ~300KB 估算）
     func wouldExceedLimit(pageCount: Int) -> Bool {
         let limit = storageLimitBytes
         guard limit > 0 else { return false }
@@ -55,9 +48,24 @@ final class DownloadManager {
         return usedStorageBytes + estimated > limit
     }
 
-    private init() {}
+    // MARK: - 后台会话
 
-    /// 刷新全局下载统计（在任务状态变更时调用）
+    @ObservationIgnored var backgroundCompletionHandler: (() -> Void)?
+
+    @ObservationIgnored private lazy var sessionDelegate = SessionDelegate(manager: self)
+
+    @ObservationIgnored private lazy var backgroundSession: URLSession = {
+        let config = URLSessionConfiguration.background(withIdentifier: "com.nowen.readerlite.background")
+        config.isDiscretionary = false
+        config.sessionSendsLaunchEvents = true
+        return URLSession(configuration: config, delegate: sessionDelegate, delegateQueue: .main)
+    }()
+
+    private init() {
+        // 提前访问一下，确保配置在 App 启动时绑定 delegate
+        _ = backgroundSession
+    }
+
     private func refreshStats() {
         let active = tasks.values.filter { $0.state == .downloading || $0.state == .waiting }
         activeDownloadCount = active.count
@@ -72,10 +80,8 @@ final class DownloadManager {
 
     // MARK: - Public API
 
-    /// 开始下载一本漫画或小说
     @discardableResult
     func download(comicId: String, title: String, pageCount: Int, fileSize: Int64?, isNovel: Bool = false) -> Bool {
-        // 已完成或正在下载，跳过
         if let task = tasks[comicId], (task.state == .downloading || task.state == .completed) { return false }
         if fileManager.isComicDownloaded(comicId: comicId, pageCount: pageCount) {
             let task = DownloadTask(
@@ -87,9 +93,8 @@ final class DownloadManager {
             return false
         }
 
-        // 存储上限检查
         if wouldExceedLimit(pageCount: pageCount) {
-            AppLogger.error("存储空间不足，跳过下载: \(title)")
+            AppLogger.error("存储空间不足，跳过下载: \\(title)")
             return false
         }
 
@@ -106,12 +111,9 @@ final class DownloadManager {
         return true
     }
 
-    /// 检查漫画是否属于某个合集，如果是则保存合集信息到本地
     private func saveGroupInfoIfNeeded(comicId: String) async {
-        // 已有本地合集数据中包含此漫画，跳过网络请求
         let localGroups = OfflineFileManager.shared.loadGroups()
         if localGroups.contains(where: { $0.comicIds.contains(comicId) }) { return }
-        // 从服务器查询合集归属
         guard let map = try? await APIClient.shared.fetchComicGroupMapFull(),
               let groupIds = map[comicId], !groupIds.isEmpty else { return }
         for groupId in groupIds {
@@ -126,13 +128,7 @@ final class DownloadManager {
         }
     }
 
-    /// 批量下载合集中的所有卷
-    /// - Parameters:
-    ///   - comics: 合集中的漫画列表
-    ///   - groupDetail: 合集详情（用于保存合集离线信息）
-    /// - Returns: (成功入队数, 跳过数)
     func downloadAll(comics: [GroupComicItem], groupDetail: GroupDetailResponse? = nil) -> (queued: Int, skipped: Int) {
-        // 保存合集离线信息
         if let group = groupDetail {
             let meta = OfflineGroupMeta(
                 id: group.id,
@@ -149,28 +145,25 @@ final class DownloadManager {
         var queued = 0
         var skipped = 0
         for comic in comics {
-            let success = download(
-                comicId: comic.id,
-                title: comic.title,
-                pageCount: comic.pageCount,
-                fileSize: comic.fileSize
-            )
+            let success = download(comicId: comic.id, title: comic.title, pageCount: comic.pageCount, fileSize: comic.fileSize)
             if success { queued += 1 } else { skipped += 1 }
         }
         return (queued, skipped)
     }
 
-    /// 暂停下载
     func pause(comicId: String) {
         guard let task = tasks[comicId], task.state == .downloading else { return }
         task.state = .paused
-        task.downloadTask?.cancel()
-        task.downloadTask = nil
+        backgroundSession.getAllTasks { sessionTasks in
+            for t in sessionTasks {
+                guard let desc = t.taskDescription, desc.hasPrefix("\(comicId)|") else { continue }
+                t.cancel()
+            }
+        }
         downloadQueue.removeAll { $0 == comicId }
         refreshStats()
     }
 
-    /// 恢复下载
     func resume(comicId: String) {
         guard let task = tasks[comicId], task.state == .paused else { return }
         task.state = .waiting
@@ -179,9 +172,8 @@ final class DownloadManager {
         processQueue()
     }
 
-    /// 取消下载（删除已下载的文件）
     func cancel(comicId: String) {
-        tasks[comicId]?.downloadTask?.cancel()
+        pause(comicId: comicId)
         tasks.removeValue(forKey: comicId)
         downloadQueue.removeAll { $0 == comicId }
         fileManager.deleteComic(comicId: comicId)
@@ -189,24 +181,17 @@ final class DownloadManager {
         refreshStats()
     }
 
-    /// 获取某本漫画的下载任务
     func task(for comicId: String) -> DownloadTask? {
         tasks[comicId]
     }
 
-    /// 某本漫画是否已下载完成
     func isDownloaded(comicId: String) -> Bool {
         if let task = tasks[comicId], task.state == .completed { return true }
-        // 没有 task 时，用缓存的 downloadedComicIds 快速判断（避免重复磁盘扫描）
         guard fileManager.downloadedComicIds.contains(comicId) else { return false }
-        // 确认有页面文件存在
-        let contents = try? FileManager.default.contentsOfDirectory(
-            atPath: fileManager.comicDir(for: comicId).path
-        )
+        let contents = try? FileManager.default.contentsOfDirectory(atPath: fileManager.comicDir(for: comicId).path)
         return contents?.contains(where: { $0.hasPrefix("page_") }) == true
     }
 
-    /// 删除已下载漫画
     func deleteDownload(comicId: String) {
         tasks.removeValue(forKey: comicId)
         fileManager.deleteComic(comicId: comicId)
@@ -214,49 +199,34 @@ final class DownloadManager {
         refreshStats()
     }
 
-    /// 从 SwiftData 恢复任务状态（App 启动时调用）
     func restoreFromStore(context: ModelContext) {
-        // 1. 一次性获取磁盘上已下载漫画 ID 集合（带缓存，避免重复扫描）
         let downloadedIds = Set(fileManager.downloadedComicIds)
-
-        // 2. 从 SwiftData 恢复
-        let descriptor = FetchDescriptor<DownloadedComicRecord>(
-            predicate: #Predicate { $0.state == "completed" }
-        )
+        let descriptor = FetchDescriptor<DownloadedComicRecord>(predicate: #Predicate { $0.state == "completed" })
         let records = context.fetchOrLog(descriptor, label: "恢复下载记录")
         for record in records {
             if downloadedIds.contains(record.comicId) {
-                // meta.json 存在，直接恢复任务
                 if tasks[record.comicId] == nil {
                     let task = DownloadTask(
-                        comicId: record.comicId,
-                        title: record.title,
-                        totalPages: record.pageCount,
-                        completedPages: record.pageCount,
+                        comicId: record.comicId, title: record.title,
+                        totalPages: record.pageCount, completedPages: record.pageCount,
                         state: .completed
                     )
                     tasks[record.comicId] = task
                 }
             } else {
-                // meta.json 丢失，检查是否有页面文件可恢复
                 let dir = fileManager.comicDir(for: record.comicId)
                 let contents = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
                 let hasPages = contents?.contains(where: { $0.hasPrefix("page_") }) == true
                 if hasPages {
                     let meta = OfflineComicMeta(
-                        comicId: record.comicId,
-                        title: record.title,
-                        pageCount: record.pageCount,
-                        downloadedAt: Date(),
-                        fileSize: nil
+                        comicId: record.comicId, title: record.title,
+                        pageCount: record.pageCount, downloadedAt: Date(), fileSize: nil
                     )
                     try? fileManager.saveMeta(meta, comicId: record.comicId)
                     if tasks[record.comicId] == nil {
                         let task = DownloadTask(
-                            comicId: record.comicId,
-                            title: record.title,
-                            totalPages: record.pageCount,
-                            completedPages: record.pageCount,
+                            comicId: record.comicId, title: record.title,
+                            totalPages: record.pageCount, completedPages: record.pageCount,
                             state: .completed
                         )
                         tasks[record.comicId] = task
@@ -268,22 +238,18 @@ final class DownloadManager {
         }
         context.saveOrLog()
 
-        // 3. 兜底：磁盘上有但 SwiftData 中无记录的漫画
         for comicId in downloadedIds {
             guard tasks[comicId] == nil else { continue }
             if let meta = fileManager.loadMeta(comicId: comicId) {
                 let task = DownloadTask(
-                    comicId: comicId,
-                    title: meta.title,
-                    totalPages: meta.pageCount,
-                    completedPages: meta.pageCount,
+                    comicId: comicId, title: meta.title,
+                    totalPages: meta.pageCount, completedPages: meta.pageCount,
                     state: .completed
                 )
                 tasks[comicId] = task
                 syncToStore(task: task)
             }
         }
-
         refreshStats()
     }
 
@@ -300,179 +266,159 @@ final class DownloadManager {
     private func startDownload(task: DownloadTask) {
         task.state = .downloading
         refreshStats()
-        task.downloadTask = Task { [weak self] in
-            guard let self else { return }
-            if task.isNovel {
-                await self.downloadChapters(for: task)
-            } else {
-                await self.downloadPages(for: task)
-            }
-        }
-    }
-
-    private func downloadPages(for task: DownloadTask) async {
+        
         let comicId = task.comicId
-        let totalPages = task.totalPages
-
+        let total = task.totalPages
+        let isNovel = task.isNovel
+        
         // 立即保存元数据（确保断网时能读取页数）
         let meta = OfflineComicMeta(
             comicId: comicId,
             title: task.title,
-            pageCount: totalPages,
+            pageCount: total,
             downloadedAt: Date(),
             fileSize: nil
         )
         try? fileManager.saveMeta(meta, comicId: comicId)
-
-        // 同步写入 SwiftData 缓存（确保离线模式能显示漫画名称）
-        syncComicToCache(comicId: comicId, title: task.title, pageCount: totalPages)
-
-        // 从断点续传：找到第一个未下载的页
-        var startPage = 0
-        for page in 0..<totalPages {
-            if !fileManager.isPageDownloaded(comicId: comicId, page: page) {
-                startPage = page
-                break
+        syncComicToCache(comicId: comicId, title: task.title, pageCount: total)
+        
+        // 统计已下载数并找出缺失的页面
+        var downloadedCount = 0
+        var missingIndices: [Int] = []
+        for i in 0..<total {
+            if fileManager.isPageDownloaded(comicId: comicId, page: i) {
+                downloadedCount += 1
+            } else {
+                missingIndices.append(i)
             }
         }
-        task.completedPages = startPage
-
-        var page = startPage
-        while page < totalPages {
-            // 检查暂停/取消
-            guard task.state == .downloading else { return }
-            if Task.isCancelled { return }
-
-            // 存储上限实时检查
-            if !hasStorageSpace {
-                AppLogger.error("存储空间已满，暂停下载: \(task.title)")
-                task.state = .paused
-                refreshStats()
-                return
-            }
-
-            // 跳过已下载的页（断点续传）
-            if fileManager.isPageDownloaded(comicId: comicId, page: page) {
-                page += 1
-                continue
-            }
-
-            // 分批并发下载
-            let batchEnd = min(page + batchSize, totalPages)
-            let batchPages = Array(page..<batchEnd)
-
-            await withTaskGroup(of: (Int, Data?).self) { group in
-                for p in batchPages {
-                    if fileManager.isPageDownloaded(comicId: comicId, page: p) {
-                        continue
-                    }
-                    group.addTask { [weak self] in
-                        guard let self else { return (p, nil) }
-                        let data = await self.downloadPage(comicId: comicId, page: p)
-                        return (p, data)
-                    }
-                }
-
-                for await (pageIndex, data) in group {
-                    guard task.state == .downloading else { return }
-                    if let data {
-                        do {
-                            try fileManager.savePageData(data, comicId: comicId, page: pageIndex)
-                            task.completedPages += 1
-                        } catch {
-                            AppLogger.error("保存页面失败 \(comicId)/\(pageIndex): \(error)")
-                        }
-                    }
-                }
-            }
-
+        task.completedPages = downloadedCount
+        
+        if missingIndices.isEmpty {
+            task.state = .completed
+            syncToStore(task: task)
             refreshStats()
-            page = batchEnd
+            processQueue()
+            return
         }
-
-        // 全部完成
-        guard task.state == .downloading else { return }
-        task.state = .completed
-        refreshStats()
-
-        // 同步到 SwiftData
-        syncToStore(task: task)
-
-        AppLogger.log("漫画下载完成: \(task.title) (\(totalPages)页)")
+        
+        // 为缺失的每一页发起 Background Download Task
+        for index in missingIndices {
+            let url: URL?
+            if isNovel {
+                url = URL(string: "\(APIClient.shared.serverURL)/api/comics/\(comicId)/chapter/\(index)")
+            } else {
+                url = APIClient.shared.pageImageURL(comicId: comicId, page: index)
+            }
+            guard let validURL = url else { continue }
+            
+            let request = APIClient.shared.authenticatedRequest(url: validURL, timeout: pageTimeout)
+            let dt = backgroundSession.downloadTask(with: request)
+            dt.taskDescription = "\(comicId)|\(index)|\(isNovel ? "novel" : "comic")"
+            dt.resume()
+        }
     }
 
-    private func downloadPage(comicId: String, page: Int) async -> Data? {
-        guard let url = APIClient.shared.pageImageURL(comicId: comicId, page: page) else { return nil }
-        let request = APIClient.shared.authenticatedRequest(url: url, timeout: pageTimeout)
+    // MARK: - URLSessionDownloadDelegate
+
+    func handleDownloadFinished(downloadTask: URLSessionDownloadTask, location: URL) {
+        guard let desc = downloadTask.taskDescription else { return }
+        let parts = desc.split(separator: "|")
+        guard parts.count == 3 else { return }
+        let comicId = String(parts[0])
+        let index = Int(parts[1]) ?? 0
+        let type = String(parts[2])
+        
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
-            return data
-        } catch {
-            return nil
-        }
-    }
-
-    // MARK: - 小说章节下载
-
-    private func downloadChapters(for task: DownloadTask) async {
-        let comicId = task.comicId
-        let totalChapters = task.totalPages
-
-        // 保存元数据
-        let meta = OfflineComicMeta(
-            comicId: comicId,
-            title: task.title,
-            pageCount: totalChapters,
-            downloadedAt: Date(),
-            fileSize: nil
-        )
-        try? fileManager.saveMeta(meta, comicId: comicId)
-        syncComicToCache(comicId: comicId, title: task.title, pageCount: totalChapters)
-
-        // 断点续传：找到第一个未下载的章节
-        var startChapter = 0
-        for chapter in 0..<totalChapters {
-            if !fileManager.isPageDownloaded(comicId: comicId, page: chapter) {
-                startChapter = chapter
-                break
-            }
-        }
-        task.completedPages = startChapter
-
-        for chapter in startChapter..<totalChapters {
-            guard task.state == .downloading else { return }
-            if Task.isCancelled { return }
-
-            if !hasStorageSpace {
-                AppLogger.error("存储空间已满，暂停下载: \(task.title)")
-                task.state = .paused
-                refreshStats()
-                return
-            }
-
-            if fileManager.isPageDownloaded(comicId: comicId, page: chapter) {
-                continue
-            }
-
-            // 下载章节文本内容
-            do {
-                let content = try await APIClient.shared.fetchChapter(comicId: comicId, index: chapter)
-                if let text = content.content, let data = text.data(using: .utf8) {
-                    try fileManager.savePageData(data, comicId: comicId, page: chapter)
+                let data = try Data(contentsOf: location)
+                if type == "novel" {
+                    if let response = try? JSONDecoder().decode(ChapterContent.self, from: data),
+                       let text = response.content,
+                       let textData = text.data(using: .utf8) {
+                        try self.fileManager.savePageData(textData, comicId: comicId, page: index)
+                    } else {
+                        AppLogger.error("解析小说章节 JSON 失败: \(comicId)/\(index)")
+                    }
+                } else {
+                    try self.fileManager.savePageData(data, comicId: comicId, page: index)
+                }
+                
+                if let task = self.tasks[comicId] {
                     task.completedPages += 1
-                    refreshStats()
+                    self.refreshStats()
                 }
             } catch {
-                AppLogger.error("下载小说章节失败 \(comicId)/\(chapter): \(error)")
+                AppLogger.error("处理下载文件失败 \(comicId)/\(index): \(error)")
+            }
+    }
+
+    func handleTaskCompleted(task: URLSessionTask, error: Error?) {
+        guard let desc = task.taskDescription else { return }
+        let parts = desc.split(separator: "|")
+        guard parts.count == 3 else { return }
+        let comicId = String(parts[0])
+        
+        guard self.tasks[comicId] != nil else { return }
+            
+            if let error = error {
+                let nsError = error as NSError
+                // 忽略主动取消导致的错误
+                if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                    return
+                }
+                AppLogger.error("下载页面失败 \(desc): \(error)")
+                // 如果出错，最终检查时 completedPages 将不达标，任务会被标记为 failed
+            }
+            
+            // 检查该任务是否已完成（所有的 subtasks 都结束了）
+            // 在 Background Session 中，我们可以通过挂起数量判断
+            // 或者更简单：每次任务结束，我们就重新核算本地文件数，如果全下完了就标记完成
+            self.checkTaskCompletion(for: comicId)
+    }
+
+    private func checkTaskCompletion(for comicId: String) {
+        guard let task = tasks[comicId], task.state == .downloading else { return }
+        
+        backgroundSession.getAllTasks { [weak self] sessionTasks in
+            guard let self = self else { return }
+            
+            // 找出属于该 comicId 且还在运行的底层网络任务
+            let activeSubTasks = sessionTasks.filter { t in
+                guard let desc = t.taskDescription else { return false }
+                return desc.hasPrefix("\(comicId)|") && t.state == .running
+            }
+            
+            Task { @MainActor in
+                // 如果还有正在下载的页面，则继续等待
+                if !activeSubTasks.isEmpty { return }
+                
+                // 本书所有请求已结束，进行最终核算
+                var finalDownloadedCount = 0
+                for p in 0..<task.totalPages {
+                    if self.fileManager.isPageDownloaded(comicId: comicId, page: p) {
+                        finalDownloadedCount += 1
+                    }
+                }
+                task.completedPages = finalDownloadedCount
+                
+                if task.completedPages >= task.totalPages {
+                    task.state = .completed
+                    AppLogger.log("下载完成: \(task.title) (\(task.totalPages))")
+                } else {
+                    task.state = .failed
+                    AppLogger.error("下载失败，部分页面未成功下载: \(task.title)")
+                }
+                
+                self.refreshStats()
+                self.syncToStore(task: task)
+                self.processQueue()
             }
         }
+    }
 
-        guard task.state == .downloading else { return }
-        task.state = .completed
-        refreshStats()
-        syncToStore(task: task)
-        AppLogger.log("小说下载完成: \(task.title) (\(totalChapters)章)")
+    func handleBackgroundEventsFinished() {
+        self.backgroundCompletionHandler?()
+        self.backgroundCompletionHandler = nil
     }
 
     // MARK: - SwiftData 同步
@@ -483,7 +429,6 @@ final class DownloadManager {
         self.modelContext = context
     }
 
-    /// 将漫画基本信息写入 SwiftData 缓存（确保离线模式能显示名称和封面）
     private func syncComicToCache(comicId: String, title: String, pageCount: Int) {
         guard let context = modelContext else { return }
         let id = comicId
@@ -553,8 +498,6 @@ final class DownloadTask: Identifiable {
     var completedPages: Int
     var state: DownloadState
 
-    var downloadTask: Task<Void, Never>?
-
     var progress: Double {
         guard totalPages > 0 else { return 0 }
         return Double(completedPages) / Double(totalPages)
@@ -577,4 +520,36 @@ enum DownloadState: String, Codable {
     case paused
     case completed
     case failed
+}
+
+
+// MARK: - SessionDelegate
+
+final class SessionDelegate: NSObject, URLSessionDownloadDelegate {
+    private weak var manager: DownloadManager?
+    
+    init(manager: DownloadManager) {
+        self.manager = manager
+        super.init()
+    }
+    
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // Must bounce to MainActor if we want to call MainActor methods safely.
+        // Or we can just let handleDownloadFinished run on MainActor.
+        Task { @MainActor in
+            manager?.handleDownloadFinished(downloadTask: downloadTask, location: location)
+        }
+    }
+    
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        Task { @MainActor in
+            manager?.handleTaskCompleted(task: task, error: error)
+        }
+    }
+    
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor in
+            manager?.handleBackgroundEventsFinished()
+        }
+    }
 }

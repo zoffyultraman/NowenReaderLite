@@ -6,6 +6,7 @@ final class PendingProgressManager {
 
     struct PendingRecord: Codable {
         var page: Int
+        var totalPages: Int?
         var updatedAt: Date
     }
 
@@ -19,9 +20,9 @@ final class PendingProgressManager {
 
     // MARK: - Public
 
-    func save(comicId: String, page: Int) {
+    func save(comicId: String, page: Int, totalPages: Int? = nil) {
         queue.async(flags: .barrier) {
-            self._cache[comicId] = PendingRecord(page: page, updatedAt: Date())
+            self._cache[comicId] = PendingRecord(page: page, totalPages: totalPages, updatedAt: Date())
             self.persist()
         }
         AppLogger.log("离线进度已暂存: \(comicId) page=\(page)")
