@@ -23,7 +23,7 @@ struct ServerConfigView: View {
         contentView
             .if(embedsInOwnStack) { view in
                 NavigationStack {
-                    view.navigationBarHidden(true)
+                    view.toolbar(.hidden, for: .navigationBar)
                 }
             }
             .background(Color(.systemGroupedBackground))

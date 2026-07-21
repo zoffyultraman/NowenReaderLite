@@ -133,7 +133,7 @@ struct LoginView: View {
                 .padding(.bottom, 40)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
             .alert("错误", isPresented: $showError) {
                 Button("确定", role: .cancel) {}
             } message: {

@@ -56,7 +56,7 @@ struct PDFReaderView: View {
                 }
             }
         }
-        .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .statusBarHidden(true)
         .onDisappear {
