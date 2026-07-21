@@ -39,6 +39,8 @@ struct HomeView: View {
             if value.hasPrefix("group_") {
                 let id = Int(value.replacingOccurrences(of: "group_", with: "")) ?? 0
                 GroupDetailView(groupId: id)
+            } else if let seriesId = Comic.seriesId(from: value) {
+                SeriesDetailView(seriesId: seriesId)
             } else {
                 ComicDetailView(comicId: value)
             }
@@ -57,7 +59,6 @@ struct HomeView: View {
                 Task {
                     await continueReadingVM.load()
                     NotificationCenter.default.post(name: .networkRecovered, object: nil)
-                    api.networkRecovered = false
                 }
             }
         }
@@ -485,7 +486,11 @@ struct LibraryContentView: View {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
-                            ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
+                            if comic.isSeriesShelfItem {
+                                SeriesShelfCardView(comic: comic, serverURL: api.serverURL)
+                            } else {
+                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
+                            }
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
@@ -520,8 +525,13 @@ struct LibraryContentView: View {
                     switch item {
                     case .comic(let comic):
                         NavigationLink(value: comic.id) {
-                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
-                                .padding(.horizontal, 16)
+                            if comic.isSeriesShelfItem {
+                                SeriesShelfListRowView(comic: comic, serverURL: api.serverURL)
+                                    .padding(.horizontal, 16)
+                            } else {
+                                ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
+                                    .padding(.horizontal, 16)
+                            }
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
@@ -622,6 +632,176 @@ struct GroupCardView: View {
     }
 }
 
+// MARK: - 目录作品卡片（网格）
+
+struct SeriesShelfCardView: View {
+    let comic: Comic
+    let serverURL: String
+
+    private var coverImageURL: URL? {
+        guard let cover = comic.coverUrl, !cover.isEmpty else { return nil }
+        return URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                Group {
+                    if let url = coverImageURL {
+                        AuthenticatedImage(url: url)
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(.systemGray5))
+                            .overlay {
+                                Image(systemName: "books.vertical")
+                                    .font(.title2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                    }
+                }
+                .aspectRatio(3/4, contentMode: .fill)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(.gray.opacity(0.12), lineWidth: 0.5)
+                )
+
+                Text("目录")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.black.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .padding(6)
+
+                VStack {
+                    Spacer()
+                    HStack {
+                        if comic.seriesProgress > 0 {
+                            Text("\(comic.seriesProgress)%")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.black.opacity(0.6))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .padding(.leading, 6)
+                        }
+                        Spacer()
+                        Text("\(comic.pageCount)项")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.6))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .padding(.trailing, 8)
+                    }
+
+                    if comic.seriesProgress > 0 {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Rectangle()
+                                    .fill(.black.opacity(0.25))
+                                Rectangle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: geo.size.width * CGFloat(comic.seriesProgress) / 100)
+                            }
+                        }
+                        .frame(height: 3)
+                    }
+                }
+
+                if comic.isFavorite {
+                    Image(systemName: "heart.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                }
+            }
+
+            Text(comic.title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+    }
+}
+
+
+// MARK: - 目录作品行（列表）
+
+struct SeriesShelfListRowView: View {
+    let comic: Comic
+    let serverURL: String
+
+    private var coverImageURL: URL? {
+        guard let cover = comic.coverUrl, !cover.isEmpty else { return nil }
+        return URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let url = coverImageURL {
+                    AuthenticatedImage(url: url)
+                } else {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(.systemGray5))
+                        .overlay {
+                            Image(systemName: "books.vertical")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                }
+            }
+            .aspectRatio(contentMode: .fill)
+            .frame(width: 56, height: 75)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(comic.title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                let sizeText = comic.fileSize.map { formatFileSize($0) } ?? ""
+                Text("目录作品 · \(comic.pageCount) 项\(comic.seriesProgress > 0 ? " · \(comic.seriesProgress)% 已读" : "")\(sizeText.isEmpty ? "" : " · \(sizeText)")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if (comic.totalReadTime ?? 0) > 0 {
+                    Text(formatDuration(comic.totalReadTime ?? 0))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            if comic.isFavorite {
+                Image(systemName: "heart.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 
 // MARK: - 合集行（列表）
 
@@ -693,13 +873,16 @@ final class ContinueReadingViewModel {
     }
 
     func load() async {
-        // 离线模式：直接从缓存加载
-        if APIClient.shared.isOfflineMode {
+        let api = APIClient.shared
+
+        // 离线或网络状态未就绪：直接从缓存加载，等待 networkRecovered 后再刷新线上数据。
+        guard !api.isOfflineMode, api.isNetworkReachable else {
             loadFromCache()
             return
         }
+
         do {
-            let resp = try await APIClient.shared.fetchComics(
+            let resp = try await api.fetchComics(
                 page: 1,
                 pageSize: 20,
                 sortBy: "lastReadAt",
@@ -708,7 +891,7 @@ final class ContinueReadingViewModel {
             items = resp.comics.filter { $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
             errorMessage = nil
         } catch {
-            AppLogger.log("网络不可用，从本地缓存加载继续观看")
+            AppLogger.log("加载继续观看失败，使用本地缓存: \(error.localizedDescription)")
             loadFromCache()
         }
     }

@@ -96,10 +96,12 @@ struct ComicReaderView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background || newPhase == .inactive {
+            if newPhase == .active {
+                viewModel.resumeActivity()
+            } else if newPhase == .background || newPhase == .inactive {
+                viewModel.pauseActivity()
                 Task {
                     await viewModel.saveProgressAndWait()
-                    await viewModel.endSessionAndWait()
                 }
             }
         }

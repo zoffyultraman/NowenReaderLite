@@ -37,6 +37,7 @@ struct NovelReaderView: View {
                         viewModel.tryAppendNextChapter(currentPage: page, fontSize: fontSize)
                         // 检测是否已翻入下一章
                         viewModel.advanceToNextChapter(currentPage: page, fontSize: fontSize)
+                        viewModel.updateActivityProgress()
 
                         // 保存记录（使用相对页码）
                         let relPage = viewModel.relativePageInChapter(page)
@@ -79,11 +80,15 @@ struct NovelReaderView: View {
         }
         .onDisappear {
             saveRecord()
-            Task { await viewModel.saveProgress() }
+            Task { await viewModel.finishActivity() }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background || newPhase == .inactive {
+            if newPhase == .active {
+                viewModel.resumeActivity()
+            } else if newPhase == .background || newPhase == .inactive {
                 saveRecord()
+                viewModel.pauseActivity()
+                Task { await viewModel.saveProgress() }
             }
         }
         .onChange(of: viewModel.pages.count) { _, _ in
@@ -586,6 +591,7 @@ final class NovelReaderViewModel {
     private var comicId = ""
     private let api = APIClient.shared
     private let cache = ChapterCache()
+    private var activityTracker: ReadingActivityTracker?
     nonisolated(unsafe) private var cacheObserver: Any?
 
     init() {
@@ -641,12 +647,16 @@ final class NovelReaderViewModel {
         currentChapter = chapter
         chapterTitles = cache.chapterTitles
         repaginate(fontSize: fontSize)
+        updateActivityProgress()
         return true
     }
 
     // MARK: - 加载
 
     func load(comicId: String, chapter: Int, fontSize: Double = 17, groupContext: ReadingGroupContext? = nil) async {
+        if !currentComicId.isEmpty, currentComicId != comicId {
+            await finishActivity()
+        }
         self.comicId = comicId
         self.currentComicId = comicId
         self.groupContext = groupContext
@@ -675,6 +685,7 @@ final class NovelReaderViewModel {
             }
             cache.evict(keeping: chapter)
             repaginate(fontSize: fontSize)
+            updateActivityProgress()
         } catch {
             AppLogger.error("加载章节失败: \(error)")
         }
@@ -684,6 +695,8 @@ final class NovelReaderViewModel {
     }
 
     func loadVolume(comicId: String, chapter: Int, fontSize: Double = 17) async {
+        await finishActivity()
+
         if let ctx = groupContext,
            let newIdx = ctx.volumeIds.firstIndex(of: comicId) {
             groupContext = ReadingGroupContext(
@@ -711,6 +724,7 @@ final class NovelReaderViewModel {
             }
             currentChapter = safeChapter
             repaginate(fontSize: fontSize)
+            updateActivityProgress()
         } catch {
             AppLogger.error("加载卷失败: \(error)")
         }
@@ -751,11 +765,41 @@ final class NovelReaderViewModel {
     }
 
     func saveProgress(currentPage: Int = 0) async {
-        try? await api.updateProgress(
-            comicId: currentComicId,
-            page: currentChapter,
-            totalPages: totalChapters > 0 ? totalChapters : nil
-        )
+        updateActivityProgress()
+        do {
+            try await activityTracker?.flush(finalize: false)
+        } catch {
+            AppLogger.log("阅读活动上报失败，已暂存待补传: \(error.localizedDescription)")
+        }
+    }
+
+    func finishActivity() async {
+        updateActivityProgress()
+        do {
+            try await activityTracker?.flush(finalize: true)
+        } catch {
+            AppLogger.log("阅读活动上报失败，已暂存待补传: \(error.localizedDescription)")
+        }
+        activityTracker = nil
+    }
+
+    func pauseActivity() {
+        activityTracker?.setActive(false)
+    }
+
+    func resumeActivity() {
+        activityTracker?.setActive(true)
+    }
+
+    func updateActivityProgress() {
+        guard totalChapters > 0, !currentComicId.isEmpty else { return }
+        let safeChapter = min(max(currentChapter, 0), max(totalChapters - 1, 0))
+        if activityTracker?.comicId != currentComicId {
+            activityTracker = ReadingActivityTracker(comicId: currentComicId)
+            activityTracker?.start(page: safeChapter, totalPages: totalChapters)
+        } else {
+            activityTracker?.updatePage(page: safeChapter, totalPages: totalChapters)
+        }
     }
 
     // MARK: - 分页

@@ -8,7 +8,7 @@ extension Comic {
     func readerView(groupContext: ReadingGroupContext? = nil) -> some View {
         if isNovel {
             if filename?.lowercased().hasSuffix(".pdf") == true {
-                PDFReaderView(comicId: id)
+                PDFReaderView(comicId: id, initialPage: lastReadPage)
             } else {
                 NovelReaderView(comicId: id, initialChapter: lastReadPage, groupContext: groupContext)
             }

@@ -132,6 +132,7 @@ final class CachedComic {
             isFavorite: isFavorite,
             type: type,
             filename: nil,
+            titleSortKey: nil,
             sortOrder: nil,
             tags: nil,
             categories: nil

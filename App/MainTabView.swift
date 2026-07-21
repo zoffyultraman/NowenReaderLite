@@ -57,22 +57,34 @@ struct MainTabView: View {
             downloadManager.setModelContext(modelContext)
             downloadManager.restoreFromStore(context: modelContext)
             api.startNetworkRecovery()
-            syncPendingProgress()
+            syncOfflineReadingState()
             // 加载可访问书库列表
             Task { try? await api.fetchAccessibleLibraries() }
         }
         .onChange(of: api.networkRecovered) { _, recovered in
             if recovered {
-                syncPendingProgress()
+                syncOfflineReadingState()
                 Task { try? await api.fetchAccessibleLibraries() }
             }
         }
     }
 
+    private func syncOfflineReadingState() {
+        syncPendingReadingActivities()
+        syncPendingProgress()
+    }
+
+    /// 联网后同步离线阅读活动到服务端
+    private func syncPendingReadingActivities() {
+        let api = APIClient.shared
+        guard !api.isOfflineMode, api.isNetworkReachable, PendingReadingActivityManager.shared.hasPending else { return }
+        Task { await api.syncPendingReadingActivities() }
+    }
+
     /// 联网后同步离线阅读进度到服务端
     private func syncPendingProgress() {
         let api = APIClient.shared
-        guard !api.isOfflineMode, PendingProgressManager.shared.hasPending else { return }
+        guard !api.isOfflineMode, api.isNetworkReachable, PendingProgressManager.shared.hasPending else { return }
         let pending = PendingProgressManager.shared.loadAll()
         AppLogger.log("同步离线进度: \(pending.count) 本漫画")
         for (comicId, record) in pending {

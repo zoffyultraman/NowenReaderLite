@@ -578,6 +578,7 @@ final class DetailViewModel {
                     isFavorite: false,
                     type: "comic",
                     filename: nil,
+                    titleSortKey: nil,
                     sortOrder: nil,
                     tags: nil,
                     categories: nil
@@ -643,7 +644,8 @@ extension Comic {
             metadataSource: metadataSource, coverUrl: coverUrl,
             coverAspectRatio: coverAspectRatio, rating: rating,
             isFavorite: isFavorite, type: type, filename: filename,
-            sortOrder: sortOrder, tags: tags, categories: categories
+            titleSortKey: titleSortKey, sortOrder: sortOrder,
+            tags: tags, categories: categories
         )
     }
 
@@ -657,7 +659,8 @@ extension Comic {
             metadataSource: metadataSource, coverUrl: coverUrl,
             coverAspectRatio: coverAspectRatio, rating: rating,
             isFavorite: fav, type: type, filename: filename,
-            sortOrder: sortOrder, tags: tags, categories: categories
+            titleSortKey: titleSortKey, sortOrder: sortOrder,
+            tags: tags, categories: categories
         )
     }
 }

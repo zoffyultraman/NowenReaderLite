@@ -97,11 +97,13 @@ final class APIClient {
                         // 启动时从离线切换到在线，通知 UI 刷新内容
                         self.networkRecovered = true
                     } else if self.hasLoggedInBefore {
+                        self.networkRecovered = false
                         self.isOfflineMode = true
                     }
                 } else {
                     // 无网络，立即进入离线模式
                     self.isNetworkReachable = false
+                    self.networkRecovered = false
                     if self.hasLoggedInBefore {
                         self.isOfflineMode = true
                     }
@@ -333,10 +335,12 @@ final class APIClient {
                         self.isOfflineMode = false
                         self.networkRecovered = true
                     } else if self.hasLoggedInBefore {
+                        self.networkRecovered = false
                         self.isOfflineMode = true
                     }
                 } else {
                     self.isNetworkReachable = false
+                    self.networkRecovered = false
                     if self.hasLoggedInBefore {
                         self.isOfflineMode = true
                     }
@@ -354,6 +358,8 @@ final class APIClient {
             await checkAuth()
             isOfflineMode = false
             networkRecovered = true
+        } else {
+            networkRecovered = false
         }
     }
 
@@ -426,7 +432,8 @@ final class APIClient {
         tag: String? = nil,
         category: String? = nil,
         excludeGrouped: Bool? = nil,
-        libraryId: String? = nil
+        libraryId: String? = nil,
+        seriesView: Bool = false
     ) async throws -> ComicListResponse {
         var params: [String: String] = [
             "page": "\(page)",
@@ -442,6 +449,7 @@ final class APIClient {
         if let c = category { params["category"] = c }
         if excludeGrouped == true { params["excludeGrouped"] = "true" }
         if let lid = libraryId ?? selectedLibraryId { params["libraryIds"] = lid }
+        if seriesView { params["seriesView"] = "true" }
         return try await get("/api/comics", query: params)
     }
 
@@ -495,17 +503,55 @@ final class APIClient {
         return request
     }
 
-    // MARK: - Sessions
+    // MARK: - Reading Activity
 
-    func startSession(comicId: String, startPage: Int) async throws -> Int? {
-        let body = SessionStartBody(comicId: comicId, startPage: startPage)
-        let resp: [String: Int] = try await post("/api/stats/session", body: body)
-        return resp["sessionId"]
+    func recordReadingActivity(
+        comicId: String,
+        clientSessionId: String,
+        page: Int,
+        totalPages: Int,
+        activeSeconds: Int,
+        sequence: Int,
+        finalize: Bool = false,
+        trackProgress: Bool = true
+    ) async throws {
+        let body = ReadingActivityBody(
+            clientSessionId: clientSessionId,
+            page: page,
+            totalPages: totalPages,
+            activeSeconds: activeSeconds,
+            sequence: sequence,
+            finalize: finalize,
+            trackProgress: trackProgress
+        )
+        let _: EmptyResponse = try await post("/api/reading/\(comicId)/activity", body: body)
     }
 
-    func endSession(sessionId: Int, endPage: Int, duration: Int) async throws {
-        let body = SessionEndBody(sessionId: sessionId, endPage: endPage, duration: duration)
-        let _: EmptyResponse = try await put("/api/stats/session", body: body)
+    func syncPendingReadingActivities() async {
+        guard !isOfflineMode, isNetworkReachable, PendingReadingActivityManager.shared.hasPending else { return }
+        let pending = PendingReadingActivityManager.shared.loadAll()
+        AppLogger.log("同步离线阅读活动: \(pending.count) 个会话")
+        for activity in pending {
+            do {
+                try await recordReadingActivity(
+                    comicId: activity.comicId,
+                    clientSessionId: activity.clientSessionId,
+                    page: activity.page,
+                    totalPages: activity.totalPages,
+                    activeSeconds: activity.activeSeconds,
+                    sequence: activity.sequence,
+                    finalize: activity.finalize,
+                    trackProgress: activity.trackProgress
+                )
+                PendingReadingActivityManager.shared.removeIfSynced(
+                    clientSessionId: activity.clientSessionId,
+                    sequence: activity.sequence
+                )
+                AppLogger.log("离线阅读活动已同步: \(activity.comicId) seq=\(activity.sequence)")
+            } catch {
+                AppLogger.log("离线阅读活动同步失败: \(activity.comicId) \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Stats
@@ -587,6 +633,25 @@ final class APIClient {
 
     func fetchGroupDetail(id: Int) async throws -> GroupDetailResponse {
         try await get("/api/groups/\(id)")
+    }
+
+    // MARK: - Series
+
+    func fetchSeries(search: String? = nil, libraryId: String? = nil) async throws -> [SeriesSummary] {
+        var params: [String: String]?
+        if let lid = libraryId ?? selectedLibraryId {
+            params = ["libraryIds": lid]
+        }
+        if let search, !search.isEmpty {
+            if params == nil { params = [:] }
+            params?["search"] = search
+        }
+        let resp: SeriesListResponse = try await get("/api/series", query: params)
+        return resp.series
+    }
+
+    func fetchSeriesDetail(id: String) async throws -> SeriesDetailResponse {
+        try await get("/api/series/\(id)")
     }
 
     /// 返回已分组的漫画 ID 集合
@@ -742,15 +807,14 @@ struct PageBody: Encodable {
     let totalPages: Int?
 }
 
-struct SessionEndBody: Encodable {
-    let sessionId: Int
-    let endPage: Int
-    let duration: Int
-}
-
-struct SessionStartBody: Encodable {
-    let comicId: String
-    let startPage: Int
+struct ReadingActivityBody: Encodable {
+    let clientSessionId: String
+    let page: Int
+    let totalPages: Int
+    let activeSeconds: Int
+    let sequence: Int
+    let finalize: Bool
+    let trackProgress: Bool
 }
 
 struct ComicMapResponse: Decodable {

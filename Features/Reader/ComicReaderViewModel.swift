@@ -16,9 +16,7 @@ final class ComicReaderViewModel {
         set { onSliderChanged(Int(newValue)) }
     }
 
-    private var sessionId: Int?
-    private var sessionStart: Date?
-    private var hasEnded = false
+    private var activityTracker: ReadingActivityTracker?
     private let api = APIClient.shared
     private var modelContext: ModelContext?
 
@@ -38,13 +36,14 @@ final class ComicReaderViewModel {
             let pages = try await api.fetchPages(comicId: comicId)
             totalPages = pages.totalPages
             isLoading = false
-            startSession()
+            startActivity()
         } catch {
             AppLogger.log("fetchPages 失败: \(error.localizedDescription)")
             // 离线 fallback：从本地元数据读取页数
             if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
                 totalPages = meta.pageCount
                 AppLogger.log("离线 fallback 成功: \(comicId), \(meta.pageCount) 页")
+                startActivity()
             } else {
                 AppLogger.log("离线 fallback 失败: 无本地 meta, comicId=\(comicId)")
             }
@@ -74,13 +73,14 @@ final class ComicReaderViewModel {
             let pages = try await api.fetchPages(comicId: comicId)
             totalPages = pages.totalPages
             isLoading = false
-            startSession()
+            startActivity()
         } catch {
             AppLogger.error("加载下一卷失败: \(error)")
             // 离线 fallback：从本地元数据读取页数
             if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
                 totalPages = meta.pageCount
                 AppLogger.log("离线模式：使用本地元数据，共 \(meta.pageCount) 页")
+                startActivity()
             }
             isLoading = false
         }
@@ -95,26 +95,12 @@ final class ComicReaderViewModel {
         currentPage = page
     }
 
-    private var saveTask: Task<Void, Never>?
-
     func saveProgress() {
-        saveTask?.cancel()
         let page = currentPage
         let comicId = currentComicId
         let resolvedTotalPages = totalPages
-        saveTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            do {
-                try await api.updateProgress(comicId: comicId, page: page, totalPages: resolvedTotalPages > 0 ? resolvedTotalPages : nil)
-                // 服务器保存成功后才更新本地缓存
-                self.updateCachedProgress(comicId: comicId, page: page)
-            } catch {
-                AppLogger.log("保存进度失败（离线暂存）: \(error.localizedDescription)")
-                PendingProgressManager.shared.save(comicId: comicId, page: page, totalPages: resolvedTotalPages > 0 ? resolvedTotalPages : nil)
-                self.updateCachedProgress(comicId: comicId, page: page)
-            }
-        }
+        activityTracker?.updatePage(page: page, totalPages: resolvedTotalPages)
+        updateCachedProgress(comicId: comicId, page: page)
     }
 
     private func updateCachedProgress(comicId: String, page: Int) {
@@ -145,28 +131,208 @@ final class ComicReaderViewModel {
 
     /// 等待完成版本，退出时调用
     func saveProgressAndWait() async {
-        saveTask?.cancel()
-        do {
-            try await api.updateProgress(comicId: currentComicId, page: currentPage, totalPages: totalPages > 0 ? totalPages : nil)
-            updateCachedProgress(comicId: currentComicId, page: currentPage)
-        } catch {
-            PendingProgressManager.shared.save(comicId: currentComicId, page: currentPage, totalPages: totalPages > 0 ? totalPages : nil)
-            updateCachedProgress(comicId: currentComicId, page: currentPage)
-        }
+        activityTracker?.updatePage(page: currentPage, totalPages: totalPages)
+        updateCachedProgress(comicId: currentComicId, page: currentPage)
+        await flushActivity(totalPages: totalPages, finalize: false)
     }
 
     func endSessionAndWait() async {
-        guard let sessionId, let sessionStart, !hasEnded else { return }
-        hasEnded = true
-        let duration = Int(Date().timeIntervalSince(sessionStart))
-        try? await api.endSession(sessionId: sessionId, endPage: currentPage, duration: duration)
+        activityTracker?.updatePage(page: currentPage, totalPages: totalPages)
+        updateCachedProgress(comicId: currentComicId, page: currentPage)
+        await flushActivity(totalPages: totalPages, finalize: true)
+        activityTracker = nil
     }
 
-    private func startSession() {
-        hasEnded = false
-        Task {
-            sessionId = try? await api.startSession(comicId: currentComicId, startPage: currentPage)
-            sessionStart = Date()
+    func pauseActivity() {
+        activityTracker?.setActive(false)
+    }
+
+    func resumeActivity() {
+        activityTracker?.setActive(true)
+    }
+
+    private func startActivity() {
+        guard totalPages > 0, !currentComicId.isEmpty else { return }
+        activityTracker = ReadingActivityTracker(comicId: currentComicId)
+        activityTracker?.start(page: currentPage, totalPages: totalPages)
+    }
+
+    private func flushActivity(totalPages: Int, finalize: Bool) async {
+        guard totalPages > 0 else { return }
+        do {
+            try await activityTracker?.flush(finalize: finalize)
+        } catch {
+            AppLogger.log("阅读活动上报失败，已暂存待补传: \(error.localizedDescription)")
         }
+    }
+}
+
+@MainActor
+final class ReadingActivityTracker {
+    let comicId: String
+
+    private let api = APIClient.shared
+    private let clientSessionId: String
+    private var page = 0
+    private var totalPages = 0
+    private var activeSeconds = 0
+    private var sequence = 0
+    private var trackProgress = true
+    private var isActive = true
+    private var isStarted = false
+    private var isFinalized = false
+    private var activeTimer: Task<Void, Never>?
+    private var heartbeatTimer: Task<Void, Never>?
+    private var pageFlushTask: Task<Void, Never>?
+    private var isFlushing = false
+    private var pendingFlushRequested = false
+    private var pendingFinalizeRequested = false
+
+    init(comicId: String) {
+        self.comicId = comicId
+        self.clientSessionId = "ios-\(UUID().uuidString)"
+    }
+
+    func start(page: Int, totalPages: Int, trackProgress: Bool = true) {
+        guard !isStarted, totalPages > 0 else { return }
+        isStarted = true
+        self.page = page
+        self.totalPages = totalPages
+        self.trackProgress = trackProgress
+
+        activeTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !self.isFinalized else { return }
+                if self.isActive { self.activeSeconds += 1 }
+            }
+        }
+
+        heartbeatTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self, !self.isFinalized else { return }
+                try? await self.flush(finalize: false)
+            }
+        }
+
+        Task { try? await flush(finalize: false) }
+    }
+
+    func updatePage(page: Int, totalPages: Int, trackProgress: Bool = true) {
+        guard isStarted, !isFinalized else { return }
+        self.page = page
+        if totalPages > 0 { self.totalPages = totalPages }
+        self.trackProgress = trackProgress
+
+        pageFlushTask?.cancel()
+        pageFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard let self, !Task.isCancelled else { return }
+            try? await self.flush(finalize: false)
+        }
+    }
+
+    func setActive(_ active: Bool) {
+        guard isStarted, !isFinalized else { return }
+        isActive = active
+        if !active {
+            Task { try? await flush(finalize: false) }
+        }
+    }
+
+    func flush(finalize: Bool) async throws {
+        guard isStarted, !isFinalized, totalPages > 0 else { return }
+        guard finalize || activeSeconds > 0 else { return }
+
+        if isFlushing {
+            pendingFlushRequested = true
+            pendingFinalizeRequested = pendingFinalizeRequested || finalize
+            while isFlushing {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            if finalize, !isFinalized {
+                try await flush(finalize: true)
+            }
+            return
+        }
+
+        isFlushing = true
+        defer { isFlushing = false }
+
+        try await performFlush(finalize: finalize)
+
+        while pendingFlushRequested, !isFinalized {
+            let nextFinalize = pendingFinalizeRequested
+            pendingFlushRequested = false
+            pendingFinalizeRequested = false
+            if nextFinalize || activeSeconds > 0 {
+                try await performFlush(finalize: nextFinalize)
+            }
+        }
+    }
+
+    private func performFlush(finalize: Bool) async throws {
+        guard isStarted, !isFinalized, totalPages > 0 else { return }
+        guard finalize || activeSeconds > 0 else { return }
+        sequence += 1
+        let activity = PendingReadingActivityManager.PendingActivity(
+            comicId: comicId,
+            clientSessionId: clientSessionId,
+            page: page,
+            totalPages: totalPages,
+            activeSeconds: activeSeconds,
+            sequence: sequence,
+            finalize: finalize,
+            trackProgress: trackProgress,
+            updatedAt: Date()
+        )
+        guard api.isNetworkReachable, !api.isOfflineMode else {
+            PendingReadingActivityManager.shared.save(activity)
+            if finalize {
+                finish()
+            }
+            throw APIError.networkError
+        }
+        do {
+            try await api.recordReadingActivity(
+                comicId: activity.comicId,
+                clientSessionId: activity.clientSessionId,
+                page: activity.page,
+                totalPages: activity.totalPages,
+                activeSeconds: activity.activeSeconds,
+                sequence: activity.sequence,
+                finalize: activity.finalize,
+                trackProgress: activity.trackProgress
+            )
+            PendingReadingActivityManager.shared.removeIfSynced(
+                clientSessionId: activity.clientSessionId,
+                sequence: activity.sequence
+            )
+            AppLogger.log("阅读活动已上报: \(activity.comicId) seq=\(activity.sequence) seconds=\(activity.activeSeconds) finalize=\(activity.finalize)")
+        } catch {
+            PendingReadingActivityManager.shared.save(activity)
+            if finalize {
+                finish()
+            }
+            throw error
+        }
+        if finalize {
+            finish()
+        }
+    }
+
+    private func finish() {
+        isFinalized = true
+        cancelTimers()
+    }
+
+    private func cancelTimers() {
+        activeTimer?.cancel()
+        heartbeatTimer?.cancel()
+        pageFlushTask?.cancel()
+        activeTimer = nil
+        heartbeatTimer = nil
+        pageFlushTask = nil
     }
 }

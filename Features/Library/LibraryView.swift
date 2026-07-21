@@ -220,6 +220,7 @@ final class LibraryViewModel {
     private var sortBy = "addedAt"
     private var sortOrder = "desc"
     private var contentType: String?
+    private var groupedComicIds: Set<String> = []
     private let api = APIClient.shared
     private var modelContext: ModelContext?
     /// 当前加载任务版本号，旧任务完成时忽略（避免离线切换时旧请求挂起覆盖状态）
@@ -243,6 +244,7 @@ final class LibraryViewModel {
         }
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.loadGroups() }
+            group.addTask { await self.loadGroupedComicMap() }
             group.addTask { await self.loadComics(refresh: refresh) }
         }
         // 如果已被更新的 loadAll 取代，不覆盖状态
@@ -252,10 +254,13 @@ final class LibraryViewModel {
     }
 
     func updateDisplayItems() {
-        // 合集和散本统一混合排序（comics 已通过 excludeGrouped 过滤，全是散本）
+        // 合集和散本统一混合排序；目录作品需要先由服务端折叠，再本地排除旧合集内的真实作品。
         var allItems: [LibraryItem] = []
         allItems.append(contentsOf: groups.map { .group($0) })
-        allItems.append(contentsOf: comics.map { .comic($0) })
+        let looseComics = comics.filter { comic in
+            comic.isSeriesShelfItem || groupedComicIds.isEmpty || !groupedComicIds.contains(comic.id)
+        }
+        allItems.append(contentsOf: looseComics.map { .comic($0) })
 
         // 统一排序
         allItems.sort { lhs, rhs in
@@ -318,7 +323,7 @@ final class LibraryViewModel {
 
     private func itemTitle(_ item: LibraryItem) -> String {
         switch item {
-        case .comic(let c): return c.title
+        case .comic(let c): return c.sortTitle
         case .group(let g): return g.name
         }
     }
@@ -353,6 +358,8 @@ final class LibraryViewModel {
 
     func loadComics(refresh: Bool = false) async {
         if refresh { currentPage = 1 }
+        let useSeriesView = contentType != "novel"
+        if useSeriesView { currentPage = 1 }
 
         // 离线模式或网络不可达：直接从缓存加载已下载漫画（不等 API 超时）
         if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
@@ -375,17 +382,19 @@ final class LibraryViewModel {
         do {
             let resp = try await api.fetchComics(
                 page: currentPage,
+                pageSize: useSeriesView ? 0 : 20,
                 sortBy: sortBy,
                 sortOrder: sortOrder,
                 contentType: contentType,
-                excludeGrouped: true
+                excludeGrouped: useSeriesView ? nil : true,
+                seriesView: useSeriesView
             )
             if refresh || currentPage == 1 {
                 comics = resp.comics
             } else {
                 comics.append(contentsOf: resp.comics)
             }
-            hasMore = currentPage < resp.totalPages
+            hasMore = useSeriesView ? false : currentPage < resp.totalPages
 
             // 更新缓存
             if let context = modelContext, (refresh || currentPage == 1) {
@@ -410,7 +419,7 @@ final class LibraryViewModel {
     }
 
     private func saveToCache(_ comics: [Comic], context: ModelContext) {
-        for comic in comics {
+        for comic in comics where !comic.isSeriesShelfItem {
             let id = comic.id
             let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
             if let first = context.fetchOrLog(descriptor, label: "更新缓存漫画").first {
@@ -468,6 +477,20 @@ final class LibraryViewModel {
         }
     }
 
+    func loadGroupedComicMap() async {
+        guard !api.isOfflineMode, api.isNetworkReachable else {
+            let local = OfflineFileManager.shared.loadGroups()
+            groupedComicIds = Set(local.flatMap { $0.comicIds })
+            return
+        }
+        do {
+            groupedComicIds = try await api.fetchComicGroupMap()
+        } catch {
+            AppLogger.error("加载合集映射失败: \(error)")
+            groupedComicIds = []
+        }
+    }
+
     func loadMore() async {
         guard hasMore, !isLoading else { return }
         isLoading = true
@@ -491,4 +514,3 @@ final class LibraryViewModel {
         Task { await loadAll(refresh: true) }
     }
 }
-

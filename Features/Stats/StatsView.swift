@@ -56,6 +56,9 @@ struct StatsMainContent: View {
         .task {
             await viewModel.loadAll()
         }
+        .onAppear {
+            Task { await viewModel.loadAll() }
+        }
         .onChange(of: api.isOfflineMode) { _, isOffline in
             if isOffline {
                 viewModel.isLoading = false
@@ -506,6 +509,7 @@ final class StatsViewModel {
         }
         guard !isLoading else { return }
         isLoading = true
+        await APIClient.shared.syncPendingReadingActivities()
         async let statsTask = APIClient.shared.fetchEnhancedStats()
         async let goalsTask = APIClient.shared.fetchGoals()
         do {

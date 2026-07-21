@@ -24,6 +24,7 @@ struct Comic: Codable, Identifiable {
     let isFavorite: Bool
     let type: String? // "comic" | "novel"
     let filename: String?
+    let titleSortKey: String?
     let sortOrder: Int?
     let tags: [TagItem]?
     let categories: [CategoryItem]?
@@ -34,6 +35,17 @@ struct Comic: Codable, Identifiable {
     }
 
     var isNovel: Bool { type?.lowercased() == "novel" }
+    var isSeriesShelfItem: Bool { id.hasPrefix(Self.seriesShelfPrefix) }
+    var seriesId: String? { Self.seriesId(from: id) }
+    var sortTitle: String {
+        guard let titleSortKey, !titleSortKey.isEmpty else { return title }
+        return titleSortKey
+    }
+
+    var seriesProgress: Int {
+        guard isSeriesShelfItem, pageCount > 0 else { return progress }
+        return min(100, Int(Double(lastReadPage) / Double(pageCount) * 100))
+    }
 
     enum ContentType: String {
         case comic, novel
@@ -49,12 +61,19 @@ struct Comic: Codable, Identifiable {
         case year, pageCount, fileSize, lastReadPage, totalReadTime
         case readingStatus, lastReadAt, metadataSource, coverUrl
         case coverAspectRatio, rating, isFavorite, type, filename
-        case sortOrder, tags, categories
+        case titleSortKey, sortOrder, tags, categories
+    }
+
+    static let seriesShelfPrefix = "series-"
+
+    static func seriesId(from shelfId: String) -> String? {
+        guard shelfId.hasPrefix(seriesShelfPrefix) else { return nil }
+        return String(shelfId.dropFirst(seriesShelfPrefix.count))
     }
 }
 
 struct TagItem: Codable, Hashable {
-    let id: Int
+    let id: Int?
     let name: String
     let color: String?
 }

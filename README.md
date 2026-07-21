@@ -190,7 +190,7 @@ NowenReaderLite/
 | 合集 | `GET /api/groups` · `GET /api/groups/:id` · `GET /api/groups/comic-map` |
 | 统计 | `GET /api/stats` · `GET /api/stats/enhanced` · `GET /api/stats/yearly` |
 | 目标 | `GET /api/goals` · `POST /api/goals` · `DELETE /api/goals` |
-| 会话 | `POST /api/stats/session` · `PUT /api/stats/session` |
+| 阅读活动 | `POST /api/reading/:id/activity` |
 | 进度 | `PUT /api/comics/:id/progress` |
 | 标签 | `GET /api/tags` |
 | 分类 | `GET /api/categories` |
