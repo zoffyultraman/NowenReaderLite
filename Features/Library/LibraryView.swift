@@ -36,6 +36,13 @@ struct ComicCardView: View {
     let serverURL: String
     let readingStatus: String?
     let rating: Double?
+    private let titleAreaHeight: CGFloat = 42
+    private let ratingAreaHeight: CGFloat = 14
+
+    private var ratingValue: Int {
+        guard let rating, rating > 0 else { return 0 }
+        return Int(rating)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -109,6 +116,7 @@ struct ComicCardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 1.5))
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
 
             // 标题
@@ -117,18 +125,19 @@ struct ComicCardView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .padding(.top, 8)
+                .frame(height: titleAreaHeight, alignment: .topLeading)
 
             // 评分
-            if let rating, rating > 0 {
-                HStack(spacing: 1) {
-                    ForEach(1...5, id: \.self) { i in
-                        Image(systemName: i <= Int(rating) ? "star.fill" : "star")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.yellow)
-                    }
+            HStack(spacing: 1) {
+                ForEach(1...5, id: \.self) { i in
+                    Image(systemName: i <= ratingValue ? "star.fill" : "star")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.yellow)
                 }
-                .padding(.top, 2)
             }
+            .frame(height: ratingAreaHeight, alignment: .topLeading)
+            .opacity(ratingValue > 0 ? 1 : 0)
+            .accessibilityHidden(ratingValue == 0)
         }
         .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
     }

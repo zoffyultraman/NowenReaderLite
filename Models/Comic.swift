@@ -44,7 +44,9 @@ struct Comic: Codable, Identifiable {
 
     var seriesProgress: Int {
         guard isSeriesShelfItem, pageCount > 0 else { return progress }
-        return min(100, Int(Double(lastReadPage) / Double(pageCount) * 100))
+        guard lastReadAt != nil || lastReadPage > 0 else { return 0 }
+        let currentItem = min(max(lastReadPage + 1, 0), pageCount)
+        return min(100, Int(Double(currentItem) / Double(pageCount) * 100))
     }
 
     enum ContentType: String {

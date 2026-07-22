@@ -716,6 +716,7 @@ struct CollectionContentView: View {
 struct GroupCardView: View {
     let group: ComicGroup
     let serverURL: String
+    private let titleAreaHeight: CGFloat = 42
 
     private var coverImageURL: URL? {
         if let cover = group.coverUrl, !cover.isEmpty {
@@ -762,8 +763,8 @@ struct GroupCardView: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
+                .frame(height: titleAreaHeight, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
@@ -775,6 +776,8 @@ struct GroupCardView: View {
 struct SeriesShelfCardView: View {
     let comic: Comic
     let serverURL: String
+    private let titleAreaHeight: CGFloat = 42
+    private let accessoryAreaHeight: CGFloat = 14
 
     private var coverImageURL: URL? {
         guard let cover = comic.coverUrl, !cover.isEmpty else { return nil }
@@ -866,8 +869,11 @@ struct SeriesShelfCardView: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
+                .frame(height: titleAreaHeight, alignment: .topLeading)
+
+            Color.clear
+                .frame(height: accessoryAreaHeight)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .shadow(color: .black.opacity(0.08), radius: 4, y: 2)

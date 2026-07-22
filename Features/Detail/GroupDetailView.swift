@@ -266,6 +266,8 @@ struct GroupComicRail: View {
     let comics: [GroupComicItem]
     let serverURL: String
     let contextProvider: (GroupComicItem) -> ReadingGroupContext?
+    private let cardWidth: CGFloat = 112
+    private let cardHeight: CGFloat = 192
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -278,14 +280,16 @@ struct GroupComicRail: View {
                         )
                     } label: {
                         VolumeCardView(comic: comic, serverURL: serverURL)
-                            .frame(width: 112)
+                            .frame(width: cardWidth, height: cardHeight, alignment: .top)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 20)
+            .frame(height: cardHeight, alignment: .top)
         }
         .scrollIndicators(.hidden)
+        .frame(height: cardHeight)
     }
 }
 
@@ -329,7 +333,9 @@ struct VolumeCardView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .padding(.top, 8)
+                .frame(height: 42, alignment: .topLeading)
         }
+        .frame(width: 112, height: 192, alignment: .top)
     }
 }
 
