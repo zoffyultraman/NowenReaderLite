@@ -605,9 +605,31 @@ final class DetailViewModel {
 
     func updateReadingStatus(_ status: String?) async {
         guard let comic else { return }
+        let shouldClearFinishedProgress = comic.readingStatus == "finished" && status != "finished"
+        let shouldMarkFinished = status == "finished" && comic.pageCount > 0
+        let finishedAt = shouldMarkFinished ? Date() : nil
         do {
+            if shouldClearFinishedProgress {
+                try await api.updateProgress(comicId: comic.id, page: 0, totalPages: comic.pageCount)
+            }
             try await api.updateReadingStatus(comicId: comic.id, status: status ?? "")
-            self.comic = comic.withReadingStatus(status)
+            var updatedComic = comic.withReadingStatus(status)
+            if shouldClearFinishedProgress {
+                updatedComic = updatedComic.withReadingProgress(lastReadPage: 0, lastReadAt: nil)
+                syncReadingProgressToCache(comicId: comic.id, lastReadPage: 0, lastReadAt: nil, progress: 0)
+            } else if shouldMarkFinished, let finishedAt {
+                updatedComic = updatedComic.withReadingProgress(
+                    lastReadPage: comic.pageCount - 1,
+                    lastReadAt: finishedAt.iso8601String
+                )
+                syncReadingProgressToCache(
+                    comicId: comic.id,
+                    lastReadPage: comic.pageCount - 1,
+                    lastReadAt: finishedAt,
+                    progress: 100
+                )
+            }
+            self.comic = updatedComic
             syncReadingStatusToCache(comicId: comic.id, status: status)
         } catch {
             AppLogger.error("更新阅读状态失败: \(error)")
@@ -620,6 +642,17 @@ final class DetailViewModel {
         let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
         guard let first = context.fetchOrLog(descriptor, label: "同步阅读状态").first else { return }
         first.readingStatus = status
+        context.saveOrLog()
+    }
+
+    private func syncReadingProgressToCache(comicId: String, lastReadPage: Int, lastReadAt: Date?, progress: Int) {
+        guard let context = modelContext else { return }
+        let id = comicId
+        let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        guard let first = context.fetchOrLog(descriptor, label: "同步阅读进度").first else { return }
+        first.lastReadPage = lastReadPage
+        first.lastReadAt = lastReadAt
+        first.progress = progress
         context.saveOrLog()
     }
 
@@ -641,6 +674,21 @@ extension Comic {
             year: year, pageCount: pageCount, fileSize: fileSize,
             lastReadPage: lastReadPage, totalReadTime: totalReadTime,
             readingStatus: status, lastReadAt: lastReadAt,
+            metadataSource: metadataSource, coverUrl: coverUrl,
+            coverAspectRatio: coverAspectRatio, rating: rating,
+            isFavorite: isFavorite, type: type, filename: filename,
+            titleSortKey: titleSortKey, sortOrder: sortOrder,
+            tags: tags, categories: categories
+        )
+    }
+
+    func withReadingProgress(lastReadPage: Int, lastReadAt: String?) -> Comic {
+        Comic(
+            id: id, title: title, author: author, publisher: publisher,
+            description: description, genre: genre, language: language,
+            year: year, pageCount: pageCount, fileSize: fileSize,
+            lastReadPage: lastReadPage, totalReadTime: totalReadTime,
+            readingStatus: readingStatus, lastReadAt: lastReadAt,
             metadataSource: metadataSource, coverUrl: coverUrl,
             coverAspectRatio: coverAspectRatio, rating: rating,
             isFavorite: isFavorite, type: type, filename: filename,

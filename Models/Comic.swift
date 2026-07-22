@@ -31,6 +31,7 @@ struct Comic: Codable, Identifiable {
 
     var progress: Int {
         guard pageCount > 0 else { return 0 }
+        guard lastReadPage > 0 || readingStatus == "reading" || readingStatus == "finished" else { return 0 }
         return min(100, Int(Double(lastReadPage + 1) / Double(pageCount) * 100))
     }
 
