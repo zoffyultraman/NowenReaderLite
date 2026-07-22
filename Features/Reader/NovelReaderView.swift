@@ -91,15 +91,8 @@ struct NovelReaderView: View {
                 Task { await viewModel.saveProgress() }
             }
         }
-        .onChange(of: viewModel.pages.count) { _, _ in
+        .onChange(of: viewModel.paginationGeneration) { _, _ in
             restorePosition()
-        }
-        .onChange(of: viewModel.currentChapter) { _, _ in
-            // 后备恢复（pages.count 不变时不会触发上面的 handler）
-            Task {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                restorePosition()
-            }
         }
         .onChange(of: fontSize) { _, newValue in
             UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelFontSize)
@@ -137,13 +130,6 @@ struct NovelReaderView: View {
     private func restorePosition() {
         let count = viewModel.pages.count
         guard count > 0 else { return }
-
-        // 无缝章节切换时跳过位置恢复
-        if viewModel.isSeamlessTransition {
-            viewModel.isSeamlessTransition = false
-            restoredChapter = viewModel.currentChapter
-            return
-        }
 
         guard restoredChapter != viewModel.currentChapter else { return }
         restoredChapter = viewModel.currentChapter
@@ -579,20 +565,19 @@ final class NovelReaderViewModel {
     var groupContext: ReadingGroupContext?
     var currentComicId: String
     var chapterTitles: [Int: String] = [:]
+    private(set) var paginationGeneration = 0
 
     /// 各章节的起始页索引 [章节号: 在 pages 中的起始位置]
     private(set) var chapterPageOffsets: [Int: Int] = [:]
     /// 下一章页面是否已追加
     private(set) var nextChapterAppended = false
-    /// 是否正在进行无缝章节切换（跳过位置恢复）
-    var isSeamlessTransition = false
 
     var plainText: String { chapterContent?.content ?? "" }
     private var comicId = ""
     private let api = APIClient.shared
     private let cache = ChapterCache()
     private var activityTracker: ReadingActivityTracker?
-    nonisolated(unsafe) private var cacheObserver: Any?
+    @ObservationIgnored private var cacheObserver: Any?
 
     init() {
         self.currentComicId = ""
@@ -816,6 +801,7 @@ final class NovelReaderViewModel {
         chapterPageOffsets = [currentChapter: 0]
         nextChapterAppended = false
         pages = newPages
+        paginationGeneration += 1
     }
 
     func relativePageInChapter(_ absolutePage: Int) -> Int {
@@ -872,7 +858,6 @@ final class NovelReaderViewModel {
         if let cached = cache.get(nextIndex) {
             currentChapterTitle = cached.title
         }
-        isSeamlessTransition = true
         currentChapter = nextIndex
         nextChapterAppended = false
         cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)

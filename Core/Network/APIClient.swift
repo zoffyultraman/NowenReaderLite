@@ -615,14 +615,35 @@ final class APIClient {
 
     // MARK: - Groups
 
-    func fetchGroups(contentType: String? = nil) async throws -> [ComicGroup] {
+    func fetchGroups(
+        contentType: String? = nil,
+        category: String? = nil,
+        tags: [String] = [],
+        favoritesOnly: Bool = false,
+        libraryId: String? = nil
+    ) async throws -> [ComicGroup] {
         var params: [String: String]?
         var hasParams = false
-        if let t = contentType {
+        if let t = contentType, !t.isEmpty {
             params = ["contentType": t]
             hasParams = true
         }
-        if let lid = selectedLibraryId {
+        if let category, !category.isEmpty {
+            if params == nil { params = [:] }
+            params!["category"] = category
+            hasParams = true
+        }
+        if !tags.isEmpty {
+            if params == nil { params = [:] }
+            params!["tags"] = tags.joined(separator: ",")
+            hasParams = true
+        }
+        if favoritesOnly {
+            if params == nil { params = [:] }
+            params!["favoritesOnly"] = "true"
+            hasParams = true
+        }
+        if let lid = libraryId ?? selectedLibraryId {
             if params == nil { params = [:] }
             params!["libraryIds"] = lid
             hasParams = true
@@ -631,8 +652,33 @@ final class APIClient {
         return resp.groups
     }
 
-    func fetchGroupDetail(id: Int) async throws -> GroupDetailResponse {
-        try await get("/api/groups/\(id)")
+    func fetchGroupDetail(id: Int, contentType: String? = nil) async throws -> GroupDetailResponse {
+        var params: [String: String]?
+        if let contentType, !contentType.isEmpty {
+            params = ["contentType": contentType]
+        }
+        return try await get("/api/groups/\(id)", query: params)
+    }
+
+    func fetchCatalogItems(
+        contentType: String = "comic",
+        search: String? = nil,
+        page: Int = 1,
+        pageSize: Int = 24,
+        sortBy: String = "title",
+        sortOrder: String = "asc",
+        libraryId: String? = nil
+    ) async throws -> CatalogItemListResponse {
+        var params: [String: String] = [
+            "contentType": contentType,
+            "page": "\(page)",
+            "pageSize": "\(pageSize)",
+            "sortBy": sortBy,
+            "sortOrder": sortOrder,
+        ]
+        if let search, !search.isEmpty { params["search"] = search }
+        if let lid = libraryId ?? selectedLibraryId { params["libraryIds"] = lid }
+        return try await get("/api/catalog/items", query: params)
     }
 
     // MARK: - Series

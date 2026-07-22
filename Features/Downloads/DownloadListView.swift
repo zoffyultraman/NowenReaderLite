@@ -6,20 +6,13 @@ struct DownloadListView: View {
     private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @State private var showClearAlert = false
-
-    private var activeTasks: [DownloadTask] {
-        downloadManager.tasks.values
-            .filter { $0.state != .completed }
-            .sorted { $0.title < $1.title }
-    }
-
-    private var completedTasks: [DownloadTask] {
-        downloadManager.tasks.values
-            .filter { $0.state == .completed }
-            .sorted { $0.title < $1.title }
-    }
+    @State private var offlineSize: Int64 = 0
+    @State private var isLoadingStorageSize = false
 
     var body: some View {
+        let activeTasks = downloadManager.activeTasks
+        let completedTasks = downloadManager.completedTasks
+
         List {
             if !activeTasks.isEmpty {
                 Section("下载中") {
@@ -62,7 +55,7 @@ struct DownloadListView: View {
                     HStack {
                         Label("已用空间", systemImage: "internaldrive")
                         Spacer()
-                        Text(formatFileSize(OfflineFileManager.shared.totalDiskSize))
+                        Text(isLoadingStorageSize ? "计算中..." : formatFileSize(offlineSize))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -84,17 +77,32 @@ struct DownloadListView: View {
         .task {
             downloadManager.setModelContext(modelContext)
             downloadManager.restoreFromStore(context: modelContext)
+            await loadStorageSize()
+        }
+        .onChange(of: downloadManager.completedTasks.count) { _, _ in
+            Task { await loadStorageSize() }
         }
         .alert("清除全部下载", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
-                for task in downloadManager.tasks.values where task.state == .completed {
+                for task in downloadManager.completedTasks {
                     downloadManager.deleteDownload(comicId: task.comicId)
                 }
+                Task { await loadStorageSize() }
             }
         } message: {
             Text("将删除所有已下载的漫画文件，此操作不可恢复。")
         }
+    }
+
+    @MainActor
+    private func loadStorageSize() async {
+        isLoadingStorageSize = true
+        let size = await Task.detached(priority: .utility) {
+            OfflineFileManager.shared.totalDiskSize
+        }.value
+        offlineSize = size
+        isLoadingStorageSize = false
     }
 }
 

@@ -79,6 +79,8 @@ final class ImageCache {
     }
 }
 
+extension ImageCache: @unchecked Sendable {}
+
 // MARK: - String SHA256
 
 private extension String {

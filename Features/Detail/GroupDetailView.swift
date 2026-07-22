@@ -3,15 +3,19 @@ import SwiftData
 
 struct GroupDetailView: View {
     let groupId: Int
+    let contentType: String?
     @State private var viewModel = GroupDetailViewModel()
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
-    @State private var isGrid = true
     @State private var showDownloadAllAlert = false
     @State private var showDownloadResult = false
     @State private var downloadQueued = 0
     @State private var downloadSkipped = 0
+
+    init(groupId: Int, contentType: String? = nil) {
+        self.groupId = groupId
+        self.contentType = contentType
+    }
 
     var body: some View {
         Group {
@@ -20,20 +24,22 @@ struct GroupDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let detail = viewModel.detail {
                 ScrollView {
-                    // 头部信息
+                    let readingUnits = detail.readingUnits
+                    let seriesList = detail.sortedSeriesList
+                    let directComics = detail.sortedComics
+
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .top, spacing: 16) {
-                            // 封面固定宽度，左对齐
                             Group {
                                 if let cover = detail.coverUrl, !cover.isEmpty {
                                     let urlString = cover.hasPrefix("http") ? cover : "\(api.serverURL)\(cover)"
                                     if let url = URL(string: urlString) {
                                         AuthenticatedImage(url: url)
                                     }
-                                } else if let first = detail.comics.first {
+                                } else if let firstId = detail.fallbackCoverComicId {
                                     AuthenticatedImage(
                                         serverURL: api.serverURL,
-                                        comicId: first.id,
+                                        comicId: firstId,
                                         thumbnail: true
                                     )
                                 } else {
@@ -44,7 +50,6 @@ struct GroupDetailView: View {
                             .frame(width: 110, height: 155)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                            // 右侧信息
                             VStack(alignment: .leading, spacing: 10) {
                                 Text(detail.name)
                                     .font(.title3.weight(.bold))
@@ -57,11 +62,11 @@ struct GroupDetailView: View {
                                         .lineLimit(1)
                                 }
 
-                                let totalPages = detail.comics.reduce(0) { $0 + $1.pageCount }
-                                let totalSize = detail.comics.reduce(Int64(0)) { $0 + ($1.fileSize ?? 0) }
+                                let totalPages = readingUnits.reduce(0) { $0 + $1.pageCount }
+                                let totalSize = readingUnits.reduce(Int64(0)) { $0 + ($1.fileSize ?? 0) }
 
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Label("\(detail.comics.count) 卷", systemImage: "books.vertical")
+                                    Label("\(detail.displayCount) 个阅读单元", systemImage: "books.vertical")
                                     Label("\(totalPages) 页", systemImage: "doc.text")
                                     Label(formatFileSize(totalSize), systemImage: "internaldrive")
                                 }
@@ -74,53 +79,40 @@ struct GroupDetailView: View {
                         .padding(.top, 12)
                     }
 
-                    // 卷列表
-                    let volumeIds = detail.comics.map { $0.id }
-                    if isGrid {
-                        let cols = Array(repeating: GridItem(.flexible(), spacing: 12), count: sizeClass == .regular ? 5 : 3)
-                        LazyVGrid(columns: cols, spacing: 16) {
-                            ForEach(Array(detail.comics.enumerated()), id: \.element.id) { index, comic in
-                                NavigationLink {
-                                    ComicDetailView(
-                                        comicId: comic.id,
-                                        groupContext: ReadingGroupContext(
-                                            groupId: viewModel.detail?.id ?? groupId,
-                                            volumeIds: volumeIds,
-                                            currentIndex: index
-                                        )
-                                    )
-                                } label: {
-                                    VolumeCardView(comic: comic, serverURL: api.serverURL)
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("作品 (\(readingUnits.count))")
+                            .font(.headline)
+                            .padding(.horizontal, 20)
+
+                        ForEach(seriesList) { series in
+                            GroupSeriesSectionView(
+                                series: series,
+                                serverURL: api.serverURL,
+                                contextProvider: { comic in
+                                    viewModel.readingContext(for: comic.id)
                                 }
-                                .buttonStyle(.plain)
-                            }
+                            )
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 20)
-                    } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(detail.comics.enumerated()), id: \.element.id) { index, comic in
-                                NavigationLink {
-                                    ComicDetailView(
-                                        comicId: comic.id,
-                                        groupContext: ReadingGroupContext(
-                                            groupId: viewModel.detail?.id ?? groupId,
-                                            volumeIds: volumeIds,
-                                            currentIndex: index
-                                        )
-                                    )
-                                } label: {
-                                    VolumeListRowView(comic: comic, serverURL: api.serverURL)
-                                        .padding(.horizontal, 20)
+
+                        if !directComics.isEmpty {
+                            GroupComicRailView(
+                                title: "其他作品",
+                                subtitle: "\(directComics.count) 个阅读单元",
+                                comics: directComics,
+                                serverURL: api.serverURL,
+                                contextProvider: { comic in
+                                    viewModel.readingContext(for: comic.id)
                                 }
-                                .buttonStyle(.plain)
-                                .contentShape(Rectangle())
-                                Divider().padding(.leading, 80)
-                            }
+                            )
                         }
-                        .padding(.top, 8)
+
+                        if readingUnits.isEmpty {
+                            ContentUnavailableView("此合集还没有作品", systemImage: "books.vertical")
+                                .padding(.vertical, 40)
+                        }
                     }
+                    .padding(.top, 8)
+                    .padding(.bottom, 20)
                 }
             } else {
                 VStack(spacing: 12) {
@@ -137,39 +129,34 @@ struct GroupDetailView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 // 下载全部按钮
-                if let detail = viewModel.detail, !detail.comics.isEmpty {
+                if let detail = viewModel.detail, !detail.readingUnits.isEmpty {
                     Button {
                         showDownloadAllAlert = true
                     } label: {
                         Image(systemName: "arrow.down.circle")
                     }
                 }
-
-                Button {
-                    withAnimation { isGrid.toggle() }
-                } label: {
-                    Image(systemName: isGrid ? "list.bullet" : "square.grid.2x2")
-                }
             }
         }
         .task {
             DownloadManager.shared.setModelContext(modelContext)
-            await viewModel.load(groupId: groupId, context: modelContext)
+            await viewModel.load(groupId: groupId, contentType: contentType, context: modelContext)
         }
         .alert("下载全部卷", isPresented: $showDownloadAllAlert) {
             Button("取消", role: .cancel) {}
             Button("下载") {
                 guard let detail = viewModel.detail else { return }
-                let result = DownloadManager.shared.downloadAll(comics: detail.comics, groupDetail: detail)
+                let result = DownloadManager.shared.downloadAll(comics: detail.readingUnits, groupDetail: detail)
                 downloadQueued = result.queued
                 downloadSkipped = result.skipped
                 showDownloadResult = true
             }
         } message: {
             if let detail = viewModel.detail {
-                let totalPages = detail.comics.reduce(0) { $0 + $1.pageCount }
-                let alreadyDownloaded = detail.comics.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
-                Text("共 \(detail.comics.count) 卷、\(totalPages) 页。已下载 \(alreadyDownloaded) 卷，其余将加入下载队列。")
+                let units = detail.readingUnits
+                let totalPages = units.reduce(0) { $0 + $1.pageCount }
+                let alreadyDownloaded = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
+                Text("共 \(units.count) 个阅读单元、\(totalPages) 页。已下载 \(alreadyDownloaded) 个，其余将加入下载队列。")
             }
         }
         .alert("下载结果", isPresented: $showDownloadResult) {
@@ -179,6 +166,127 @@ struct GroupDetailView: View {
         }
     }
 
+}
+
+struct GroupSeriesSectionView: View {
+    let series: GroupSeriesItem
+    let serverURL: String
+    let contextProvider: (GroupComicItem) -> ReadingGroupContext?
+
+    private var coverURL: URL? {
+        guard let cover = series.coverUrl, !cover.isEmpty else { return nil }
+        return URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
+                NavigationLink {
+                    SeriesDetailView(seriesId: series.id)
+                } label: {
+                    HStack(spacing: 10) {
+                        Group {
+                            if let coverURL {
+                                AuthenticatedImage(url: coverURL)
+                            } else if let coverComicId = series.coverComicId, !coverComicId.isEmpty {
+                                AuthenticatedImage(serverURL: serverURL, comicId: coverComicId, thumbnail: true)
+                            } else {
+                                Color(.systemGray6)
+                                    .overlay {
+                                        Image(systemName: "books.vertical")
+                                            .font(.caption)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                            }
+                        }
+                        .frame(width: 34, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(series.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if let path = series.rootRelativePath, !path.isEmpty {
+                                Text(path)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("\(series.sortedComics.count) 个阅读单元")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 20)
+
+            GroupComicRail(
+                comics: series.sortedComics,
+                serverURL: serverURL,
+                contextProvider: contextProvider
+            )
+        }
+    }
+}
+
+struct GroupComicRailView: View {
+    let title: String
+    let subtitle: String
+    let comics: [GroupComicItem]
+    let serverURL: String
+    let contextProvider: (GroupComicItem) -> ReadingGroupContext?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 20)
+
+            GroupComicRail(
+                comics: comics,
+                serverURL: serverURL,
+                contextProvider: contextProvider
+            )
+        }
+    }
+}
+
+struct GroupComicRail: View {
+    let comics: [GroupComicItem]
+    let serverURL: String
+    let contextProvider: (GroupComicItem) -> ReadingGroupContext?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(comics) { comic in
+                    NavigationLink {
+                        ComicDetailView(
+                            comicId: comic.id,
+                            groupContext: contextProvider(comic)
+                        )
+                    } label: {
+                        VolumeCardView(comic: comic, serverURL: serverURL)
+                            .frame(width: 112)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+    }
 }
 
 // MARK: - 卷卡片
@@ -192,7 +300,7 @@ struct VolumeCardView: View {
             ZStack(alignment: .bottomTrailing) {
                 AuthenticatedImage(serverURL: serverURL, comicId: comic.id, thumbnail: true)
                     .aspectRatio(contentMode: .fill)
-                    .frame(height: 180)
+                    .frame(width: 112, height: 150)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
@@ -271,8 +379,9 @@ final class GroupDetailViewModel {
     var detail: GroupDetailResponse?
     var isLoading = false
     var errorMessage: String?
+    private var readingUnitIds: [String] = []
 
-    func load(groupId: Int, context: ModelContext? = nil) async {
+    func load(groupId: Int, contentType: String? = nil, context: ModelContext? = nil) async {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
@@ -295,6 +404,9 @@ final class GroupDetailViewModel {
                 for (index, comicId) in local.comicIds.enumerated() {
                     guard downloadedIds.contains(comicId) else { continue }
                     let cached = cachedMap[comicId]
+                    if let contentType, let cachedType = cached?.type, cachedType != contentType {
+                        continue
+                    }
                     let meta = OfflineFileManager.shared.loadMeta(comicId: comicId)
                     comics.append(GroupComicItem(
                         id: comicId,
@@ -306,18 +418,23 @@ final class GroupDetailViewModel {
                         totalReadTime: nil,
                         coverUrl: cached?.coverUrl,
                         sortIndex: index,
-                        readingStatus: nil
+                        readingStatus: nil,
+                        lastReadAt: cached?.lastReadAt.map { ISO8601DateFormatter().string(from: $0) },
+                        type: cached?.type
                     ))
                 }
-                detail = GroupDetailResponse(
+                updateDetail(GroupDetailResponse(
                     id: local.id,
                     name: local.name,
                     coverUrl: local.coverUrl,
                     author: local.author,
                     description: local.description,
+                    comicCount: comics.count,
+                    seriesList: [],
                     comics: comics
-                )
+                ))
             } else {
+                updateDetail(nil)
                 errorMessage = "离线模式下无法加载合集"
             }
             isLoading = false
@@ -325,11 +442,24 @@ final class GroupDetailViewModel {
         }
 
         do {
-            detail = try await APIClient.shared.fetchGroupDetail(id: groupId)
+            let loadedDetail = try await APIClient.shared.fetchGroupDetail(id: groupId, contentType: contentType)
+            updateDetail(loadedDetail)
         } catch {
+            updateDetail(nil)
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    func readingContext(for comicId: String) -> ReadingGroupContext? {
+        guard let detail else { return nil }
+        guard let index = readingUnitIds.firstIndex(of: comicId) else { return nil }
+        return ReadingGroupContext(groupId: detail.id, volumeIds: readingUnitIds, currentIndex: index)
+    }
+
+    private func updateDetail(_ newDetail: GroupDetailResponse?) {
+        detail = newDetail
+        readingUnitIds = newDetail?.readingUnits.map { $0.id } ?? []
     }
 }
 
@@ -375,7 +505,7 @@ struct SeriesDetailView: View {
                         .padding(.top, 12)
 
                         if !detail.sections.isEmpty || !detail.unsectioned.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
+                            ScrollView(.horizontal) {
                                 HStack(spacing: 8) {
                                     SeriesFilterButton(
                                         title: "全部 \(viewModel.allItems.count)",
@@ -404,6 +534,7 @@ struct SeriesDetailView: View {
                                 }
                                 .padding(.horizontal, 20)
                             }
+                            .scrollIndicators(.hidden)
                         }
 
                         if isGrid {
@@ -685,12 +816,8 @@ final class SeriesDetailViewModel {
     var detail: SeriesDetailResponse?
     var isLoading = false
     var errorMessage: String?
-
-    var allItems: [SeriesItem] {
-        guard let detail else { return [] }
-        return (detail.unsectioned + detail.sections.flatMap { $0.items })
-            .sorted { $0.sortIndex < $1.sortIndex }
-    }
+    private(set) var allItems: [SeriesItem] = []
+    private var allItemIds: [String] = []
 
     var continueItem: SeriesItem? {
         if let inProgress = allItems.first(where: { hasStarted($0) && !isFinished($0) }) {
@@ -704,17 +831,27 @@ final class SeriesDetailViewModel {
         isLoading = true
         errorMessage = nil
         do {
-            detail = try await APIClient.shared.fetchSeriesDetail(id: seriesId)
+            let loadedDetail = try await APIClient.shared.fetchSeriesDetail(id: seriesId)
+            updateDetail(loadedDetail)
         } catch {
+            updateDetail(nil)
             errorMessage = error.localizedDescription
         }
         isLoading = false
     }
 
     func readingContext(for item: SeriesItem) -> ReadingGroupContext? {
-        let ids = allItems.map { $0.comic.id }
-        guard let index = ids.firstIndex(of: item.comic.id) else { return nil }
-        return ReadingGroupContext(groupId: 0, volumeIds: ids, currentIndex: index)
+        guard let index = allItemIds.firstIndex(of: item.comic.id) else { return nil }
+        return ReadingGroupContext(groupId: 0, volumeIds: allItemIds, currentIndex: index)
+    }
+
+    private func updateDetail(_ newDetail: SeriesDetailResponse?) {
+        detail = newDetail
+        allItems = newDetail.map {
+            ($0.unsectioned + $0.sections.flatMap { $0.items })
+                .sorted { $0.sortIndex < $1.sortIndex }
+        } ?? []
+        allItemIds = allItems.map { $0.comic.id }
     }
 
     private func isFinished(_ item: SeriesItem) -> Bool {

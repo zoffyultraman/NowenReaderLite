@@ -210,17 +210,14 @@ struct ComicListRowView: View {
 @Observable
 final class LibraryViewModel {
     var comics: [Comic] = []
-    var groups: [ComicGroup] = []
     var isLoading = false
     var hasMore = true
     var errorMessage: String?
-    var displayItems: [LibraryItem] = []
 
     private var currentPage = 1
     private var sortBy = "addedAt"
     private var sortOrder = "desc"
     private var contentType: String?
-    private var groupedComicIds: Set<String> = []
     private let api = APIClient.shared
     private var modelContext: ModelContext?
     /// 当前加载任务版本号，旧任务完成时忽略（避免离线切换时旧请求挂起覆盖状态）
@@ -230,9 +227,9 @@ final class LibraryViewModel {
         self.modelContext = context
     }
 
-    /// 同时加载合集、漫画列表和分组映射
+    /// 加载书库作品。合集已独立展示，不混入书库列表。
     func loadAll(refresh: Bool = false) async {
-        // 离线 + 已有数据 + 非手动刷新 → 跳过（避免切 tab 时清空 groups 再重载）
+        // 离线 + 已有数据 + 非手动刷新 → 跳过（避免切 tab 时清空再重载）
         if api.isOfflineMode && !comics.isEmpty && !refresh {
             return
         }
@@ -242,118 +239,10 @@ final class LibraryViewModel {
         if !(api.isOfflineMode && !comics.isEmpty) {
             isLoading = true
         }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await self.loadGroups() }
-            group.addTask { await self.loadGroupedComicMap() }
-            group.addTask { await self.loadComics(refresh: refresh) }
-        }
+        await loadComics(refresh: refresh)
         // 如果已被更新的 loadAll 取代，不覆盖状态
         guard version == loadVersion else { return }
         isLoading = false
-        updateDisplayItems()
-    }
-
-    func updateDisplayItems() {
-        // 合集和散本统一混合排序；目录作品需要先由服务端折叠，再本地排除旧合集内的真实作品。
-        var allItems: [LibraryItem] = []
-        allItems.append(contentsOf: groups.map { .group($0) })
-        let looseComics = comics.filter { comic in
-            comic.isSeriesShelfItem || groupedComicIds.isEmpty || !groupedComicIds.contains(comic.id)
-        }
-        allItems.append(contentsOf: looseComics.map { .comic($0) })
-
-        // 统一排序
-        allItems.sort { lhs, rhs in
-            compareLibraryItems(lhs, rhs, sortBy: sortBy, sortOrder: sortOrder)
-        }
-        displayItems = allItems
-    }
-
-    // MARK: - 统一排序比较
-
-    /// 合集与散本统一排序比较
-    private func compareLibraryItems(_ lhs: LibraryItem, _ rhs: LibraryItem, sortBy: String, sortOrder: String) -> Bool {
-        let ascending = sortOrder == "asc"
-
-        switch sortBy {
-        case "title":
-            let lt = itemTitle(lhs)
-            let rt = itemTitle(rhs)
-            if lt == rt { return sortOrderValue(lhs) < sortOrderValue(rhs) }
-            return ascending ? (lt < rt) : (lt > rt)
-
-        case "lastReadAt":
-            let ld = itemLastReadDate(lhs)
-            let rd = itemLastReadDate(rhs)
-            // 无日期的排在最后
-            switch (ld, rd) {
-            case (nil, nil): return sortOrderValue(lhs) < sortOrderValue(rhs)
-            case (nil, _): return false
-            case (_, nil): return true
-            case let (l?, r?):
-                if l == r { return sortOrderValue(lhs) < sortOrderValue(rhs) }
-                return ascending ? (l < r) : (l > r)
-            }
-
-        case "rating":
-            let lr = itemRating(lhs)
-            let rr = itemRating(rhs)
-            // 无评分的排在最后
-            switch (lr, rr) {
-            case (nil, nil): return sortOrderValue(lhs) < sortOrderValue(rhs)
-            case (nil, _): return false
-            case (_, nil): return true
-            case let (l?, r?):
-                if l == r { return sortOrderValue(lhs) < sortOrderValue(rhs) }
-                return ascending ? (l < r) : (l > r)
-            }
-
-        case "readTime":
-            let lt = itemReadTime(lhs)
-            let rt = itemReadTime(rhs)
-            if lt == rt { return sortOrderValue(lhs) < sortOrderValue(rhs) }
-            return ascending ? (lt < rt) : (lt > rt)
-
-        default: // addedAt — 使用 sortOrder 作为排序依据
-            let ls = sortOrderValue(lhs)
-            let rs = sortOrderValue(rhs)
-            return ascending ? (ls < rs) : (ls > rs)
-        }
-    }
-
-    private func itemTitle(_ item: LibraryItem) -> String {
-        switch item {
-        case .comic(let c): return c.sortTitle
-        case .group(let g): return g.name
-        }
-    }
-
-    private func itemLastReadDate(_ item: LibraryItem) -> Date? {
-        switch item {
-        case .comic(let c): return c.lastReadAt.flatMap { Date.fromISO8601($0) }
-        case .group: return nil
-        }
-    }
-
-    private func itemRating(_ item: LibraryItem) -> Double? {
-        switch item {
-        case .comic(let c): return c.rating
-        case .group: return nil
-        }
-    }
-
-    private func itemReadTime(_ item: LibraryItem) -> Int {
-        switch item {
-        case .comic(let c): return c.totalReadTime ?? 0
-        case .group: return 0
-        }
-    }
-
-    private func sortOrderValue(_ item: LibraryItem) -> Int {
-        switch item {
-        case .comic(let c): return c.sortOrder ?? Int.max
-        case .group(let g): return g.sortOrder ?? Int.max
-        }
     }
 
     func loadComics(refresh: Bool = false) async {
@@ -366,7 +255,7 @@ final class LibraryViewModel {
             if let context = modelContext {
                 let cached = loadFromCache(context: context)
                 let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-                comics = cached.filter { downloadedIds.contains($0.id) }
+                comics = cached.filter { downloadedIds.contains($0.id) && matchesContentType($0) }
             }
             return
         }
@@ -386,7 +275,7 @@ final class LibraryViewModel {
                 sortBy: sortBy,
                 sortOrder: sortOrder,
                 contentType: contentType,
-                excludeGrouped: useSeriesView ? nil : true,
+                excludeGrouped: nil,
                 seriesView: useSeriesView
             )
             if refresh || currentPage == 1 {
@@ -406,9 +295,15 @@ final class LibraryViewModel {
             if let context = modelContext {
                 let cached = loadFromCache(context: context)
                 let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-                comics = cached.filter { downloadedIds.contains($0.id) }
+                comics = cached.filter { downloadedIds.contains($0.id) && matchesContentType($0) }
             }
         }
+    }
+
+    private func matchesContentType(_ comic: Comic) -> Bool {
+        guard let contentType else { return true }
+        guard let type = comic.type, !type.isEmpty else { return contentType == "comic" }
+        return type == contentType
     }
 
     private func loadFromCache(context: ModelContext) -> [Comic] {
@@ -443,60 +338,11 @@ final class LibraryViewModel {
         context.saveOrLog()
     }
 
-    func loadGroups() async {
-        guard !api.isOfflineMode, api.isNetworkReachable else {
-            // 离线：从本地加载已保存的合集，只显示有已下载漫画的合集
-            let local = OfflineFileManager.shared.loadGroups()
-            let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-            groups = local.compactMap { g in
-                let hasDownloaded = g.comicIds.contains { downloadedIds.contains($0) }
-                guard hasDownloaded else { return nil }
-                return ComicGroup(
-                    id: g.id, name: g.name, coverUrl: g.coverUrl,
-                    author: g.author, description: g.description,
-                    comicCount: g.comicCount, sortOrder: g.sortOrder,
-                    firstComicId: g.comicIds.first
-                )
-            }
-            return
-        }
-        do {
-            if contentType == nil {
-                // "全部"模式：分别加载漫画和小说合集，合并去重
-                async let comicGroups = api.fetchGroups(contentType: "comic")
-                async let novelGroups = api.fetchGroups(contentType: "novel")
-                let allGroups = try await comicGroups + novelGroups
-                var seen = Set<Int>()
-                groups = allGroups.filter { seen.insert($0.id).inserted }
-            } else {
-                groups = try await api.fetchGroups(contentType: contentType)
-            }
-        } catch {
-            AppLogger.error("加载合集失败: \(error)")
-            groups = []
-        }
-    }
-
-    func loadGroupedComicMap() async {
-        guard !api.isOfflineMode, api.isNetworkReachable else {
-            let local = OfflineFileManager.shared.loadGroups()
-            groupedComicIds = Set(local.flatMap { $0.comicIds })
-            return
-        }
-        do {
-            groupedComicIds = try await api.fetchComicGroupMap()
-        } catch {
-            AppLogger.error("加载合集映射失败: \(error)")
-            groupedComicIds = []
-        }
-    }
-
     func loadMore() async {
         guard hasMore, !isLoading else { return }
         isLoading = true
         currentPage += 1
         await loadComics()
-        updateDisplayItems()
         isLoading = false
     }
 
@@ -505,12 +351,143 @@ final class LibraryViewModel {
         sortOrder = order
         Task {
             await loadComics(refresh: true)
-            updateDisplayItems()
         }
     }
 
     func setContentType(_ type: String?) {
         contentType = type
         Task { await loadAll(refresh: true) }
+    }
+}
+
+@MainActor
+@Observable
+final class CollectionViewModel {
+    var groups: [ComicGroup] = []
+    var isLoading = false
+    var errorMessage: String?
+
+    private var sortBy = "defaultOrder"
+    private var sortOrder = "asc"
+    private var contentType: String?
+    private let api = APIClient.shared
+    private var modelContext: ModelContext?
+    private var loadVersion = 0
+
+    func setModelContext(_ context: ModelContext) {
+        self.modelContext = context
+    }
+
+    func load(refresh: Bool = false) async {
+        if api.isOfflineMode && !groups.isEmpty && !refresh {
+            return
+        }
+        loadVersion += 1
+        let version = loadVersion
+        if !(api.isOfflineMode && !groups.isEmpty) {
+            isLoading = true
+        }
+
+        let loaded: [ComicGroup]
+        if api.isOfflineMode || !api.isNetworkReachable {
+            loaded = loadOfflineGroups()
+        } else {
+            loaded = await loadRemoteGroups()
+        }
+
+        guard version == loadVersion else { return }
+        groups = sortedGroups(loaded)
+        isLoading = false
+    }
+
+    private func loadRemoteGroups() async -> [ComicGroup] {
+        do {
+            errorMessage = nil
+            if contentType == nil {
+                async let comicGroups = api.fetchGroups(contentType: "comic")
+                async let novelGroups = api.fetchGroups(contentType: "novel")
+                let allGroups = try await comicGroups + novelGroups
+                var seen = Set<Int>()
+                return allGroups.filter { seen.insert($0.id).inserted }
+            }
+            return try await api.fetchGroups(contentType: contentType)
+        } catch {
+            AppLogger.error("加载合集失败: \(error)")
+            errorMessage = error.localizedDescription
+            return []
+        }
+    }
+
+    private func loadOfflineGroups() -> [ComicGroup] {
+        let local = OfflineFileManager.shared.loadGroups()
+        let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+        let cachedMap = cachedComicsById()
+
+        return local.compactMap { group in
+            let matchingIds = group.comicIds.filter { comicId in
+                downloadedIds.contains(comicId) && matchesContentType(cachedMap[comicId])
+            }
+            guard !matchingIds.isEmpty else { return nil }
+            return ComicGroup(
+                id: group.id,
+                name: group.name,
+                coverUrl: group.coverUrl,
+                author: group.author,
+                description: group.description,
+                comicCount: contentType == nil ? group.comicCount : matchingIds.count,
+                sortOrder: group.sortOrder,
+                firstComicId: matchingIds.first,
+                contentType: contentType
+            )
+        }
+    }
+
+    private func cachedComicsById() -> [String: CachedComic] {
+        guard let modelContext else { return [:] }
+        let cached = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载合集缓存")
+        var map: [String: CachedComic] = [:]
+        for comic in cached {
+            map[comic.id] = comic
+        }
+        return map
+    }
+
+    private func matchesContentType(_ cached: CachedComic?) -> Bool {
+        guard let contentType else { return true }
+        guard let type = cached?.type, !type.isEmpty else { return contentType == "comic" }
+        return type == contentType
+    }
+
+    private func sortedGroups(_ groups: [ComicGroup]) -> [ComicGroup] {
+        switch sortBy {
+        case "title":
+            return groups.sorted {
+                let result = $0.name.localizedStandardCompare($1.name)
+                if result == .orderedSame {
+                    return ($0.sortOrder ?? Int.max) < ($1.sortOrder ?? Int.max)
+                }
+                return sortOrder == "asc" ? result == .orderedAscending : result == .orderedDescending
+            }
+        default:
+            return groups.sorted {
+                let left = $0.sortOrder ?? Int.max
+                let right = $1.sortOrder ?? Int.max
+                if left == right {
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+                return left < right
+            }
+        }
+    }
+
+    func updateSort(by sortBy: String, order: String) {
+        self.sortBy = sortBy
+        self.sortOrder = order
+        groups = sortedGroups(groups)
+    }
+
+    func setContentType(_ type: String?) {
+        contentType = type
+        Task { await load(refresh: true) }
     }
 }

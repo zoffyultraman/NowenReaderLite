@@ -67,12 +67,6 @@ struct FavoritesMainContent: View {
         .task {
             await viewModel.loadFavorites()
         }
-        .onChange(of: api.isOfflineMode) { _, isOffline in
-            if isOffline {
-                viewModel.comics = []
-                viewModel.isLoading = false
-            }
-        }
         .onChange(of: api.selectedLibraryId) { _, _ in
             Task { await viewModel.loadFavorites() }
         }

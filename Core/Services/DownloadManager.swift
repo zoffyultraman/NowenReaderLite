@@ -11,6 +11,10 @@ final class DownloadManager {
 
     /// 当前所有下载任务（key = comicId）
     private(set) var tasks: [String: DownloadTask] = [:]
+    /// 已按标题排序的活跃任务，避免视图 body 在进度刷新时反复排序。
+    private(set) var activeTasks: [DownloadTask] = []
+    /// 已按标题排序的完成任务，避免视图 body 在进度刷新时反复排序。
+    private(set) var completedTasks: [DownloadTask] = []
     /// 当前正在下载的任务数（用于 Tab 徽标）
     private(set) var activeDownloadCount: Int = 0
     /// 全局下载进度（所有活跃任务的加权平均）
@@ -78,6 +82,15 @@ final class DownloadManager {
         }
     }
 
+    private func refreshTaskLists() {
+        activeTasks = tasks.values
+            .filter { $0.state != .completed }
+            .sorted { $0.title < $1.title }
+        completedTasks = tasks.values
+            .filter { $0.state == .completed }
+            .sorted { $0.title < $1.title }
+    }
+
     // MARK: - Public API
 
     @discardableResult
@@ -90,6 +103,7 @@ final class DownloadManager {
                 state: .completed, isNovel: isNovel
             )
             tasks[comicId] = task
+            refreshTaskLists()
             return false
         }
 
@@ -105,6 +119,7 @@ final class DownloadManager {
         )
         tasks[comicId] = task
         downloadQueue.append(comicId)
+        refreshTaskLists()
         refreshStats()
         processQueue()
         Task { await saveGroupInfoIfNeeded(comicId: comicId) }
@@ -121,8 +136,8 @@ final class DownloadManager {
             let meta = OfflineGroupMeta(
                 id: detail.id, name: detail.name, coverUrl: detail.coverUrl,
                 author: detail.author, description: detail.description,
-                comicCount: detail.comics.count, sortOrder: nil,
-                comicIds: detail.comics.map { $0.id }
+                comicCount: detail.readingUnits.count, sortOrder: nil,
+                comicIds: detail.readingUnits.map { $0.id }
             )
             OfflineFileManager.shared.saveGroup(meta)
         }
@@ -136,9 +151,9 @@ final class DownloadManager {
                 coverUrl: group.coverUrl,
                 author: group.author,
                 description: group.description,
-                comicCount: group.comics.count,
+                comicCount: group.readingUnits.count,
                 sortOrder: nil,
-                comicIds: group.comics.map { $0.id }
+                comicIds: group.readingUnits.map { $0.id }
             )
             OfflineFileManager.shared.saveGroup(meta)
         }
@@ -161,6 +176,7 @@ final class DownloadManager {
             }
         }
         downloadQueue.removeAll { $0 == comicId }
+        refreshTaskLists()
         refreshStats()
     }
 
@@ -168,6 +184,7 @@ final class DownloadManager {
         guard let task = tasks[comicId], task.state == .paused else { return }
         task.state = .waiting
         downloadQueue.append(comicId)
+        refreshTaskLists()
         refreshStats()
         processQueue()
     }
@@ -178,6 +195,7 @@ final class DownloadManager {
         downloadQueue.removeAll { $0 == comicId }
         fileManager.deleteComic(comicId: comicId)
         syncDeleteFromStore(comicId: comicId)
+        refreshTaskLists()
         refreshStats()
     }
 
@@ -196,6 +214,7 @@ final class DownloadManager {
         tasks.removeValue(forKey: comicId)
         fileManager.deleteComic(comicId: comicId)
         syncDeleteFromStore(comicId: comicId)
+        refreshTaskLists()
         refreshStats()
     }
 
@@ -250,6 +269,7 @@ final class DownloadManager {
                 syncToStore(task: task)
             }
         }
+        refreshTaskLists()
         refreshStats()
     }
 
@@ -297,6 +317,7 @@ final class DownloadManager {
         if missingIndices.isEmpty {
             task.state = .completed
             syncToStore(task: task)
+            refreshTaskLists()
             refreshStats()
             processQueue()
             return
@@ -408,7 +429,8 @@ final class DownloadManager {
                     task.state = .failed
                     AppLogger.error("下载失败，部分页面未成功下载: \(task.title)")
                 }
-                
+
+                self.refreshTaskLists()
                 self.refreshStats()
                 self.syncToStore(task: task)
                 self.processQueue()

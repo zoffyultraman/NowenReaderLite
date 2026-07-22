@@ -56,9 +56,6 @@ struct StatsMainContent: View {
         .task {
             await viewModel.loadAll()
         }
-        .onAppear {
-            Task { await viewModel.loadAll() }
-        }
         .onChange(of: api.isOfflineMode) { _, isOffline in
             if isOffline {
                 viewModel.isLoading = false

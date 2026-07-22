@@ -187,7 +187,7 @@ NowenReaderLite/
 | 收藏 | `PUT /api/comics/:id/favorite` |
 | 评分 | `PUT /api/comics/:id/rating` |
 | 阅读状态 | `PUT /api/comics/:id/reading-status` |
-| 合集 | `GET /api/groups` · `GET /api/groups/:id` · `GET /api/groups/comic-map` |
+| 合集/目录作品 | `GET /api/groups` · `GET /api/groups/:id`（`seriesList` + `comics`）· `GET /api/catalog/items` · `GET /api/groups/comic-map` |
 | 统计 | `GET /api/stats` · `GET /api/stats/enhanced` · `GET /api/stats/yearly` |
 | 目标 | `GET /api/goals` · `POST /api/goals` · `DELETE /api/goals` |
 | 阅读活动 | `POST /api/reading/:id/activity` |

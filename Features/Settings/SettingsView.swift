@@ -4,6 +4,7 @@ import SwiftData
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
+    @Query private var cachedComics: [CachedComic]
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
     @State private var coverCacheSize: Int = 0
@@ -299,7 +300,7 @@ struct SettingsView: View {
         }
         .navigationTitle("设置")
         .task {
-            loadCacheSize()
+            await loadCacheSize()
         }
         .alert("退出登录", isPresented: $showLogoutAlert) {
             Button("取消", role: .cancel) {}
@@ -332,9 +333,9 @@ struct SettingsView: View {
         limitOptions.first(where: { $0.value == storageLimitMB })?.label ?? "无限制"
     }
 
-    private func loadCacheSize() {
-        let comics = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "加载缓存大小")
-        metaCacheSize = comics.reduce(0) { total, comic in
+    @MainActor
+    private func loadCacheSize() async {
+        let metaBytes = cachedComics.reduce(0) { total, comic in
             total
                 + (comic.id.utf8.count)
                 + (comic.title.utf8.count)
@@ -343,10 +344,18 @@ struct SettingsView: View {
                 + (comic.type?.utf8.count ?? 0)
                 + 8 + 8 + 1 + 8 + 8 + 8 + 8
         }
-        coverCacheSize = Int(ImageCache.shared.diskSize)
-        novelCacheSize = ChapterCache.totalNovelCacheBytes
-        // 已下载漫画大小
-        offlineSize = OfflineFileManager.shared.totalDiskSize
+        let novelBytes = ChapterCache.totalNovelCacheBytes
+        let diskSizes = await Task.detached(priority: .utility) {
+            (
+                cover: ImageCache.shared.diskSize,
+                offline: OfflineFileManager.shared.totalDiskSize
+            )
+        }.value
+
+        metaCacheSize = metaBytes
+        coverCacheSize = Int(diskSizes.cover)
+        novelCacheSize = novelBytes
+        offlineSize = diskSizes.offline
     }
 
     private func clearCache() {
@@ -354,7 +363,9 @@ struct SettingsView: View {
         modelContext.saveOrLog()
         metaCacheSize = 0
         coverCacheSize = 0
-        ImageCache.shared.clear()
+        Task.detached(priority: .utility) {
+            ImageCache.shared.clear()
+        }
         novelCacheSize = 0
         ChapterCache.totalNovelCacheBytes = 0
         NotificationCenter.default.post(name: .novelChapterCacheClear, object: nil)

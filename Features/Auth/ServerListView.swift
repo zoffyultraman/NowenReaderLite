@@ -4,6 +4,8 @@ import SwiftData
 struct ServerListView: View {
     @Query(sort: [SortDescriptor(\ServerRecord.lastUsed, order: .reverse)])
     private var servers: [ServerRecord]
+    @Query(sort: [SortDescriptor(\SavedAccount.alias)])
+    private var accounts: [SavedAccount]
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -56,8 +58,7 @@ struct ServerListView: View {
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
 
-                                    if let accountId = server.boundAccountId,
-                                       let account = findAccount(id: accountId) {
+                                    if let account = server.boundAccount {
                                         HStack(spacing: 4) {
                                             Image(systemName: "person.fill")
                                                 .font(.caption2)
@@ -76,7 +77,7 @@ struct ServerListView: View {
 
                                 if isSwitching && switchingServerId == server.url {
                                     ProgressView()
-                                        .scaleEffect(0.8)
+                                        .controlSize(.small)
                                 } else if api.serverURL == server.url {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(Color.accentColor)
@@ -120,11 +121,10 @@ struct ServerListView: View {
             ServerBindAccountSheet(
                 server: server,
                 currentBoundId: server.boundAccountId,
-                accounts: allAccounts(),
+                accounts: accounts,
                 onSave: { newBoundId in
                     if let id = newBoundId {
-                        let desc = FetchDescriptor<SavedAccount>(predicate: #Predicate { $0.id == id })
-                        server.boundAccount = modelContext.fetchOrLog(desc, label: "绑定账号").first
+                        server.boundAccount = account(for: id)
                     } else {
                         server.boundAccount = nil
                     }
@@ -136,12 +136,9 @@ struct ServerListView: View {
 
     // MARK: - Helpers
 
-    private func findAccount(id: String) -> SavedAccount? {
-        return modelContext.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "查找账号").first { $0.id == id }
-    }
-
-    private func allAccounts() -> [SavedAccount] {
-        modelContext.fetchOrLog(FetchDescriptor<SavedAccount>(), label: "allAccounts")
+    private func account(for id: String?) -> SavedAccount? {
+        guard let id else { return nil }
+        return accounts.first { $0.id == id }
     }
 
     private func switchToServer(_ record: ServerRecord) {
@@ -167,8 +164,7 @@ struct ServerListView: View {
             // 带超时的切换逻辑
             let result = await withTimeout(switchTimeout) {
                 // 如果有绑定账号，尝试用它自动登录
-                if let accountId = record.boundAccountId,
-                   let account = self.findAccount(id: accountId) {
+                if let account = record.boundAccount {
                     do {
                         _ = try await APIClient.shared.quickLogin(account: account)
                         await MainActor.run {
@@ -218,8 +214,7 @@ struct ServerListView: View {
         Task {
             // cookie 已丢失，尝试用绑定账号重新登录
             if let record = servers.first(where: { $0.url == previousURL }),
-               let accountId = record.boundAccountId,
-               let account = findAccount(id: accountId) {
+               let account = record.boundAccount {
                 do {
                     _ = try await APIClient.shared.quickLogin(account: account)
                     return

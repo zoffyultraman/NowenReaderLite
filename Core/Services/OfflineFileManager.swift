@@ -195,6 +195,8 @@ final class OfflineFileManager {
     }
 }
 
+extension OfflineFileManager: @unchecked Sendable {}
+
 // MARK: - 下载元数据
 
 struct OfflineComicMeta: Codable {

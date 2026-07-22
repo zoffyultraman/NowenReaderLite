@@ -37,8 +37,8 @@ struct HomeView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: String.self) { value in
             if value.hasPrefix("group_") {
-                let id = Int(value.replacingOccurrences(of: "group_", with: "")) ?? 0
-                GroupDetailView(groupId: id)
+                let route = parseGroupRoute(value)
+                GroupDetailView(groupId: route.id, contentType: route.contentType)
             } else if let seriesId = Comic.seriesId(from: value) {
                 SeriesDetailView(seriesId: seriesId)
             } else {
@@ -64,6 +64,25 @@ struct HomeView: View {
         }
         .onChange(of: api.selectedLibraryId) { _, _ in
             Task { await continueReadingVM.load() }
+        }
+    }
+}
+
+private func parseGroupRoute(_ value: String) -> (id: Int, contentType: String?) {
+    let parts = value.split(separator: "_", maxSplits: 2, omittingEmptySubsequences: false)
+    let id = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
+    let contentType = parts.count > 2 && !parts[2].isEmpty ? String(parts[2]) : nil
+    return (id, contentType)
+}
+
+private enum HomeSection: String, CaseIterable {
+    case library
+    case collections
+
+    var title: String {
+        switch self {
+        case .library: return "书库"
+        case .collections: return "合集"
         }
     }
 }
@@ -192,6 +211,7 @@ struct HomeMainContent: View {
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
     @Environment(APIClient.self) private var api
+    @State private var selectedSection: HomeSection = .library
 
     /// 根据选中的书库类型决定内容筛选
     private var selectedLibraryType: String? {
@@ -216,7 +236,20 @@ struct HomeMainContent: View {
                     errorMessage: continueReadingVM.errorMessage
                 )
 
-                LibraryContentView(contentType: selectedLibraryType)
+                Picker("内容", selection: $selectedSection) {
+                    ForEach(HomeSection.allCases, id: \.self) { section in
+                        Text(section.title).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
+
+                if selectedSection == .library {
+                    LibraryContentView(contentType: selectedLibraryType)
+                } else {
+                    CollectionContentView(contentType: selectedLibraryType)
+                }
             }
             .refreshable {
                 await continueReadingVM.load()
@@ -357,20 +390,6 @@ struct ContinueReadingCard: View {
     }
 }
 
-// MARK: - 统一列表项
-
-enum LibraryItem: Identifiable {
-    case comic(Comic)
-    case group(ComicGroup)
-
-    var id: String {
-        switch self {
-        case .comic(let c): return c.id
-        case .group(let g): return "group_\(g.id)"
-        }
-    }
-}
-
 // MARK: - 内容列表（漫画 or 小说）
 
 struct LibraryContentView: View {
@@ -396,8 +415,7 @@ struct LibraryContentView: View {
         }
     }
 
-    /// 合集和散本混在一起，已分组的漫画不重复显示（缓存在 viewModel.displayItems 中）
-    var items: [LibraryItem] { viewModel.displayItems }
+    var comics: [Comic] { viewModel.comics }
 
     private var gridColumns: [GridItem] {
         let count = sizeClass == .regular ? 5 : 3
@@ -416,7 +434,7 @@ struct LibraryContentView: View {
             .padding(.top, 8)
 
             Group {
-                if items.isEmpty && !viewModel.isLoading {
+                if comics.isEmpty && !viewModel.isLoading {
                     emptyState
                 } else if viewMode == .grid {
                     gridView
@@ -476,32 +494,19 @@ struct LibraryContentView: View {
         .networkRefresh { await viewModel.loadAll(refresh: true) }
     }
 
-    // MARK: - Grid
-
     private var gridView: some View {
         let columns = gridColumns
         return LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(items) { item in
-                VStack {
-                    switch item {
-                    case .comic(let comic):
-                        NavigationLink(value: comic.id) {
-                            if comic.isSeriesShelfItem {
-                                SeriesShelfCardView(comic: comic, serverURL: api.serverURL)
-                            } else {
-                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                    case .group(let group):
-                        NavigationLink(value: "group_\(group.id)") {
-                            GroupCardView(group: group, serverURL: api.serverURL)
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
+            ForEach(comics) { comic in
+                NavigationLink(value: comic.id) {
+                    if comic.isSeriesShelfItem {
+                        SeriesShelfCardView(comic: comic, serverURL: api.serverURL)
+                    } else {
+                        ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
                     }
                 }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
             }
 
             if !viewModel.isLoading {
@@ -516,40 +521,23 @@ struct LibraryContentView: View {
         .padding(.vertical, 12)
     }
 
-    // MARK: - List
-
     private var listView: some View {
         LazyVStack(spacing: 0) {
-            ForEach(items) { item in
+            ForEach(comics) { comic in
                 VStack {
-                    switch item {
-                    case .comic(let comic):
-                        NavigationLink(value: comic.id) {
-                            if comic.isSeriesShelfItem {
-                                SeriesShelfListRowView(comic: comic, serverURL: api.serverURL)
-                                    .padding(.horizontal, 16)
-                            } else {
-                                ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
-                                    .padding(.horizontal, 16)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        Divider().padding(.leading, 80)
-                    case .group(let group):
-                        NavigationLink(value: "group_\(group.id)") {
-                            GroupListRowView(group: group, serverURL: api.serverURL)
+                    NavigationLink(value: comic.id) {
+                        if comic.isSeriesShelfItem {
+                            SeriesShelfListRowView(comic: comic, serverURL: api.serverURL)
+                                .padding(.horizontal, 16)
+                        } else {
+                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
                                 .padding(.horizontal, 16)
                         }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        Divider().padding(.leading, 80)
                     }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    Divider().padding(.leading, 80)
                 }
-            }
-
-            if !viewModel.isLoading {
-                Color.clear.onAppear { Task { await viewModel.loadMore() } }
             }
 
             if !viewModel.isLoading {
@@ -566,6 +554,156 @@ struct LibraryContentView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(.tertiary)
             Text(contentType == "novel" ? "还没有小说" : "还没有漫画")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 60)
+    }
+}
+
+// MARK: - 合集列表
+
+struct CollectionContentView: View {
+    let contentType: String?
+    @State private var viewModel = CollectionViewModel()
+    @State private var viewMode: ViewMode = .grid
+    @State private var sortOption: SortOption = .defaultOrder
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
+
+    enum ViewMode { case grid, list }
+    enum SortOption: String, CaseIterable {
+        case defaultOrder, title
+
+        var label: String {
+            switch self {
+            case .defaultOrder: return "默认排序"
+            case .title: return "标题"
+            }
+        }
+    }
+
+    private var gridColumns: [GridItem] {
+        let count = sizeClass == .regular ? 5 : 3
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
+    }
+
+    private func groupNavigationValue(_ group: ComicGroup) -> String {
+        guard let contentType, !contentType.isEmpty else { return "group_\(group.id)" }
+        return "group_\(group.id)_\(contentType)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "rectangle.stack")
+                    .foregroundStyle(Color.accentColor)
+                Text("合集")
+                    .font(.title3.weight(.bold))
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+
+            Group {
+                if viewModel.groups.isEmpty && !viewModel.isLoading {
+                    emptyState
+                } else if viewMode == .grid {
+                    gridView
+                } else {
+                    listView
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    if let iconURL = api.siteIconURL {
+                        AuthenticatedImage(url: iconURL)
+                            .frame(width: 22, height: 22)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    withAnimation { viewMode = viewMode == .grid ? .list : .grid }
+                } label: {
+                    Image(systemName: viewMode == .grid ? "list.bullet" : "square.grid.2x2")
+                }
+
+                Menu {
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        Button {
+                            sortOption = option
+                            viewModel.updateSort(by: option.rawValue, order: "asc")
+                        } label: {
+                            HStack {
+                                Text(option.label)
+                                if sortOption == option { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
+            }
+        }
+        .task {
+            viewModel.setModelContext(modelContext)
+            viewModel.setContentType(contentType)
+        }
+        .onChange(of: api.selectedLibraryId) { _, _ in
+            viewModel.setContentType(contentType)
+        }
+        .networkRefresh { await viewModel.load(refresh: true) }
+    }
+
+    private var gridView: some View {
+        let columns = gridColumns
+        return LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(viewModel.groups) { group in
+                NavigationLink(value: groupNavigationValue(group)) {
+                    GroupCardView(group: group, serverURL: api.serverURL)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+            }
+
+            if viewModel.isLoading {
+                ProgressView().gridCellColumns(gridColumns.count).padding()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var listView: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(viewModel.groups) { group in
+                NavigationLink(value: groupNavigationValue(group)) {
+                    GroupListRowView(group: group, serverURL: api.serverURL)
+                        .padding(.horizontal, 16)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                Divider().padding(.leading, 80)
+            }
+
+            if viewModel.isLoading { ProgressView().padding() }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "rectangle.stack")
+                .font(.system(size: 44))
+                .foregroundStyle(.tertiary)
+            Text("还没有合集")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
