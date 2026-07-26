@@ -605,13 +605,10 @@ final class DetailViewModel {
 
     func updateReadingStatus(_ status: String?) async {
         guard let comic else { return }
-        let shouldClearFinishedProgress = comic.readingStatus == "finished" && status != "finished"
+        let shouldClearFinishedProgress = comic.readingStatus == "finished" && status == nil
         let shouldMarkFinished = status == "finished" && comic.pageCount > 0
         let finishedAt = shouldMarkFinished ? Date() : nil
         do {
-            if shouldClearFinishedProgress {
-                try await api.updateProgress(comicId: comic.id, page: 0, totalPages: comic.pageCount)
-            }
             try await api.updateReadingStatus(comicId: comic.id, status: status ?? "")
             var updatedComic = comic.withReadingStatus(status)
             if shouldClearFinishedProgress {

@@ -208,6 +208,7 @@ struct SeriesDetailResponse: Codable {
 struct SeriesSummary: Codable, Identifiable, Hashable {
     let id: String
     let libraryId: String
+    let contentType: String?
     let rootRelativePath: String
     let title: String
     let sortTitle: String?
