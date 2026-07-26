@@ -748,20 +748,48 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     
     private func preloadPages(around currentIndex: Int) {
         let preloadRange = isDoublePageMode ? (currentIndex-4...currentIndex+5) : (currentIndex-2...currentIndex+2)
+        let upscaleRange = isDoublePageMode ? (currentIndex-2...currentIndex+3) : (currentIndex-1...currentIndex+3)
         for i in preloadRange {
             guard i >= 0 && i < totalPages else { continue }
-            if ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: i)) == nil && preloadingTasks[i] == nil {
-                let task = Task {
-                    if Task.isCancelled { return }
-                    if let _ = OfflineFileManager.shared.loadPageData(comicId: comicId, page: i) { return }
-                    if let url = APIClient.shared.pageImageURL(comicId: comicId, page: i),
-                       let data = try? await URLSession.shared.data(from: url).0,
-                       let image = UIImage(data: data) {
-                        if !Task.isCancelled {
-                            ReaderCacheManager.shared.imageCache.setObject(image, forKey: cacheKey(for: i))
+            let shouldUpscale = upscaleRange.contains(i)
+
+            if let cachedImage = ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: i)) {
+                if shouldUpscale {
+                    startUpscaleIfNeeded(for: i, image: cachedImage)
+                }
+                continue
+            }
+
+            if preloadingTasks[i] == nil {
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    defer {
+                        Task { @MainActor [weak self] in
+                            self?.preloadingTasks[i] = nil
                         }
                     }
-                    preloadingTasks[i] = nil
+                    if Task.isCancelled { return }
+
+                    let image: UIImage?
+                    if let localData = OfflineFileManager.shared.loadPageData(comicId: comicId, page: i),
+                       let localImage = UIImage(data: localData) {
+                        image = localImage
+                    } else if APIClient.shared.isNetworkReachable,
+                              let url = APIClient.shared.pageImageURL(comicId: comicId, page: i),
+                              let (data, _) = try? await URLSession.shared.data(for: APIClient.shared.authenticatedRequest(url: url)),
+                              let remoteImage = UIImage(data: data) {
+                        image = remoteImage
+                    } else {
+                        image = nil
+                    }
+
+                    guard let image, !Task.isCancelled else { return }
+                    ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: i))
+                    if shouldUpscale {
+                        await MainActor.run {
+                            self.startUpscaleIfNeeded(for: i, image: image)
+                        }
+                    }
                 }
                 preloadingTasks[i] = task
             }
