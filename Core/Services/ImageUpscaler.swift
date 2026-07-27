@@ -46,7 +46,8 @@ private struct TileInfo {
 
 // MARK: - Core ML 超分服务
 
-final class ImageUpscaler {
+// 所有推理入口均由 ReaderUpscaleScheduler 串行调用。
+final class ImageUpscaler: @unchecked Sendable {
     static let shared = ImageUpscaler()
 
     private var model4x: MLModel?
@@ -118,6 +119,7 @@ final class ImageUpscaler {
     // MARK: - 超分推理
 
     func upscale(_ image: UIImage, mode: UpscaleMode, keepOriginalSize: Bool = false) throws -> UIImage {
+        try Task.checkCancellation()
         guard mode != .off else { return image }
 
         // 内存上限检查：2048px 以下用 4x，以上降为 2x 防止 OOM
@@ -149,6 +151,8 @@ final class ImageUpscaler {
         case .off:
             return image
         }
+
+        try Task.checkCancellation()
 
         // ✅ RealESRGAN 模型强制使用 TensorType 输入
         let forceTensorInput = (mode == .realesrganAnime4x)
@@ -221,6 +225,7 @@ final class ImageUpscaler {
 
         for gridY in 0..<tilesY {
             for gridX in 0..<tilesX {
+                try Task.checkCancellation()
 
                 // 3a. 有效区域在原图中的坐标和实际尺寸
                 let effX = gridX * stride
@@ -317,6 +322,7 @@ final class ImageUpscaler {
         }
 
         // ✅ 检查是否有太多 tile 失败
+        try Task.checkCancellation()
         let totalTiles = tilesX * tilesY
         if failedTiles == totalTiles {
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))

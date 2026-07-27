@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 书库模型
 
-struct Library: Codable, Identifiable {
+struct Library: Codable, Identifiable, Sendable {
     let id: String
     let name: String
     let type: String           // "comic" | "novel" | "mixed"
@@ -11,6 +11,6 @@ struct Library: Codable, Identifiable {
     let comicCount: Int?
 }
 
-struct LibraryListResponse: Codable {
+struct LibraryListResponse: Codable, Sendable {
     let libraries: [Library]
 }

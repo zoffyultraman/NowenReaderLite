@@ -736,7 +736,7 @@ final class APIClient {
 
     // MARK: - HTTP Methods
 
-    private func get<T: Decodable>(
+    private func get<T: Decodable & Sendable>(
         _ path: String,
         query: [String: String]? = nil
     ) async throws -> T {
@@ -756,24 +756,24 @@ final class APIClient {
 
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
-        return try decode(T.self, from: data)
+        return try await decode(T.self, from: data)
     }
 
-    private func post<T: Decodable, B: Encodable>(
+    private func post<T: Decodable & Sendable, B: Encodable>(
         _ path: String,
         body: B
     ) async throws -> T {
         try await performRequest(path: path, method: "POST", body: body)
     }
 
-    private func put<T: Decodable, B: Encodable>(
+    private func put<T: Decodable & Sendable, B: Encodable>(
         _ path: String,
         body: B
     ) async throws -> T {
         try await performRequest(path: path, method: "PUT", body: body)
     }
 
-    private func performRequest<T: Decodable, B: Encodable>(
+    private func performRequest<T: Decodable & Sendable, B: Encodable>(
         path: String,
         method: String,
         body: B
@@ -795,12 +795,20 @@ final class APIClient {
         if data.isEmpty, let empty = EmptyResponse() as? T {
             return empty
         }
-        return try decode(T.self, from: data)
+        return try await decode(T.self, from: data)
     }
 
-    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    private func decode<T: Decodable & Sendable>(_ type: T.Type, from data: Data) async throws -> T {
         do {
-            return try JSONDecoder().decode(T.self, from: data)
+            let task = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                return try JSONDecoder().decode(T.self, from: data)
+            }
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
         } catch is DecodingError {
             throw APIError.dataFormat
         }
@@ -824,36 +832,36 @@ final class APIClient {
 
 // MARK: - 辅助类型
 
-struct EmptyBody: Encodable {}
+struct EmptyBody: Encodable, Sendable {}
 
-struct EmptyResponse: Decodable {
+struct EmptyResponse: Decodable, Sendable {
     init() {}
     init(from decoder: Decoder) throws {}
 }
 
-struct AuthMeResponse: Decodable {
+struct AuthMeResponse: Decodable, Sendable {
     let user: AuthUser?
     let needsSetup: Bool?
 }
 
-struct AuthLoginResponse: Decodable {
+struct AuthLoginResponse: Decodable, Sendable {
     let user: AuthUser
 }
 
-struct SiteSettingsResponse: Decodable {
+struct SiteSettingsResponse: Decodable, Sendable {
     let siteName: String?
 }
 
-struct RatingBody: Encodable {
+struct RatingBody: Encodable, Sendable {
     let rating: Int?
 }
 
-struct PageBody: Encodable {
+struct PageBody: Encodable, Sendable {
     let page: Int
     let totalPages: Int?
 }
 
-struct ReadingActivityBody: Encodable {
+struct ReadingActivityBody: Encodable, Sendable {
     let clientSessionId: String
     let page: Int
     let totalPages: Int
@@ -863,7 +871,7 @@ struct ReadingActivityBody: Encodable {
     let trackProgress: Bool
 }
 
-struct ComicMapResponse: Decodable {
+struct ComicMapResponse: Decodable, Sendable {
     let map: [String: [Int]]
 }
 

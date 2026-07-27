@@ -34,24 +34,37 @@ struct AuthenticatedImage: View {
     }
 
     private func loadImage() async {
-        guard let url else { return }
+        image = nil
+        guard let url else {
+            isLoading = false
+            return
+        }
         let urlString = url.absoluteString
         let cacheKey = urlString
+        isLoading = true
+
+        defer {
+            if self.url?.absoluteString == urlString {
+                isLoading = false
+            }
+        }
 
         // L1+L2: 先查缓存
-        if let cached = cache.get(cacheKey) {
-            guard self.url?.absoluteString == urlString else { return }
+        if let cached = await cache.image(forKey: cacheKey) {
+            guard !Task.isCancelled, self.url?.absoluteString == urlString else { return }
             self.image = cached
             return
         }
 
-        isLoading = true
         let request = APIClient.shared.authenticatedRequest(url: url)
 
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
-            guard self.url?.absoluteString == urlString else { return }
-            if let img = UIImage(data: data) {
+            guard !Task.isCancelled, self.url?.absoluteString == urlString else { return }
+            if let img = await Task.detached(priority: .userInitiated, operation: {
+                UIImage(data: data)
+            }).value {
+                guard !Task.isCancelled, self.url?.absoluteString == urlString else { return }
                 // 写入缓存
                 cache.set(img, forKey: cacheKey)
                 withAnimation(.easeIn(duration: 0.15)) {
@@ -59,10 +72,7 @@ struct AuthenticatedImage: View {
                 }
             }
         } catch {
-            guard self.url?.absoluteString == urlString else { return }
-        }
-        if self.url?.absoluteString == urlString {
-            isLoading = false
+            guard !Task.isCancelled, self.url?.absoluteString == urlString else { return }
         }
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-struct ReadingGroupContext {
+struct ReadingGroupContext: Sendable {
     let groupId: Int
     let volumeIds: [String]
     let currentIndex: Int
@@ -16,7 +16,7 @@ struct ReadingGroupContext {
     }
 }
 
-struct ComicGroup: Codable, Identifiable, Hashable {
+struct ComicGroup: Codable, Identifiable, Hashable, Sendable {
     let id: Int
     let name: String
     let coverUrl: String?
@@ -28,11 +28,11 @@ struct ComicGroup: Codable, Identifiable, Hashable {
     let contentType: String?
 }
 
-struct GroupListResponse: Codable {
+struct GroupListResponse: Codable, Sendable {
     let groups: [ComicGroup]
 }
 
-struct GroupDetailResponse: Codable {
+struct GroupDetailResponse: Codable, Sendable {
     let id: Int
     let name: String
     let coverUrl: String?
@@ -41,6 +41,9 @@ struct GroupDetailResponse: Codable {
     let comicCount: Int?
     let seriesList: [GroupSeriesItem]
     let comics: [GroupComicItem]
+    let sortedSeriesList: [GroupSeriesItem]
+    let sortedComics: [GroupComicItem]
+    let readingUnits: [GroupComicItem]
 
     enum CodingKeys: String, CodingKey {
         case id, name, coverUrl, author, description, comicCount, seriesList, comics
@@ -64,6 +67,12 @@ struct GroupDetailResponse: Codable {
         self.comicCount = comicCount
         self.seriesList = seriesList
         self.comics = comics
+        sortedSeriesList = Self.sortSeries(seriesList)
+        sortedComics = Self.sortComics(comics)
+        readingUnits = Self.makeReadingUnits(
+            seriesList: sortedSeriesList,
+            comics: sortedComics
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -76,9 +85,15 @@ struct GroupDetailResponse: Codable {
         comicCount = try container.decodeIfPresent(Int.self, forKey: .comicCount)
         seriesList = try container.decodeIfPresent([GroupSeriesItem].self, forKey: .seriesList) ?? []
         comics = try container.decodeIfPresent([GroupComicItem].self, forKey: .comics) ?? []
+        sortedSeriesList = Self.sortSeries(seriesList)
+        sortedComics = Self.sortComics(comics)
+        readingUnits = Self.makeReadingUnits(
+            seriesList: sortedSeriesList,
+            comics: sortedComics
+        )
     }
 
-    var sortedComics: [GroupComicItem] {
+    private static func sortComics(_ comics: [GroupComicItem]) -> [GroupComicItem] {
         comics.sorted {
             if ($0.sortIndex ?? Int.max) != ($1.sortIndex ?? Int.max) {
                 return ($0.sortIndex ?? Int.max) < ($1.sortIndex ?? Int.max)
@@ -87,7 +102,7 @@ struct GroupDetailResponse: Codable {
         }
     }
 
-    var sortedSeriesList: [GroupSeriesItem] {
+    private static func sortSeries(_ seriesList: [GroupSeriesItem]) -> [GroupSeriesItem] {
         seriesList.sorted {
             if ($0.sortIndex ?? Int.max) != ($1.sortIndex ?? Int.max) {
                 return ($0.sortIndex ?? Int.max) < ($1.sortIndex ?? Int.max)
@@ -96,15 +111,18 @@ struct GroupDetailResponse: Codable {
         }
     }
 
-    var readingUnits: [GroupComicItem] {
+    private static func makeReadingUnits(
+        seriesList: [GroupSeriesItem],
+        comics: [GroupComicItem]
+    ) -> [GroupComicItem] {
         var seen = Set<String>()
         var units: [GroupComicItem] = []
-        for series in sortedSeriesList {
+        for series in seriesList {
             for comic in series.sortedComics where seen.insert(comic.id).inserted {
                 units.append(comic)
             }
         }
-        for comic in sortedComics where seen.insert(comic.id).inserted {
+        for comic in comics where seen.insert(comic.id).inserted {
             units.append(comic)
         }
         return units
@@ -121,7 +139,7 @@ struct GroupDetailResponse: Codable {
     }
 }
 
-struct GroupSeriesItem: Codable, Identifiable, Hashable {
+struct GroupSeriesItem: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let rootRelativePath: String?
@@ -129,6 +147,7 @@ struct GroupSeriesItem: Codable, Identifiable, Hashable {
     let coverUrl: String?
     let sortIndex: Int?
     let comics: [GroupComicItem]
+    let sortedComics: [GroupComicItem]
 
     enum CodingKeys: String, CodingKey {
         case id, title, rootRelativePath, coverComicId, coverUrl, sortIndex, comics
@@ -150,6 +169,7 @@ struct GroupSeriesItem: Codable, Identifiable, Hashable {
         self.coverUrl = coverUrl
         self.sortIndex = sortIndex
         self.comics = comics
+        sortedComics = Self.sortComics(comics)
     }
 
     init(from decoder: Decoder) throws {
@@ -161,9 +181,10 @@ struct GroupSeriesItem: Codable, Identifiable, Hashable {
         coverUrl = try container.decodeIfPresent(String.self, forKey: .coverUrl)
         sortIndex = try container.decodeIfPresent(Int.self, forKey: .sortIndex)
         comics = try container.decodeIfPresent([GroupComicItem].self, forKey: .comics) ?? []
+        sortedComics = Self.sortComics(comics)
     }
 
-    var sortedComics: [GroupComicItem] {
+    private static func sortComics(_ comics: [GroupComicItem]) -> [GroupComicItem] {
         comics.sorted {
             if ($0.sortIndex ?? Int.max) != ($1.sortIndex ?? Int.max) {
                 return ($0.sortIndex ?? Int.max) < ($1.sortIndex ?? Int.max)
@@ -173,7 +194,7 @@ struct GroupSeriesItem: Codable, Identifiable, Hashable {
     }
 }
 
-struct GroupComicItem: Codable, Identifiable, Hashable {
+struct GroupComicItem: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let filename: String?
     let title: String
@@ -195,17 +216,17 @@ struct GroupComicItem: Codable, Identifiable, Hashable {
 
 // MARK: - 目录作品
 
-struct SeriesListResponse: Codable {
+struct SeriesListResponse: Codable, Sendable {
     let series: [SeriesSummary]
 }
 
-struct SeriesDetailResponse: Codable {
+struct SeriesDetailResponse: Codable, Sendable {
     let series: SeriesSummary
     let sections: [SeriesSection]
     let unsectioned: [SeriesItem]
 }
 
-struct SeriesSummary: Codable, Identifiable, Hashable {
+struct SeriesSummary: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let libraryId: String
     let contentType: String?
@@ -234,7 +255,7 @@ struct SeriesSummary: Codable, Identifiable, Hashable {
 
 // MARK: - 合集选择器逻辑作品
 
-struct CatalogItemListResponse: Codable {
+struct CatalogItemListResponse: Codable, Sendable {
     let items: [CatalogItem]
     let page: Int
     let pageSize: Int
@@ -242,7 +263,7 @@ struct CatalogItemListResponse: Codable {
     let totalPages: Int
 }
 
-struct CatalogItem: Codable, Identifiable, Hashable {
+struct CatalogItem: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let kind: String
     let title: String
@@ -259,7 +280,7 @@ private extension String {
     }
 }
 
-struct SeriesSection: Codable, Identifiable {
+struct SeriesSection: Codable, Identifiable, Sendable {
     let id: String
     let title: String
     let relativePath: String
@@ -270,7 +291,7 @@ struct SeriesSection: Codable, Identifiable {
     let items: [SeriesItem]
 }
 
-struct SeriesItem: Codable, Identifiable {
+struct SeriesItem: Codable, Identifiable, Sendable {
     let comic: Comic
     let sectionId: String?
     let sortIndex: Int

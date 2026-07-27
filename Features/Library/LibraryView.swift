@@ -248,25 +248,28 @@ final class LibraryViewModel {
         if !(api.isOfflineMode && !comics.isEmpty) {
             isLoading = true
         }
-        await loadComics(refresh: refresh)
+        _ = await loadComics(refresh: refresh, version: version)
         // 如果已被更新的 loadAll 取代，不覆盖状态
         guard version == loadVersion else { return }
         isLoading = false
     }
 
-    func loadComics(refresh: Bool = false) async {
+    private func loadComics(refresh: Bool = false, version: Int) async -> Bool {
+        guard version == loadVersion else { return false }
         if refresh { currentPage = 1 }
         let useSeriesView = contentType != "novel"
         if useSeriesView { currentPage = 1 }
 
         // 离线模式或网络不可达：直接从缓存加载已下载漫画（不等 API 超时）
         if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
+            let downloadedIds = await completedDownloadedIds()
+            guard !Task.isCancelled, version == loadVersion else { return false }
             if let context = modelContext {
                 let cached = loadFromCache(context: context)
-                let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
                 comics = cached.filter { downloadedIds.contains($0.id) && matchesContentType($0) }
             }
-            return
+            hasMore = false
+            return true
         }
 
         // 首次加载时先显示缓存数据
@@ -287,6 +290,7 @@ final class LibraryViewModel {
                 excludeGrouped: nil,
                 seriesView: useSeriesView
             )
+            guard !Task.isCancelled, version == loadVersion else { return false }
             if refresh || currentPage == 1 {
                 comics = resp.comics
             } else {
@@ -295,17 +299,30 @@ final class LibraryViewModel {
             hasMore = useSeriesView ? false : currentPage < resp.totalPages
 
             // 更新缓存
-            if let context = modelContext, (refresh || currentPage == 1) {
+            if let context = modelContext {
                 saveToCache(resp.comics, context: context)
             }
+            return true
         } catch {
-            AppLogger.log("网络不可用，从本地缓存加载书架")
-            // API 失败：只显示已下载的漫画
-            if let context = modelContext {
-                let cached = loadFromCache(context: context)
-                let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-                comics = cached.filter { downloadedIds.contains($0.id) && matchesContentType($0) }
+            guard !isCancellation(error), version == loadVersion else {
+                return false
             }
+            if currentPage == 1 {
+                AppLogger.log("网络不可用，从本地缓存加载书架")
+                let downloadedIds = await completedDownloadedIds()
+                guard !Task.isCancelled, version == loadVersion else {
+                    return false
+                }
+                if let context = modelContext {
+                    let cached = loadFromCache(context: context)
+                    comics = cached.filter {
+                        downloadedIds.contains($0.id) && matchesContentType($0)
+                    }
+                }
+            } else {
+                AppLogger.error("加载书架第 \(currentPage) 页失败: \(error)")
+            }
+            return false
         }
     }
 
@@ -323,10 +340,17 @@ final class LibraryViewModel {
     }
 
     private func saveToCache(_ comics: [Comic], context: ModelContext) {
+        let existingComics = context.fetchOrLog(
+            FetchDescriptor<CachedComic>(),
+            label: "批量查询缓存漫画"
+        )
+        var existingById: [String: CachedComic] = [:]
+        for cached in existingComics {
+            existingById[cached.id] = cached
+        }
+
         for comic in comics where !comic.isSeriesShelfItem {
-            let id = comic.id
-            let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
-            if let first = context.fetchOrLog(descriptor, label: "更新缓存漫画").first {
+            if let first = existingById[comic.id] {
                 // 更新已有记录
                 first.title = comic.title
                 first.author = comic.author
@@ -341,7 +365,9 @@ final class LibraryViewModel {
                 first.cachedAt = Date()
             } else {
                 // 插入新记录
-                context.insert(CachedComic.from(comic))
+                let cached = CachedComic.from(comic)
+                context.insert(cached)
+                existingById[comic.id] = cached
             }
         }
         context.saveOrLog()
@@ -349,23 +375,34 @@ final class LibraryViewModel {
 
     func loadMore() async {
         guard hasMore, !isLoading else { return }
+        loadVersion += 1
+        let version = loadVersion
         isLoading = true
+        let previousPage = currentPage
         currentPage += 1
-        await loadComics()
+        let succeeded = await loadComics(version: version)
+        guard version == loadVersion else { return }
+        if !succeeded {
+            currentPage = previousPage
+        }
         isLoading = false
     }
 
-    func updateSort(by: String, order: String) {
-        sortBy = by
-        sortOrder = order
-        Task {
-            await loadComics(refresh: true)
-        }
+    func configure(contentType: String?, sortBy: String, sortOrder: String) async {
+        self.contentType = contentType
+        self.sortBy = sortBy
+        self.sortOrder = sortOrder
+        await loadAll(refresh: true)
     }
 
-    func setContentType(_ type: String?) {
-        contentType = type
-        Task { await loadAll(refresh: true) }
+    private func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled || (error as? URLError)?.code == .cancelled
+    }
+
+    private func completedDownloadedIds() async -> Set<String> {
+        await Task.detached(priority: .utility) {
+            Set(OfflineFileManager.shared.completedDownloads().keys)
+        }.value
     }
 }
 
@@ -399,17 +436,24 @@ final class CollectionViewModel {
 
         let loaded: [ComicGroup]
         if api.isOfflineMode || !api.isNetworkReachable {
-            loaded = loadOfflineGroups()
+            let cachedTypes = cachedComicTypesById()
+            loaded = await loadOfflineGroups(cachedTypes: cachedTypes)
         } else {
-            loaded = await loadRemoteGroups()
+            guard let remoteGroups = await loadRemoteGroups() else {
+                if version == loadVersion {
+                    isLoading = false
+                }
+                return
+            }
+            loaded = remoteGroups
         }
 
-        guard version == loadVersion else { return }
+        guard !Task.isCancelled, version == loadVersion else { return }
         groups = sortedGroups(loaded)
         isLoading = false
     }
 
-    private func loadRemoteGroups() async -> [ComicGroup] {
+    private func loadRemoteGroups() async -> [ComicGroup]? {
         do {
             errorMessage = nil
             if contentType == nil {
@@ -421,20 +465,31 @@ final class CollectionViewModel {
             }
             return try await api.fetchGroups(contentType: contentType)
         } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                return nil
+            }
             AppLogger.error("加载合集失败: \(error)")
             errorMessage = error.localizedDescription
             return []
         }
     }
 
-    private func loadOfflineGroups() -> [ComicGroup] {
-        let local = OfflineFileManager.shared.loadGroups()
-        let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
-        let cachedMap = cachedComicsById()
+    private func loadOfflineGroups(
+        cachedTypes: [String: String?]
+    ) async -> [ComicGroup] {
+        let snapshot = await Task.detached(priority: .utility) {
+            OfflineGroupsLoadSnapshot(
+                groups: OfflineFileManager.shared.loadGroups(),
+                downloadedIds: Set(
+                    OfflineFileManager.shared.completedDownloads().keys
+                )
+            )
+        }.value
 
-        return local.compactMap { group in
+        return snapshot.groups.compactMap { group in
             let matchingIds = group.comicIds.filter { comicId in
-                downloadedIds.contains(comicId) && matchesContentType(cachedMap[comicId])
+                snapshot.downloadedIds.contains(comicId)
+                    && matchesContentType(cachedTypes[comicId] ?? nil)
             }
             guard !matchingIds.isEmpty else { return nil }
             return ComicGroup(
@@ -451,19 +506,19 @@ final class CollectionViewModel {
         }
     }
 
-    private func cachedComicsById() -> [String: CachedComic] {
+    private func cachedComicTypesById() -> [String: String?] {
         guard let modelContext else { return [:] }
         let cached = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载合集缓存")
-        var map: [String: CachedComic] = [:]
+        var map: [String: String?] = [:]
         for comic in cached {
-            map[comic.id] = comic
+            map[comic.id] = comic.type
         }
         return map
     }
 
-    private func matchesContentType(_ cached: CachedComic?) -> Bool {
+    private func matchesContentType(_ type: String?) -> Bool {
         guard let contentType else { return true }
-        guard let type = cached?.type, !type.isEmpty else { return contentType == "comic" }
+        guard let type, !type.isEmpty else { return contentType == "comic" }
         return type == contentType
     }
 
@@ -495,8 +550,13 @@ final class CollectionViewModel {
         groups = sortedGroups(groups)
     }
 
-    func setContentType(_ type: String?) {
+    func setContentType(_ type: String?) async {
         contentType = type
-        Task { await load(refresh: true) }
+        await load(refresh: true)
     }
+}
+
+private struct OfflineGroupsLoadSnapshot: Sendable {
+    let groups: [OfflineGroupMeta]
+    let downloadedIds: Set<String>
 }

@@ -19,110 +19,137 @@ struct NovelReaderView: View {
     @State private var restoredChapter = -1
 
     var body: some View {
-        ZStack {
-            backgroundForTheme.ignoresSafeArea()
+        GeometryReader { geometry in
+            let paginationSize = CGSize(
+                width: max(1, geometry.size.width - 32),
+                height: max(
+                    1,
+                    geometry.size.height
+                        - geometry.safeAreaInsets.top
+                        - 32
+                )
+            )
 
-            if viewModel.isLoading {
-                ProgressView()
-            } else if !viewModel.pages.isEmpty {
-                NovelPager(
-                    pages: viewModel.pages,
-                    fontSize: fontSize,
-                    darkMode: viewModel.darkMode,
-                    chapterTitle: viewModel.currentChapterTitle,
-                    initialPage: currentPage,
-                    onPageChanged: { page in
-                        currentPage = page
-                        // 尝试追加下一章（无缝翻页）
-                        viewModel.tryAppendNextChapter(currentPage: page, fontSize: fontSize)
-                        // 检测是否已翻入下一章
-                        viewModel.advanceToNextChapter(currentPage: page, fontSize: fontSize)
-                        viewModel.updateActivityProgress()
+            ZStack {
+                backgroundForTheme.ignoresSafeArea()
 
-                        // 保存记录（使用相对页码）
-                        let relPage = viewModel.relativePageInChapter(page)
-                        recordManager.save(
-                            comicId: viewModel.currentComicId,
-                            chapter: viewModel.currentChapter,
-                            page: relPage
-                        )
-                    },
-                    onReachEnd: {
-                        // 兜底：如果追加还没完成，手动切章
-                        if !viewModel.nextChapterAppended {
+                if viewModel.isLoading {
+                    ProgressView()
+                } else if !viewModel.pages.isEmpty {
+                    NovelPager(
+                        pages: viewModel.pages,
+                        fontSize: fontSize,
+                        darkMode: viewModel.darkMode,
+                        chapterTitle: viewModel.currentChapterTitle,
+                        paginationGeneration: viewModel.paginationGeneration,
+                        initialPage: currentPage,
+                        isPageInteractionEnabled: !showOverlay,
+                        onPageChanged: { page in
+                            currentPage = page
+                            // 尝试追加下一章（无缝翻页）
+                            viewModel.tryAppendNextChapter(currentPage: page, fontSize: fontSize)
+                            // 检测是否已翻入下一章
+                            viewModel.advanceToNextChapter(currentPage: page, fontSize: fontSize)
+                            viewModel.updateActivityProgress()
+
+                            // 保存记录（使用相对页码）
+                            let relPage = viewModel.relativePageInChapter(page)
+                            recordManager.save(
+                                comicId: viewModel.currentComicId,
+                                chapter: viewModel.currentChapter,
+                                page: relPage
+                            )
+                        },
+                        onReachEnd: {
+                            // 兜底：如果追加还没完成，手动切章
+                            if !viewModel.nextChapterAppended {
+                                showOverlay = false
+                                saveRecord()
+                                currentPage = 0
+                                Task { await viewModel.nextChapter(fontSize: fontSize) }
+                            }
+                        },
+                        onSwipeToPrev: {
                             showOverlay = false
-                            saveRecord()
-                            currentPage = 0
-                            Task { await viewModel.nextChapter(fontSize: fontSize) }
+                            let currentComicId = viewModel.currentComicId
+                            let currentChapter = viewModel.currentChapter
+                            recordManager.save(comicId: currentComicId, chapter: currentChapter, page: currentPage)
+                            currentPage = 99999
+                            Task { await viewModel.prevChapter(fontSize: fontSize) }
                         }
-                    },
-                    onSwipeToPrev: {
+                    )
+                    .ignoresSafeArea()
+                }
+            }
+            .task {
+                // 从 UserDefaults 恢复字号设置（避免在 @State 初始化时产生副作用）
+                fontSize = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
+                viewModel.setPaginationSize(paginationSize)
+                // 以本地记录为准，没有记录则用 initialChapter
+                let savedChapter = recordManager.load(comicId: viewModel.currentComicId.isEmpty ? comicId : viewModel.currentComicId)?.chapter ?? initialChapter
+                await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize, groupContext: groupContext)
+                restorePosition()
+            }
+            .onDisappear {
+                saveRecord()
+                Task { await viewModel.finishActivity() }
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    viewModel.resumeActivity()
+                } else if newPhase == .background || newPhase == .inactive {
+                    saveRecord()
+                    viewModel.pauseActivity()
+                    Task { await viewModel.saveProgress() }
+                }
+            }
+            .onChange(of: paginationSize) { _, newSize in
+                Task {
+                    await viewModel.updatePaginationSize(newSize, fontSize: fontSize)
+                }
+            }
+            .onChange(of: viewModel.paginationGeneration) { _, _ in
+                restorePosition()
+            }
+            .onChange(of: fontSize) { _, newValue in
+                UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelFontSize)
+            }
+            .overlay {
+                Color.clear
+                    .frame(width: max(88, geometry.size.width * 0.4))
+                    .contentShape(Rectangle())
+                    .onTapGesture { showOverlay.toggle() }
+            }
+            .overlay(alignment: .top) {
+                topOverlay
+                    .opacity(showOverlay ? 1 : 0)
+                    .allowsHitTesting(showOverlay)
+            }
+            .overlay(alignment: .bottom) {
+                bottomOverlay
+                    .opacity(showOverlay ? 1 : 0)
+                    .allowsHitTesting(showOverlay)
+            }
+            .sheet(isPresented: $showChapterList) {
+                ChapterListView(
+                    totalChapters: viewModel.totalChapters,
+                    currentChapter: viewModel.currentChapter,
+                    chapterTitles: viewModel.chapterTitles,
+                    onSelect: { index in
+                        showChapterList = false
                         showOverlay = false
-                        let currentComicId = viewModel.currentComicId
-                        let currentChapter = viewModel.currentChapter
-                        recordManager.save(comicId: currentComicId, chapter: currentChapter, page: currentPage)
-                        currentPage = 99999
-                        Task { await viewModel.prevChapter(fontSize: fontSize) }
+                        saveRecord()
+                        currentPage = 0
+                        Task { await viewModel.load(comicId: viewModel.currentComicId, chapter: index, fontSize: fontSize) }
                     }
                 )
-                .ignoresSafeArea()
             }
         }
+        .ignoresSafeArea(.container, edges: .bottom)
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .task {
-            // 从 UserDefaults 恢复字号设置（避免在 @State 初始化时产生副作用）
-            fontSize = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
-            // 以本地记录为准，没有记录则用 initialChapter
-            let savedChapter = recordManager.load(comicId: viewModel.currentComicId.isEmpty ? comicId : viewModel.currentComicId)?.chapter ?? initialChapter
-            await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize, groupContext: groupContext)
-            restorePosition()
-        }
-        .onDisappear {
-            saveRecord()
-            Task { await viewModel.finishActivity() }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                viewModel.resumeActivity()
-            } else if newPhase == .background || newPhase == .inactive {
-                saveRecord()
-                viewModel.pauseActivity()
-                Task { await viewModel.saveProgress() }
-            }
-        }
-        .onChange(of: viewModel.paginationGeneration) { _, _ in
-            restorePosition()
-        }
-        .onChange(of: fontSize) { _, newValue in
-            UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelFontSize)
-            viewModel.repaginate(fontSize: newValue)
-        }
-        .onTapGesture { showOverlay.toggle() }
-        .overlay(alignment: .top) {
-            topOverlay
-                .opacity(showOverlay ? 1 : 0)
-                .allowsHitTesting(showOverlay)
-        }
-        .overlay(alignment: .bottom) {
-            bottomOverlay
-                .opacity(showOverlay ? 1 : 0)
-                .allowsHitTesting(showOverlay)
-        }
-        .sheet(isPresented: $showChapterList) {
-            ChapterListView(
-                totalChapters: viewModel.totalChapters,
-                currentChapter: viewModel.currentChapter,
-                chapterTitles: viewModel.chapterTitles,
-                onSelect: { index in
-                    showChapterList = false
-                    showOverlay = false
-                    saveRecord()
-                    currentPage = 0
-                    Task { await viewModel.load(comicId: viewModel.currentComicId, chapter: index, fontSize: fontSize) }
-                }
-            )
-        }
+        .toolbarBackground(.hidden, for: .tabBar)
+        .readerStatusBarHidden(true)
     }
 
     // MARK: - 恢复阅读位置
@@ -130,6 +157,7 @@ struct NovelReaderView: View {
     private func restorePosition() {
         let count = viewModel.pages.count
         guard count > 0 else { return }
+        currentPage = min(max(currentPage, 0), count - 1)
 
         guard restoredChapter != viewModel.currentChapter else { return }
         restoredChapter = viewModel.currentChapter
@@ -175,8 +203,14 @@ struct NovelReaderView: View {
     private var bottomOverlay: some View {
         NovelBottomOverlay(
             fontSize: $fontSize,
-            isAtChapterEnd: currentPage >= (viewModel.chapterPageOffsets[viewModel.currentChapter] ?? 0) + viewModel.currentChapterPageCount() - 1,
+            darkMode: viewModel.darkMode,
+            isAtChapterEnd: currentPage
+                >= (viewModel.chapterPageOffsets[viewModel.currentChapter] ?? 0)
+                    + viewModel.currentChapterPageCount() - 1,
             hasPrevChapter: viewModel.currentChapter > 0 || viewModel.groupContext?.previousVolumeId != nil,
+            onFontSizeCommit: {
+                Task { await viewModel.repaginate(fontSize: fontSize) }
+            },
             onPrevChapter: {
                 showOverlay = false
                 saveRecord()
@@ -209,10 +243,9 @@ struct NovelTopOverlay: View {
             Button(action: onDismiss) {
                 Image(systemName: "chevron.left")
                     .font(.title3.weight(.medium))
-                    .foregroundStyle(darkMode ? .white : .primary)
-                    .padding(10)
-                    .background(.ultraThinMaterial.opacity(0.4), in: Circle())
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(.plain)
 
             Spacer()
 
@@ -221,27 +254,25 @@ struct NovelTopOverlay: View {
                     .font(.callout.weight(.medium))
                 Text("\(relativePage) / \(chapterPageCount)")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .opacity(0.72)
             }
-            .foregroundStyle(darkMode ? .white : .primary)
 
             Spacer()
 
             Button(action: onToggleDarkMode) {
                 Image(systemName: darkMode ? "sun.max" : "moon")
                     .font(.title3)
-                    .foregroundStyle(darkMode ? .white : .primary)
-                    .padding(10)
-                    .background(.ultraThinMaterial.opacity(0.4), in: Circle())
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(.plain)
         }
+        .foregroundStyle(darkMode ? Color.white : Color.primary)
+        .shadow(
+            color: darkMode ? Color.black.opacity(0.8) : Color.white.opacity(0.95),
+            radius: 2
+        )
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .background(
-            (darkMode ? Color.black : Color.white)
-                .opacity(0.8)
-                .ignoresSafeArea(edges: .top)
-        )
     }
 }
 
@@ -249,8 +280,10 @@ struct NovelTopOverlay: View {
 
 struct NovelBottomOverlay: View {
     @Binding var fontSize: Double
+    let darkMode: Bool
     let isAtChapterEnd: Bool
     let hasPrevChapter: Bool
+    let onFontSizeCommit: () -> Void
     let onPrevChapter: () -> Void
     let onNextChapter: () -> Void
     let onShowChapterList: () -> Void
@@ -259,12 +292,21 @@ struct NovelBottomOverlay: View {
         VStack(spacing: 12) {
             HStack {
                 Text("A").font(.caption2)
-                Slider(value: $fontSize, in: 12...30, step: 1)
+                Slider(
+                    value: $fontSize,
+                    in: 12...30,
+                    step: 1,
+                    onEditingChanged: { isEditing in
+                        if !isEditing {
+                            onFontSizeCommit()
+                        }
+                    }
+                )
                     .tint(Color.accentColor)
                 Text("A").font(.title3.weight(.bold))
                 Text("\(Int(fontSize))")
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .opacity(0.72)
                     .frame(width: 28)
             }
             .padding(.horizontal, 24)
@@ -273,7 +315,9 @@ struct NovelBottomOverlay: View {
                 Button(action: onPrevChapter) {
                     Label("上一章", systemImage: "chevron.left")
                         .font(.subheadline)
+                        .frame(minHeight: 44)
                 }
+                .buttonStyle(.plain)
                 .disabled(!hasPrevChapter)
 
                 Spacer()
@@ -281,25 +325,33 @@ struct NovelBottomOverlay: View {
                 Button(action: onShowChapterList) {
                     Label("目录", systemImage: "list.bullet")
                         .font(.subheadline)
+                        .frame(minHeight: 44)
                 }
+                .buttonStyle(.plain)
 
                 Spacer()
 
                 Button(action: onNextChapter) {
                     Label("下一章", systemImage: "chevron.right")
                         .font(isAtChapterEnd ? .subheadline.weight(.semibold) : .subheadline)
-                        .foregroundStyle(isAtChapterEnd ? .white : .primary)
-                        .padding(.horizontal, isAtChapterEnd ? 16 : 0)
-                        .padding(.vertical, isAtChapterEnd ? 8 : 0)
-                        .background(isAtChapterEnd ? Color.accentColor : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .foregroundStyle(isAtChapterEnd ? Color.accentColor : controlForeground)
+                        .frame(minHeight: 44)
                 }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 24)
         }
+        .foregroundStyle(controlForeground)
+        .shadow(
+            color: darkMode ? Color.black.opacity(0.8) : Color.white.opacity(0.95),
+            radius: 2
+        )
         .padding(.vertical, 16)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial.opacity(0.8))
+    }
+
+    private var controlForeground: Color {
+        darkMode ? .white : .primary
     }
 }
 
@@ -359,7 +411,9 @@ struct NovelPager: UIViewControllerRepresentable {
     let fontSize: Double
     let darkMode: Bool
     let chapterTitle: String?
+    let paginationGeneration: Int
     let initialPage: Int
+    let isPageInteractionEnabled: Bool
     let onPageChanged: (Int) -> Void
     let onReachEnd: () -> Void
     let onSwipeToPrev: () -> Void
@@ -377,22 +431,31 @@ struct NovelPager: UIViewControllerRepresentable {
         pvc.dataSource = context.coordinator
         pvc.delegate = context.coordinator
         pvc.isDoubleSided = false
+        pvc.view.isUserInteractionEnabled = isPageInteractionEnabled
+        pvc.view.backgroundColor = pageBackgroundColor
         return pvc
     }
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
+        pvc.view.isUserInteractionEnabled = isPageInteractionEnabled
+        pvc.view.backgroundColor = pageBackgroundColor
         let coord = context.coordinator
         coord.parent = self
         guard !pages.isEmpty else { return }
 
         let oldCount = coord.cachedVCs.count
         let newCount = pages.count
+        let renderConfiguration = Coordinator.RenderConfiguration(
+            fontSize: fontSize,
+            darkMode: darkMode
+        )
+        let configurationChanged = coord.renderConfiguration != renderConfiguration
 
         // 检测是否为追加（新页面以旧页面开头，仅尾部新增）
         let isAppend = newCount > oldCount
             && oldCount > 0
-            && coord.cachedVCs.first?.pageText == pages.first
-            && coord.cachedVCs.last?.pageText == pages[oldCount - 1]
+            && !configurationChanged
+            && coord.paginationGeneration == paginationGeneration
 
         if isAppend {
             // 追加模式：只添加新页面的 VC，不重置当前位置
@@ -410,13 +473,11 @@ struct NovelPager: UIViewControllerRepresentable {
             // 不调用 setViewControllers，保持当前翻页位置
         } else {
             // 完全替换（切章、字号变化等）
-            let pagesChanged = oldCount != newCount
-                || coord.cachedVCs.first?.pageText != pages.first
-                || coord.cachedVCs.last?.pageText != pages.last
+            let pagesChanged = coord.paginationGeneration != paginationGeneration
 
             let pageJumped = initialPage != coord.currentIndex
 
-            if pagesChanged {
+            if pagesChanged || configurationChanged {
                 coord.rebuildCache(pages: pages, fontSize: fontSize, darkMode: darkMode, title: chapterTitle)
                 let page = min(initialPage, coord.cachedVCs.count - 1)
                 if page >= 0, page < coord.cachedVCs.count {
@@ -433,16 +494,29 @@ struct NovelPager: UIViewControllerRepresentable {
         }
     }
 
+    private var pageBackgroundColor: UIColor {
+        darkMode ? UIColor(white: 0.1, alpha: 1) : .systemBackground
+    }
+
     class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         var parent: NovelPager
         var cachedVCs: [NovelTextPageVC] = []
         var currentIndex: Int = 0
+        var paginationGeneration = -1
+        var renderConfiguration: RenderConfiguration?
+
+        struct RenderConfiguration: Equatable {
+            let fontSize: Double
+            let darkMode: Bool
+        }
 
         init(_ parent: NovelPager) {
             self.parent = parent
         }
 
         func rebuildCache(pages: [String], fontSize: Double, darkMode: Bool, title: String?) {
+            paginationGeneration = parent.paginationGeneration
+            renderConfiguration = RenderConfiguration(fontSize: fontSize, darkMode: darkMode)
             cachedVCs = pages.enumerated().map { index, text in
                 NovelTextPageVC(
                     text: text,
@@ -536,10 +610,13 @@ class NovelTextPageVC: UIViewController {
         view.addSubview(label)
 
         NSLayoutConstraint.activate([
-            label.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            label.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -20),
+            label.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            label.bottomAnchor.constraint(
+                lessThanOrEqualTo: view.bottomAnchor,
+                constant: -16
+            ),
         ])
     }
 }
@@ -572,12 +649,17 @@ final class NovelReaderViewModel {
     /// 下一章页面是否已追加
     private(set) var nextChapterAppended = false
 
-    var plainText: String { chapterContent?.content ?? "" }
     private var comicId = ""
     private let api = APIClient.shared
     private let cache = ChapterCache()
     private var activityTracker: ReadingActivityTracker?
     @ObservationIgnored private var cacheObserver: Any?
+    @ObservationIgnored private var paginationTask: Task<Void, Never>?
+    @ObservationIgnored private var appendPaginationTask: Task<Void, Never>?
+    private var paginationRequestID = UUID()
+    private var appendPaginationRequestID: UUID?
+    private var appendedChapterContent: ChapterContent?
+    private var paginationSize = CGSize(width: 320, height: 640)
 
     init() {
         self.currentComicId = ""
@@ -598,41 +680,38 @@ final class NovelReaderViewModel {
         }
     }
 
-    // MARK: - 屏幕尺寸（供分页使用）
+    // MARK: - 分页尺寸
 
-    /// 缓存的分页尺寸，首次使用时计算一次
-    private var cachedPageSize: (maxW: CGFloat, maxH: CGFloat)?
-
-    private var pageSize: (maxW: CGFloat, maxH: CGFloat) {
-        if let cached = cachedPageSize { return cached }
-        let size = computePageSize()
-        cachedPageSize = size
-        return size
+    func setPaginationSize(_ size: CGSize) {
+        paginationSize = normalizedPaginationSize(size)
     }
 
-    private func computePageSize() -> (maxW: CGFloat, maxH: CGFloat) {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene }).first,
-              let window = scene.keyWindow else {
-            // 回退到屏幕尺寸
-            let screen = UIScreen.main.bounds
-            return (screen.width - 40, screen.height - 40)
+    func updatePaginationSize(_ size: CGSize, fontSize: Double) async {
+        let normalized = normalizedPaginationSize(size)
+        guard abs(normalized.width - paginationSize.width) > 0.5
+                || abs(normalized.height - paginationSize.height) > 0.5 else {
+            return
         }
-        let width = window.bounds.width
-        let height = window.bounds.height
-        let safeAreaTop = window.safeAreaInsets.top
-        return (width - 40, height - safeAreaTop - 40)
+        paginationSize = normalized
+        guard chapterContent != nil else { return }
+        await repaginate(fontSize: fontSize)
+    }
+
+    private func normalizedPaginationSize(_ size: CGSize) -> CGSize {
+        CGSize(width: max(1, size.width), height: max(1, size.height))
     }
 
     // MARK: - 缓存便捷方法
 
-    private func applyFromCache(chapter: Int, fontSize: Double) -> Bool {
+    private func applyFromCache(chapter: Int, fontSize: Double) async -> Bool {
         guard let cached = cache.get(chapter) else { return false }
+        isLoading = true
         chapterContent = cached
         currentChapter = chapter
         chapterTitles = cache.chapterTitles
-        repaginate(fontSize: fontSize)
+        await repaginate(fontSize: fontSize)
         updateActivityProgress()
+        isLoading = false
         return true
     }
 
@@ -646,7 +725,7 @@ final class NovelReaderViewModel {
         self.currentComicId = comicId
         self.groupContext = groupContext
 
-        if applyFromCache(chapter: chapter, fontSize: fontSize) {
+        if await applyFromCache(chapter: chapter, fontSize: fontSize) {
             cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
             return
         }
@@ -669,7 +748,7 @@ final class NovelReaderViewModel {
                 }
             }
             cache.evict(keeping: chapter)
-            repaginate(fontSize: fontSize)
+            await repaginate(fontSize: fontSize)
             updateActivityProgress()
         } catch {
             AppLogger.error("加载章节失败: \(error)")
@@ -708,7 +787,7 @@ final class NovelReaderViewModel {
                 cache.put(content, for: safeChapter)
             }
             currentChapter = safeChapter
-            repaginate(fontSize: fontSize)
+            await repaginate(fontSize: fontSize)
             updateActivityProgress()
         } catch {
             AppLogger.error("加载卷失败: \(error)")
@@ -725,7 +804,7 @@ final class NovelReaderViewModel {
             await loadVolume(comicId: nextId, chapter: 0, fontSize: fontSize)
             return
         }
-        if applyFromCache(chapter: nextIndex, fontSize: fontSize) {
+        if await applyFromCache(chapter: nextIndex, fontSize: fontSize) {
             cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
             return
         }
@@ -742,7 +821,7 @@ final class NovelReaderViewModel {
             return
         }
         let prevIndex = currentChapter - 1
-        if applyFromCache(chapter: prevIndex, fontSize: fontSize) {
+        if await applyFromCache(chapter: prevIndex, fontSize: fontSize) {
             cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
             return
         }
@@ -789,19 +868,53 @@ final class NovelReaderViewModel {
 
     // MARK: - 分页
 
-    func repaginate(fontSize: Double) {
-        currentChapterTitle = chapterContent?.title
-        let size = pageSize
-        let titleHeight: CGFloat = (chapterContent?.title != nil) ? fontSize * 2.5 : 0
-        let newPages = PaginationService.paginate(
-            text: plainText, fontSize: fontSize,
-            maxWidth: size.maxW, maxHeight: size.maxH,
-            firstPageMaxH: size.maxH - titleHeight
-        )
-        chapterPageOffsets = [currentChapter: 0]
-        nextChapterAppended = false
-        pages = newPages
-        paginationGeneration += 1
+    func repaginate(fontSize: Double) async {
+        guard let content = chapterContent else { return }
+
+        appendPaginationRequestID = nil
+        appendPaginationTask?.cancel()
+        appendPaginationTask = nil
+        appendedChapterContent = nil
+
+        paginationTask?.cancel()
+        let requestID = UUID()
+        paginationRequestID = requestID
+
+        let text = content.content ?? ""
+        let title = content.title
+        let chapter = currentChapter
+        let size = paginationSize
+        let titleHeight: CGFloat = title == nil ? 0 : fontSize * 2.5
+        currentChapterTitle = title
+
+        let worker = Task.detached(priority: .userInitiated) {
+            PaginationService.paginate(
+                text: text,
+                fontSize: fontSize,
+                maxWidth: size.width,
+                maxHeight: size.height,
+                firstPageMaxH: size.height - titleHeight
+            )
+        }
+
+        let task = Task { @MainActor [weak self] in
+            let newPages = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.paginationRequestID == requestID else {
+                return
+            }
+            self.chapterPageOffsets = [chapter: 0]
+            self.nextChapterAppended = false
+            self.pages = newPages
+            self.paginationGeneration += 1
+        }
+        paginationTask = task
+        await task.value
     }
 
     func relativePageInChapter(_ absolutePage: Int) -> Int {
@@ -827,26 +940,56 @@ final class NovelReaderViewModel {
         if totalChapters > 0 && nextIndex >= totalChapters { return }
 
         nextChapterAppended = true
+        let requestID = UUID()
+        appendPaginationRequestID = requestID
+        appendPaginationTask?.cancel()
+        appendPaginationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
 
-        Task {
-            let size = pageSize
-            let appendPages: [String]
-            if let nextContent = cache.get(nextIndex) {
-                appendPages = PaginationService.paginateContent(nextContent, fontSize: fontSize, maxWidth: size.maxW, maxHeight: size.maxH)
+            let content: ChapterContent
+            if let cached = self.cache.get(nextIndex) {
+                content = cached
             } else {
                 do {
-                    let content = try await api.fetchChapter(comicId: comicId, index: nextIndex)
-                    cache.put(content, for: nextIndex)
-                    appendPages = PaginationService.paginateContent(content, fontSize: fontSize, maxWidth: size.maxW, maxHeight: size.maxH)
+                    content = try await self.api.fetchChapter(comicId: self.comicId, index: nextIndex)
+                    self.cache.put(content, for: nextIndex)
                 } catch {
+                    guard self.appendPaginationRequestID == requestID else { return }
                     AppLogger.error("追加下一章失败: \(error)")
-                    nextChapterAppended = false
+                    self.nextChapterAppended = false
                     return
                 }
             }
-            let startIdx = pages.count
-            chapterPageOffsets[nextIndex] = startIdx
-            pages.append(contentsOf: appendPages)
+
+            let text = content.content ?? ""
+            let titleHeight: CGFloat = content.title == nil ? 0 : fontSize * 2.5
+            let size = self.paginationSize
+            let worker = Task.detached(priority: .utility) {
+                PaginationService.paginate(
+                    text: text,
+                    fontSize: fontSize,
+                    maxWidth: size.width,
+                    maxHeight: size.height,
+                    firstPageMaxH: size.height - titleHeight
+                )
+            }
+            let appendPages = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+
+            guard !Task.isCancelled,
+                  self.appendPaginationRequestID == requestID,
+                  self.currentChapter == nextIndex - 1 else {
+                return
+            }
+            let startIdx = self.pages.count
+            self.chapterPageOffsets[nextIndex] = startIdx
+            self.pages.append(contentsOf: appendPages)
+            self.appendedChapterContent = content
+            self.appendPaginationRequestID = nil
+            self.appendPaginationTask = nil
         }
     }
 
@@ -854,10 +997,11 @@ final class NovelReaderViewModel {
         let nextIndex = currentChapter + 1
         guard let nextOffset = chapterPageOffsets[nextIndex] else { return }
         guard currentPage >= nextOffset else { return }
+        guard let content = appendedChapterContent ?? cache.get(nextIndex) else { return }
 
-        if let cached = cache.get(nextIndex) {
-            currentChapterTitle = cached.title
-        }
+        chapterContent = content
+        currentChapterTitle = content.title
+        appendedChapterContent = nil
         currentChapter = nextIndex
         nextChapterAppended = false
         cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)

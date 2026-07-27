@@ -6,6 +6,9 @@ final class ChapterCache {
     private var cache: [Int: ChapterContent] = [:]
     private var cacheBytes: Int = 0
     private let capacity: Int
+    private var generation = UUID()
+    private var preloadTasks: [Int: Task<Void, Never>] = [:]
+    private var preloadTaskIDs: [Int: UUID] = [:]
 
     /// 缓存字节数（供设置页读取）
     static var totalNovelCacheBytes: Int = 0
@@ -56,7 +59,12 @@ final class ChapterCache {
     }
 
     func clear() {
+        generation = UUID()
+        preloadTasks.values.forEach { $0.cancel() }
+        preloadTasks.removeAll()
+        preloadTaskIDs.removeAll()
         cache.removeAll()
+        chapterTitles.removeAll()
         cacheBytes = 0
         Self.totalNovelCacheBytes = 0
     }
@@ -69,17 +77,29 @@ final class ChapterCache {
             let target = currentChapter + offset
             guard target >= 0 else { continue }
             if totalChapters > 0 && target >= totalChapters { continue }
-            guard cache[target] == nil else { continue }
+            guard cache[target] == nil, preloadTasks[target] == nil else { continue }
 
-            Task {
+            let requestGeneration = generation
+            let taskID = UUID()
+            let task = Task { [weak self] in
+                guard let self else { return }
+                defer {
+                    if self.preloadTaskIDs[target] == taskID {
+                        self.preloadTaskIDs.removeValue(forKey: target)
+                        self.preloadTasks.removeValue(forKey: target)
+                    }
+                }
                 do {
                     let content = try await api.fetchChapter(comicId: comicId, index: target)
+                    guard !Task.isCancelled, generation == requestGeneration else { return }
                     put(content, for: target)
                     evict(keeping: currentChapter)
                 } catch {
                     // 静默失败
                 }
             }
+            preloadTaskIDs[target] = taskID
+            preloadTasks[target] = task
         }
     }
 

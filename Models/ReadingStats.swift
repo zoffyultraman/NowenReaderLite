@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 基础统计（原有）
 
-struct ReadingStats: Codable {
+struct ReadingStats: Codable, Sendable {
     let totalReadTime: Int
     let totalSessions: Int
     let totalComicsRead: Int
@@ -11,7 +11,7 @@ struct ReadingStats: Codable {
     let recentSessions: [RecentSession]?
 
     // 新版 API 嵌套格式
-    struct Summary: Codable {
+    struct Summary: Codable, Sendable {
         let totalComics: Int?
         let totalSessions: Int?
         let totalReadTime: Int?
@@ -54,7 +54,7 @@ struct ReadingStats: Codable {
     }
 }
 
-struct DailyStat: Codable, Identifiable {
+struct DailyStat: Codable, Identifiable, Sendable {
     let date: String
     let duration: Int
     let sessions: Int
@@ -62,7 +62,7 @@ struct DailyStat: Codable, Identifiable {
     var id: String { date }
 }
 
-struct RecentSession: Codable, Identifiable {
+struct RecentSession: Codable, Identifiable, Sendable {
     let id: Int?
     let comicId: String?
     let comicTitle: String?
@@ -79,7 +79,7 @@ struct RecentSession: Codable, Identifiable {
 
 // MARK: - 增强统计
 
-struct EnhancedReadingStats: Codable {
+struct EnhancedReadingStats: Codable, Sendable {
     let totalReadTime: Int
     let totalSessions: Int
     let totalComicsRead: Int
@@ -94,14 +94,14 @@ struct EnhancedReadingStats: Codable {
     let genreStats: [GenreStat]
 }
 
-struct EnhancedDailyStat: Codable, Identifiable {
+struct EnhancedDailyStat: Codable, Identifiable, Sendable {
     let date: String
     let duration: Int
     let sessions: Int
     var id: String { date }
 }
 
-struct MonthlyStat: Codable, Identifiable {
+struct MonthlyStat: Codable, Identifiable, Sendable {
     let month: String
     let duration: Int
     let sessions: Int
@@ -109,7 +109,7 @@ struct MonthlyStat: Codable, Identifiable {
     var id: String { month }
 }
 
-struct EnhancedSession: Codable, Identifiable {
+struct EnhancedSession: Codable, Identifiable, Sendable {
     let id: Int?
     let comicId: String?
     let comicTitle: String?
@@ -124,7 +124,7 @@ struct EnhancedSession: Codable, Identifiable {
     }
 }
 
-struct GenreStat: Codable, Identifiable {
+struct GenreStat: Codable, Identifiable, Sendable {
     let genre: String
     let totalTime: Int
     let comicCount: Int
@@ -133,7 +133,7 @@ struct GenreStat: Codable, Identifiable {
 
 // MARK: - 阅读目标
 
-struct ReadingGoalProgress: Codable, Identifiable {
+struct ReadingGoalProgress: Codable, Identifiable, Sendable {
     let goal: ReadingGoal
     let currentMins: Int
     let currentBooks: Int
@@ -145,7 +145,7 @@ struct ReadingGoalProgress: Codable, Identifiable {
     var id: String { goal.goalType }
 }
 
-struct ReadingGoal: Codable {
+struct ReadingGoal: Codable, Sendable {
     let id: Int
     let goalType: String
     let targetMins: Int
@@ -154,19 +154,19 @@ struct ReadingGoal: Codable {
     let updatedAt: String?
 }
 
-struct GoalSetRequest: Encodable {
+struct GoalSetRequest: Encodable, Sendable {
     let goalType: String
     let targetMins: Int
     let targetBooks: Int
 }
 
-struct ReadingStatusRequest: Encodable {
+struct ReadingStatusRequest: Encodable, Sendable {
     let status: String
 }
 
 // MARK: - 年度阅读报告
 
-struct YearlyReadingStats: Codable {
+struct YearlyReadingStats: Codable, Sendable {
     let year: Int
     let monthlyStats: [MonthlyStat]
     let totalSessions: Int
@@ -227,7 +227,7 @@ struct YearlyReadingStats: Codable {
     }
 }
 
-private struct YearlyMonthlyStat: Decodable {
+private struct YearlyMonthlyStat: Decodable, Sendable {
     let month: YearlyMonthValue
     let duration: Int
     let sessions: Int
@@ -246,7 +246,7 @@ private struct YearlyMonthlyStat: Decodable {
     }
 }
 
-private enum YearlyMonthValue: Decodable {
+private enum YearlyMonthValue: Decodable, Sendable {
     case number(Int)
     case text(String)
 

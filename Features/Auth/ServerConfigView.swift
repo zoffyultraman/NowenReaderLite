@@ -20,18 +20,24 @@ struct ServerConfigView: View {
     }
 
     var body: some View {
-        contentView
-            .if(embedsInOwnStack) { view in
+        Group {
+            if embedsInOwnStack {
                 NavigationStack {
-                    view.toolbar(.hidden, for: .navigationBar)
+                    contentView
+                        .toolbar(.hidden, for: .navigationBar)
                 }
+            } else {
+                contentView
+                    .navigationTitle("切换服务器")
+                    .navigationBarTitleDisplayMode(.inline)
             }
-            .background(Color(.systemGroupedBackground))
-            .alert("连接错误", isPresented: $showError) {
-                Button("确定", role: .cancel) {}
-            } message: {
-                Text(errorMessage)
-            }
+        }
+        .background(Color(.systemGroupedBackground))
+        .alert("连接错误", isPresented: $showError) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(errorMessage)
+        }
     }
 
     private var contentView: some View {
@@ -81,7 +87,7 @@ struct ServerConfigView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        ScrollView(.horizontal, showsIndicators: false) {
+                        ScrollView(.horizontal) {
                             HStack(spacing: 10) {
                                 ForEach(accounts) { account in
                                     Button {
@@ -107,6 +113,7 @@ struct ServerConfigView: View {
                                 }
                             }
                         }
+                        .scrollIndicators(.hidden)
                     }
                 }
 
@@ -114,7 +121,7 @@ struct ServerConfigView: View {
                 if connectionStatus == .testing {
                     HStack(spacing: 8) {
                         ProgressView()
-                            .scaleEffect(0.8)
+                            .controlSize(.small)
                         Text("正在测试连接...")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -148,7 +155,7 @@ struct ServerConfigView: View {
                         if isTestingConnection {
                             ProgressView()
                                 .tint(.white)
-                                .scaleEffect(0.8)
+                                .controlSize(.small)
                         }
                         Text("测试连接")
                             .fontWeight(.semibold)
@@ -244,20 +251,6 @@ struct ServerConfigView: View {
 
             dismiss()
             onConnected()
-        }
-    }
-}
-
-// MARK: - Conditional View Modifier
-
-extension View {
-    @ViewBuilder
-    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
-        if condition {
-            transform(self)
-        } else {
-            self.navigationTitle("切换服务器")
-                .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

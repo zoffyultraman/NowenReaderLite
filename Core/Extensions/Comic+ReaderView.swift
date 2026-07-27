@@ -4,6 +4,7 @@ import SwiftUI
 
 extension Comic {
     /// 根据漫画类型自动选择对应的阅读器 View
+    @MainActor
     @ViewBuilder
     func readerView(groupContext: ReadingGroupContext? = nil) -> some View {
         if isNovel {
@@ -14,6 +15,17 @@ extension Comic {
             }
         } else {
             ComicReaderView(comicId: id, initialPage: lastReadPage, groupContext: groupContext)
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func readerStatusBarHidden(_ hidden: Bool) -> some View {
+        if #available(iOS 27.0, *) {
+            toolbarVisibility(hidden ? .hidden : .visible, for: .statusBar)
+        } else {
+            statusBarHidden(hidden)
         }
     }
 }

@@ -153,7 +153,7 @@ struct DailyBarChart: View {
         let recentStats = Array(dailyStats.suffix(30))
         let maxDuration = recentStats.map(\.duration).max() ?? 1
 
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             HStack(alignment: .bottom, spacing: 4) {
                 ForEach(recentStats) { stat in
                     VStack {
@@ -171,6 +171,7 @@ struct DailyBarChart: View {
                 }
             }
         }
+        .scrollIndicators(.hidden)
     }
 
     private func formatDay(_ iso: String) -> String {
@@ -328,7 +329,7 @@ struct GoalSectionView: View {
                     .padding(.horizontal, 16)
                 }
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: 12) {
                         ForEach(goals) { goal in
                             GoalProgressCard(progress: goal)
@@ -336,6 +337,7 @@ struct GoalSectionView: View {
                     }
                     .padding(.horizontal, 16)
                 }
+                .scrollIndicators(.hidden)
             }
         }
     }

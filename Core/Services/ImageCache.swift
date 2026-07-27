@@ -8,6 +8,12 @@ final class ImageCache {
     private let memory = NSCache<NSString, UIImage>()
     private let diskDir: URL
     private let fileManager = FileManager.default
+    private let diskQueue = DispatchQueue(
+        label: "com.nowen.readerlite.image-cache",
+        qos: .utility
+    )
+    private let generationLock = NSLock()
+    private var generation = 0
 
     private init() {
         memory.countLimit = 200
@@ -20,7 +26,7 @@ final class ImageCache {
 
     // MARK: - Public
 
-    func get(_ key: String) -> UIImage? {
+    func image(forKey key: String) async -> UIImage? {
         let nsKey = key as NSString
 
         // L1: 内存
@@ -29,11 +35,21 @@ final class ImageCache {
         }
 
         // L2: 磁盘
+        let loadGeneration = currentGeneration()
         let fileURL = diskPath(for: key)
-        guard let data = try? Data(contentsOf: fileURL),
-              let image = UIImage(data: data) else {
+        let diskImage: UIImage? = await withCheckedContinuation { continuation in
+            diskQueue.async {
+                guard let data = try? Data(contentsOf: fileURL) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: UIImage(data: data))
+            }
+        }
+        guard let image = diskImage else {
             return nil
         }
+        guard loadGeneration == currentGeneration() else { return nil }
 
         // 回填内存
         memory.setObject(image, forKey: nsKey)
@@ -42,32 +58,54 @@ final class ImageCache {
 
     func set(_ image: UIImage, forKey key: String) {
         let nsKey = key as NSString
+        let writeGeneration = currentGeneration()
 
         // 写内存
         memory.setObject(image, forKey: nsKey)
 
         // 异步写磁盘
         let fileURL = diskPath(for: key)
-        let data = image.jpegData(compressionQuality: 0.85)
-        Task.detached(priority: .utility) {
-            try? data?.write(to: fileURL)
+        diskQueue.async {
+            guard writeGeneration == self.currentGeneration() else { return }
+            guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+            try? data.write(to: fileURL, options: .atomic)
         }
     }
 
-    func clear() {
+    func clear() async {
+        advanceGeneration()
         memory.removeAllObjects()
-        try? fileManager.removeItem(at: diskDir)
-        try? fileManager.createDirectory(at: diskDir, withIntermediateDirectories: true)
+        await withCheckedContinuation { continuation in
+            diskQueue.async {
+                try? self.fileManager.removeItem(at: self.diskDir)
+                try? self.fileManager.createDirectory(
+                    at: self.diskDir,
+                    withIntermediateDirectories: true
+                )
+                continuation.resume()
+            }
+        }
     }
 
     /// 磁盘缓存大小（字节）
-    var diskSize: Int64 {
-        guard let items = try? fileManager.contentsOfDirectory(
-            at: diskDir, includingPropertiesForKeys: [.fileSizeKey]
-        ) else { return 0 }
-        return items.reduce(0) { total, url in
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            return total + Int64(size)
+    func diskSize() async -> Int64 {
+        await withCheckedContinuation { continuation in
+            diskQueue.async {
+                guard let items = try? self.fileManager.contentsOfDirectory(
+                    at: self.diskDir,
+                    includingPropertiesForKeys: [.fileSizeKey]
+                ) else {
+                    continuation.resume(returning: 0)
+                    return
+                }
+                let total = items.reduce(Int64(0)) { result, url in
+                    let size = (try? url.resourceValues(
+                        forKeys: [.fileSizeKey]
+                    ))?.fileSize ?? 0
+                    return result + Int64(size)
+                }
+                continuation.resume(returning: total)
+            }
         }
     }
 
@@ -76,6 +114,18 @@ final class ImageCache {
     private func diskPath(for key: String) -> URL {
         let filename = key.sha256hex
         return diskDir.appendingPathComponent(filename)
+    }
+
+    private func currentGeneration() -> Int {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return generation
+    }
+
+    private func advanceGeneration() {
+        generationLock.lock()
+        generation += 1
+        generationLock.unlock()
     }
 }
 

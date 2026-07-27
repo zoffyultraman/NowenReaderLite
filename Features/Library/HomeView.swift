@@ -45,25 +45,18 @@ struct HomeView: View {
                 ComicDetailView(comicId: value)
             }
         }
-        .task {
+        .task(id: HomeRefreshID(
+            selectedLibraryId: api.selectedLibraryId,
+            isOffline: api.isOfflineMode,
+            networkRecovered: api.networkRecovered
+        )) {
             continueReadingVM.setModelContext(modelContext)
             await continueReadingVM.load()
         }
-        .onChange(of: api.isOfflineMode) { _, isOffline in
-            if isOffline {
-                Task { await continueReadingVM.load() }
-            }
-        }
         .onChange(of: api.networkRecovered) { _, recovered in
             if recovered {
-                Task {
-                    await continueReadingVM.load()
-                    NotificationCenter.default.post(name: .networkRecovered, object: nil)
-                }
+                NotificationCenter.default.post(name: .networkRecovered, object: nil)
             }
-        }
-        .onChange(of: api.selectedLibraryId) { _, _ in
-            Task { await continueReadingVM.load() }
         }
     }
 }
@@ -87,6 +80,20 @@ private enum HomeSection: String, CaseIterable {
     }
 }
 
+private struct HomeRefreshID: Hashable {
+    let selectedLibraryId: String?
+    let isOffline: Bool
+    let networkRecovered: Bool
+}
+
+private struct LibraryContentLoadID: Hashable {
+    let selectedLibraryId: String?
+    let contentType: String?
+    let sortOption: String?
+    let isOffline: Bool
+    let networkRecovered: Bool
+}
+
 // MARK: - 搜索栏
 
 struct HomeSearchBar: View {
@@ -100,14 +107,13 @@ struct HomeSearchBar: View {
             TextField("搜索漫画或小说...", text: $searchVM.query)
                 .textInputAutocapitalization(.never)
                 .focused($isSearchFocused)
-                .onSubmit { searchVM.search() }
+                .onSubmit { searchVM.search(immediately: true) }
                 .onChange(of: searchVM.query) { _, _ in
                     searchVM.search()
                 }
             if !searchVM.query.isEmpty {
                 Button {
-                    searchVM.query = ""
-                    searchVM.results = []
+                    searchVM.clear()
                     isSearchFocused = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -197,9 +203,10 @@ struct HomeSearchResults: View {
             }
         }
         .listStyle(.plain)
-        .overlay(alignment: .top) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             HomeSearchBar(searchVM: searchVM, isSearchFocused: $isSearchFocused)
-                .padding(.top, 8)
+                .padding(.vertical, 8)
+                .background(.bar)
         }
     }
 }
@@ -297,7 +304,7 @@ struct ContinueReadingSection: View {
                     }
                     .padding(.horizontal, 16)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
+                    ScrollView(.horizontal) {
                         LazyHStack(spacing: 12) {
                             ForEach(items) { comic in
                                 NavigationLink {
@@ -310,6 +317,7 @@ struct ContinueReadingSection: View {
                         }
                         .padding(.horizontal, 16)
                     }
+                    .scrollIndicators(.hidden)
                     .frame(height: 160)
                 }
                 .padding(.top, 16)
@@ -435,11 +443,22 @@ struct LibraryContentView: View {
 
             Group {
                 if comics.isEmpty && !viewModel.isLoading {
-                    emptyState
+                    LibraryEmptyState(contentType: contentType)
                 } else if viewMode == .grid {
-                    gridView
+                    LibraryComicGridView(
+                        comics: comics,
+                        columns: gridColumns,
+                        serverURL: api.serverURL,
+                        isLoading: viewModel.isLoading,
+                        loadMore: { await viewModel.loadMore() }
+                    )
                 } else {
-                    listView
+                    LibraryComicListView(
+                        comics: comics,
+                        serverURL: api.serverURL,
+                        isLoading: viewModel.isLoading,
+                        loadMore: { await viewModel.loadMore() }
+                    )
                 }
             }
         }
@@ -468,7 +487,6 @@ struct LibraryContentView: View {
                     ForEach(SortOption.allCases, id: \.self) { option in
                         Button {
                             sortOption = option
-                            viewModel.updateSort(by: option.rawValue, order: option == .title ? "asc" : "desc")
                         } label: {
                             HStack {
                                 Text(option.label)
@@ -484,54 +502,97 @@ struct LibraryContentView: View {
         .refreshable {
             await viewModel.loadAll(refresh: true)
         }
-        .task {
+        .task(id: LibraryContentLoadID(
+            selectedLibraryId: api.selectedLibraryId,
+            contentType: contentType,
+            sortOption: sortOption.rawValue,
+            isOffline: api.isOfflineMode,
+            networkRecovered: api.networkRecovered
+        )) {
             viewModel.setModelContext(modelContext)
-            viewModel.setContentType(contentType)
+            await viewModel.configure(
+                contentType: contentType,
+                sortBy: sortOption.rawValue,
+                sortOrder: sortOption == .title ? "asc" : "desc"
+            )
         }
-        .onChange(of: api.selectedLibraryId) { _, _ in
-            viewModel.setContentType(contentType)
-        }
-        .networkRefresh { await viewModel.loadAll(refresh: true) }
     }
 
-    private var gridView: some View {
-        let columns = gridColumns
-        return LazyVGrid(columns: columns, spacing: 16) {
+}
+
+private struct LibraryComicGridView: View {
+    let comics: [Comic]
+    let columns: [GridItem]
+    let serverURL: String
+    let isLoading: Bool
+    let loadMore: () async -> Void
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
             ForEach(comics) { comic in
                 NavigationLink(value: comic.id) {
                     if comic.isSeriesShelfItem {
-                        SeriesShelfCardView(comic: comic, serverURL: api.serverURL)
+                        SeriesShelfCardView(comic: comic, serverURL: serverURL)
                     } else {
-                        ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
+                        ComicCardView(
+                            id: comic.id,
+                            title: comic.title,
+                            isFavorite: comic.isFavorite,
+                            isNovel: comic.isNovel,
+                            progress: comic.progress,
+                            serverURL: serverURL,
+                            readingStatus: comic.readingStatus,
+                            rating: comic.rating
+                        )
                     }
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
             }
 
-            if !viewModel.isLoading {
-                Color.clear.onAppear { Task { await viewModel.loadMore() } }
+            if !isLoading {
+                Color.clear.task { await loadMore() }
             }
 
-            if viewModel.isLoading {
-                ProgressView().gridCellColumns(gridColumns.count).padding()
+            if isLoading {
+                ProgressView()
+                    .gridCellColumns(columns.count)
+                    .padding()
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
+}
 
-    private var listView: some View {
+private struct LibraryComicListView: View {
+    let comics: [Comic]
+    let serverURL: String
+    let isLoading: Bool
+    let loadMore: () async -> Void
+
+    var body: some View {
         LazyVStack(spacing: 0) {
             ForEach(comics) { comic in
                 VStack {
                     NavigationLink(value: comic.id) {
                         if comic.isSeriesShelfItem {
-                            SeriesShelfListRowView(comic: comic, serverURL: api.serverURL)
+                            SeriesShelfListRowView(comic: comic, serverURL: serverURL)
                                 .padding(.horizontal, 16)
                         } else {
-                            ComicListRowView(id: comic.id, title: comic.title, author: comic.author, pageCount: comic.pageCount, fileSize: comic.fileSize, progress: comic.progress, isFavorite: comic.isFavorite, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
-                                .padding(.horizontal, 16)
+                            ComicListRowView(
+                                id: comic.id,
+                                title: comic.title,
+                                author: comic.author,
+                                pageCount: comic.pageCount,
+                                fileSize: comic.fileSize,
+                                progress: comic.progress,
+                                isFavorite: comic.isFavorite,
+                                serverURL: serverURL,
+                                readingStatus: comic.readingStatus,
+                                rating: comic.rating
+                            )
+                            .padding(.horizontal, 16)
                         }
                     }
                     .buttonStyle(.plain)
@@ -540,15 +601,21 @@ struct LibraryContentView: View {
                 }
             }
 
-            if !viewModel.isLoading {
-                Color.clear.onAppear { Task { await viewModel.loadMore() } }
+            if !isLoading {
+                Color.clear.task { await loadMore() }
             }
 
-            if viewModel.isLoading { ProgressView().padding() }
+            if isLoading {
+                ProgressView().padding()
+            }
         }
     }
+}
 
-    private var emptyState: some View {
+private struct LibraryEmptyState: View {
+    let contentType: String?
+
+    var body: some View {
         VStack(spacing: 12) {
             Image(systemName: contentType == "novel" ? "text.book.closed" : "photo.stack")
                 .font(.system(size: 44))
@@ -589,11 +656,6 @@ struct CollectionContentView: View {
         return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
     }
 
-    private func groupNavigationValue(_ group: ComicGroup) -> String {
-        guard let contentType, !contentType.isEmpty else { return "group_\(group.id)" }
-        return "group_\(group.id)_\(contentType)"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -607,11 +669,22 @@ struct CollectionContentView: View {
 
             Group {
                 if viewModel.groups.isEmpty && !viewModel.isLoading {
-                    emptyState
+                    CollectionEmptyState()
                 } else if viewMode == .grid {
-                    gridView
+                    CollectionGridView(
+                        groups: viewModel.groups,
+                        columns: gridColumns,
+                        serverURL: api.serverURL,
+                        contentType: contentType,
+                        isLoading: viewModel.isLoading
+                    )
                 } else {
-                    listView
+                    CollectionListView(
+                        groups: viewModel.groups,
+                        serverURL: api.serverURL,
+                        contentType: contentType,
+                        isLoading: viewModel.isLoading
+                    )
                 }
             }
         }
@@ -653,40 +726,64 @@ struct CollectionContentView: View {
                 }
             }
         }
-        .task {
+        .task(id: LibraryContentLoadID(
+            selectedLibraryId: api.selectedLibraryId,
+            contentType: contentType,
+            sortOption: nil,
+            isOffline: api.isOfflineMode,
+            networkRecovered: api.networkRecovered
+        )) {
             viewModel.setModelContext(modelContext)
-            viewModel.setContentType(contentType)
+            await viewModel.setContentType(contentType)
         }
-        .onChange(of: api.selectedLibraryId) { _, _ in
-            viewModel.setContentType(contentType)
-        }
-        .networkRefresh { await viewModel.load(refresh: true) }
     }
 
-    private var gridView: some View {
-        let columns = gridColumns
-        return LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(viewModel.groups) { group in
-                NavigationLink(value: groupNavigationValue(group)) {
-                    GroupCardView(group: group, serverURL: api.serverURL)
+}
+
+private struct CollectionGridView: View {
+    let groups: [ComicGroup]
+    let columns: [GridItem]
+    let serverURL: String
+    let contentType: String?
+    let isLoading: Bool
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(groups) { group in
+                NavigationLink(value: navigationValue(for: group)) {
+                    GroupCardView(group: group, serverURL: serverURL)
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
             }
 
-            if viewModel.isLoading {
-                ProgressView().gridCellColumns(gridColumns.count).padding()
+            if isLoading {
+                ProgressView()
+                    .gridCellColumns(columns.count)
+                    .padding()
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
 
-    private var listView: some View {
+    private func navigationValue(for group: ComicGroup) -> String {
+        guard let contentType, !contentType.isEmpty else { return "group_\(group.id)" }
+        return "group_\(group.id)_\(contentType)"
+    }
+}
+
+private struct CollectionListView: View {
+    let groups: [ComicGroup]
+    let serverURL: String
+    let contentType: String?
+    let isLoading: Bool
+
+    var body: some View {
         LazyVStack(spacing: 0) {
-            ForEach(viewModel.groups) { group in
-                NavigationLink(value: groupNavigationValue(group)) {
-                    GroupListRowView(group: group, serverURL: api.serverURL)
+            ForEach(groups) { group in
+                NavigationLink(value: navigationValue(for: group)) {
+                    GroupListRowView(group: group, serverURL: serverURL)
                         .padding(.horizontal, 16)
                 }
                 .buttonStyle(.plain)
@@ -694,11 +791,20 @@ struct CollectionContentView: View {
                 Divider().padding(.leading, 80)
             }
 
-            if viewModel.isLoading { ProgressView().padding() }
+            if isLoading {
+                ProgressView().padding()
+            }
         }
     }
 
-    private var emptyState: some View {
+    private func navigationValue(for group: ComicGroup) -> String {
+        guard let contentType, !contentType.isEmpty else { return "group_\(group.id)" }
+        return "group_\(group.id)_\(contentType)"
+    }
+}
+
+private struct CollectionEmptyState: View {
+    var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "rectangle.stack")
                 .font(.system(size: 44))
@@ -1011,17 +1117,20 @@ final class ContinueReadingViewModel {
     var errorMessage: String?
 
     private var modelContext: ModelContext?
+    private var loadVersion = 0
 
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
     }
 
     func load() async {
+        loadVersion += 1
+        let version = loadVersion
         let api = APIClient.shared
 
         // 离线或网络状态未就绪：直接从缓存加载，等待 networkRecovered 后再刷新线上数据。
         guard !api.isOfflineMode, api.isNetworkReachable else {
-            loadFromCache()
+            await loadFromCache(version: version)
             return
         }
 
@@ -1032,19 +1141,28 @@ final class ContinueReadingViewModel {
                 sortBy: "lastReadAt",
                 sortOrder: "desc"
             )
+            guard !Task.isCancelled, version == loadVersion else { return }
             items = resp.comics.filter { $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
             errorMessage = nil
         } catch {
+            guard !Task.isCancelled,
+                  (error as? URLError)?.code != .cancelled,
+                  version == loadVersion else {
+                return
+            }
             AppLogger.log("加载继续观看失败，使用本地缓存: \(error.localizedDescription)")
-            loadFromCache()
+            await loadFromCache(version: version)
         }
     }
 
     /// 离线 fallback：从 SwiftData 缓存 + 本地已下载漫画加载
-    private func loadFromCache() {
+    private func loadFromCache(version: Int) async {
+        let downloadedIds = await Task.detached(priority: .utility) {
+            Set(OfflineFileManager.shared.completedDownloads().keys)
+        }.value
+        guard !Task.isCancelled, version == loadVersion else { return }
         guard let context = modelContext else { return }
         let cached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载继续观看")
-        let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
 
         // 优先显示已下载且有阅读进度的漫画
         let offlineItems = cached
@@ -1064,35 +1182,5 @@ final class ContinueReadingViewModel {
             items = allDownloaded
             errorMessage = nil
         }
-    }
-}
-
-// MARK: - 网络刷新 Modifier
-
-/// 将 isOfflineMode/networkRecovered 的 .onChange 副作用从视图 body 中隔离出来，
-/// 避免这些依赖触发整个视图 body 的重新计算。
-/// 闭包在 modifier 存储属性中捕获一次，SwiftUI 复用 modifier 实例，不会引起失效。
-struct NetworkRefreshModifier: ViewModifier {
-    let onRefresh: () async -> Void
-    @Environment(APIClient.self) private var api
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: api.isOfflineMode) { _, isOffline in
-                if isOffline {
-                    Task { await onRefresh() }
-                }
-            }
-            .onChange(of: api.networkRecovered) { _, recovered in
-                if recovered {
-                    Task { await onRefresh() }
-                }
-            }
-    }
-}
-
-extension View {
-    func networkRefresh(_ onRefresh: @escaping () async -> Void) -> some View {
-        modifier(NetworkRefreshModifier(onRefresh: onRefresh))
     }
 }

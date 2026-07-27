@@ -55,16 +55,18 @@ struct MainTabView: View {
         .toolbarBackground(.ultraThinMaterial, for: .tabBar)
         .onAppear {
             downloadManager.setModelContext(modelContext)
-            downloadManager.restoreFromStore(context: modelContext)
             api.startNetworkRecovery()
             syncOfflineReadingState()
-            // 加载可访问书库列表
-            Task { try? await api.fetchAccessibleLibraries() }
+        }
+        .task {
+            downloadManager.setModelContext(modelContext)
+            await downloadManager.restoreFromStore(context: modelContext)
+            _ = try? await api.fetchAccessibleLibraries()
         }
         .onChange(of: api.networkRecovered) { _, recovered in
             if recovered {
                 syncOfflineReadingState()
-                Task { try? await api.fetchAccessibleLibraries() }
+                Task { _ = try? await api.fetchAccessibleLibraries() }
             }
         }
     }

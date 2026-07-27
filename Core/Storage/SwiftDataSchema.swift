@@ -4,7 +4,7 @@ import SwiftData
 // MARK: - Versioned Schema
 
 enum SchemaV1: VersionedSchema {
-    static var versionIdentifier = Schema.Version(1, 0, 0)
+    static let versionIdentifier = Schema.Version(1, 0, 0)
 
     static var models: [any PersistentModel.Type] {
         [CachedComic.self, ServerRecord.self, SavedAccount.self]
@@ -12,7 +12,7 @@ enum SchemaV1: VersionedSchema {
 }
 
 enum SchemaV2: VersionedSchema {
-    static var versionIdentifier = Schema.Version(2, 0, 0)
+    static let versionIdentifier = Schema.Version(2, 0, 0)
 
     static var models: [any PersistentModel.Type] {
         [CachedComic.self, ServerRecord.self, SavedAccount.self, DownloadedComicRecord.self]
@@ -184,12 +184,26 @@ final class DownloadedComicRecord {
     var pageCount: Int
     var state: String       // DownloadState.rawValue
     var downloadedAt: Date
+    var fileSize: Int64?
+    var isNovel: Bool = false
+    var generation: String?
 
-    init(comicId: String, title: String, pageCount: Int, state: String) {
+    init(
+        comicId: String,
+        title: String,
+        pageCount: Int,
+        state: String,
+        fileSize: Int64? = nil,
+        isNovel: Bool = false,
+        generation: String? = nil
+    ) {
         self.comicId = comicId
         self.title = title
         self.pageCount = pageCount
         self.state = state
         self.downloadedAt = Date()
+        self.fileSize = fileSize
+        self.isNovel = isNovel
+        self.generation = generation
     }
 }

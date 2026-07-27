@@ -1,10 +1,11 @@
 import Foundation
 
 /// 离线阅读进度暂存，联网后自动同步到服务端
-final class PendingProgressManager {
+// 可变状态只通过内部并发队列的同步或 barrier 操作访问。
+final class PendingProgressManager: @unchecked Sendable {
     static let shared = PendingProgressManager()
 
-    struct PendingRecord: Codable {
+    struct PendingRecord: Codable, Sendable {
         var page: Int
         var totalPages: Int?
         var updatedAt: Date

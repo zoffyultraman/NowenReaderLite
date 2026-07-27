@@ -58,7 +58,7 @@ struct PDFReaderView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .statusBarHidden(true)
+        .readerStatusBarHidden(true)
         .onDisappear {
             Task { await finishActivity() }
         }
@@ -134,6 +134,7 @@ struct PDFKitView: UIViewRepresentable {
 
     class Coordinator {
         var dataTask: URLSessionDataTask?
+        var currentLoadID: UUID?
         var lastReloadID: UUID?
         var lastURL: URL?
         var observer: NSObjectProtocol?
@@ -149,9 +150,18 @@ struct PDFKitView: UIViewRepresentable {
         }
 
         deinit {
+            dataTask?.cancel()
             if let observer {
                 NotificationCenter.default.removeObserver(observer)
             }
+        }
+
+        func cancelLoading() {
+            dataTask?.cancel()
+            dataTask = nil
+            currentLoadID = nil
+            lastReloadID = nil
+            lastURL = nil
         }
 
         func observePageChanges(in pdfView: PDFView) {
@@ -206,10 +216,14 @@ struct PDFKitView: UIViewRepresentable {
         }
 
         let request = APIClient.shared.authenticatedRequest(url: url, timeout: 60)
+        let loadID = UUID()
+        coordinator.currentLoadID = loadID
         let task = URLSession.shared.dataTask(with: request) { data, _, error in
+            let document = data.flatMap(PDFDocument.init(data:))
             DispatchQueue.main.async {
+                guard coordinator.currentLoadID == loadID else { return }
                 isLoading = false
-                if let data, let doc = PDFDocument(data: data) {
+                if error == nil, let doc = document {
                     uiView.document = doc
                     let pageCount = doc.pageCount
                     let targetIndex = min(max(initialPage, 0), max(pageCount - 1, 0))
@@ -227,5 +241,14 @@ struct PDFKitView: UIViewRepresentable {
         }
         coordinator.dataTask = task
         task.resume()
+    }
+
+    static func dismantleUIView(_ uiView: PDFView, coordinator: Coordinator) {
+        coordinator.cancelLoading()
+        if let observer = coordinator.observer {
+            NotificationCenter.default.removeObserver(observer)
+            coordinator.observer = nil
+        }
+        uiView.document = nil
     }
 }

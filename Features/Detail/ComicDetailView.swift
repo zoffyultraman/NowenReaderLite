@@ -360,7 +360,26 @@ struct DownloadButton: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
-        } else if downloadManager.wouldExceedLimit(pageCount: comic.pageCount) {
+        } else if downloadManager.storageLimitBytes > 0 && !downloadManager.isStorageUsageLoaded {
+            Button {} label: {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在计算空间")
+                        .font(.subheadline.weight(.medium))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color(.systemGray6))
+                .foregroundStyle(.secondary)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(true)
+        } else if downloadManager.wouldExceedLimit(
+            comicId: comic.id,
+            pageCount: comic.pageCount,
+            fileSize: comic.fileSize
+        ) {
             Button {} label: {
                 Label("空间不足", systemImage: "exclamationmark.circle")
                     .font(.subheadline.weight(.medium))
@@ -453,7 +472,7 @@ struct ReadingStatusSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     ForEach(statuses, id: \.key) { status in
                         let isSelected = currentStatus == status.key
@@ -478,6 +497,7 @@ struct ReadingStatusSection: View {
                     }
                 }
             }
+            .scrollIndicators(.hidden)
         }
         .padding(.horizontal, 20)
     }
@@ -556,10 +576,14 @@ final class DetailViewModel {
         } catch {
             // 离线 fallback：从本地已下载数据构造 Comic
             if let meta = OfflineFileManager.shared.loadMeta(comicId: id) {
+                let cached = cachedComic(id: id)
+                let isNovel = cached?.type == "novel"
+                    || downloadedRecord(id: id)?.isNovel == true
+                    || meta.isNovel == true
                 comic = Comic(
                     id: meta.comicId,
-                    title: meta.title,
-                    author: nil,
+                    title: cached?.title ?? meta.title,
+                    author: cached?.author,
                     publisher: nil,
                     description: nil,
                     genre: nil,
@@ -567,16 +591,16 @@ final class DetailViewModel {
                     year: nil,
                     pageCount: meta.pageCount,
                     fileSize: meta.fileSize,
-                    lastReadPage: 0,
+                    lastReadPage: cached?.lastReadPage ?? 0,
                     totalReadTime: nil,
-                    readingStatus: nil,
-                    lastReadAt: nil,
+                    readingStatus: cached?.readingStatus,
+                    lastReadAt: cached?.lastReadAt?.iso8601String,
                     metadataSource: nil,
-                    coverUrl: nil,
+                    coverUrl: cached?.coverUrl,
                     coverAspectRatio: nil,
-                    rating: nil,
-                    isFavorite: false,
-                    type: "comic",
+                    rating: cached?.rating,
+                    isFavorite: cached?.isFavorite ?? false,
+                    type: isNovel ? "novel" : "comic",
                     filename: nil,
                     titleSortKey: nil,
                     sortOrder: nil,
@@ -588,6 +612,28 @@ final class DetailViewModel {
             }
         }
         isLoading = false
+    }
+
+    private func cachedComic(id: String) -> CachedComic? {
+        guard let modelContext else { return nil }
+        let comicId = id
+        return modelContext.fetchOrLog(
+            FetchDescriptor<CachedComic>(
+                predicate: #Predicate { $0.id == comicId }
+            ),
+            label: "加载离线漫画缓存"
+        ).first
+    }
+
+    private func downloadedRecord(id: String) -> DownloadedComicRecord? {
+        guard let modelContext else { return nil }
+        let comicId = id
+        return modelContext.fetchOrLog(
+            FetchDescriptor<DownloadedComicRecord>(
+                predicate: #Predicate { $0.comicId == comicId }
+            ),
+            label: "加载离线下载类型"
+        ).first
     }
 
     func toggleFavorite() async {

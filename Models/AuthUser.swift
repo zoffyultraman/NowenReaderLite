@@ -1,6 +1,6 @@
 import Foundation
 
-struct AuthUser: Codable, Identifiable {
+struct AuthUser: Codable, Identifiable, Sendable {
     let id: String
     let username: String
     let nickname: String?
@@ -10,12 +10,12 @@ struct AuthUser: Codable, Identifiable {
     var isAdmin: Bool { role == "admin" }
 }
 
-struct LoginRequest: Codable {
+struct LoginRequest: Codable, Sendable {
     let username: String
     let password: String
 }
 
-struct RegisterRequest: Codable {
+struct RegisterRequest: Codable, Sendable {
     let username: String
     let password: String
     let nickname: String

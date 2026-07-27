@@ -379,6 +379,11 @@ struct VolumeListRowView: View {
 
 // MARK: - ViewModel
 
+private struct OfflineGroupDetailLoadSnapshot: Sendable {
+    let group: OfflineGroupMeta?
+    let completedMetas: [String: OfflineComicMeta]
+}
+
 @MainActor
 @Observable
 final class GroupDetailViewModel {
@@ -386,6 +391,7 @@ final class GroupDetailViewModel {
     var isLoading = false
     var errorMessage: String?
     private var readingUnitIds: [String] = []
+    private var readingUnitIndexById: [String: Int] = [:]
 
     func load(groupId: Int, contentType: String? = nil, context: ModelContext? = nil) async {
         guard !isLoading else { return }
@@ -394,39 +400,55 @@ final class GroupDetailViewModel {
 
         // 离线：从本地加载合集
         if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
-            if let local = OfflineFileManager.shared.loadGroupDetail(groupId: groupId) {
-                let downloadedIds = Set(OfflineFileManager.shared.downloadedComicIds)
+            let offlineSnapshot = await Task.detached(priority: .utility) {
+                OfflineGroupDetailLoadSnapshot(
+                    group: OfflineFileManager.shared.loadGroupDetail(groupId: groupId),
+                    completedMetas: OfflineFileManager.shared.completedDownloads()
+                )
+            }.value
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
+            if let local = offlineSnapshot.group {
                 var comics: [GroupComicItem] = []
+                let localComicIds = Set(local.comicIds)
                 // 尝试从 SwiftData 缓存获取更完整的信息
                 var cachedMap: [String: CachedComic] = [:]
                 if let context {
                     let allCached = try? context.fetch(FetchDescriptor<CachedComic>())
                     if let allCached {
-                        for c in allCached where local.comicIds.contains(c.id) {
+                        for c in allCached where localComicIds.contains(c.id) {
                             cachedMap[c.id] = c
                         }
                     }
                 }
+                let iso8601Formatter = ISO8601DateFormatter()
                 for (index, comicId) in local.comicIds.enumerated() {
-                    guard downloadedIds.contains(comicId) else { continue }
+                    guard let meta = offlineSnapshot.completedMetas[comicId] else {
+                        continue
+                    }
                     let cached = cachedMap[comicId]
                     if let contentType, let cachedType = cached?.type, cachedType != contentType {
                         continue
                     }
-                    let meta = OfflineFileManager.shared.loadMeta(comicId: comicId)
+                    let resolvedType = cached?.type
+                        ?? (meta.isNovel == true ? "novel" : "comic")
                     comics.append(GroupComicItem(
                         id: comicId,
                         filename: nil,
-                        title: cached?.title ?? meta?.title ?? comicId,
-                        pageCount: cached?.pageCount ?? meta?.pageCount ?? 0,
-                        fileSize: meta?.fileSize,
+                        title: cached?.title ?? meta.title,
+                        pageCount: cached?.pageCount ?? meta.pageCount,
+                        fileSize: meta.fileSize,
                         lastReadPage: cached?.lastReadPage ?? 0,
                         totalReadTime: nil,
                         coverUrl: cached?.coverUrl,
                         sortIndex: index,
                         readingStatus: nil,
-                        lastReadAt: cached?.lastReadAt.map { ISO8601DateFormatter().string(from: $0) },
-                        type: cached?.type
+                        lastReadAt: cached?.lastReadAt.map {
+                            iso8601Formatter.string(from: $0)
+                        },
+                        type: resolvedType
                     ))
                 }
                 updateDetail(GroupDetailResponse(
@@ -459,13 +481,18 @@ final class GroupDetailViewModel {
 
     func readingContext(for comicId: String) -> ReadingGroupContext? {
         guard let detail else { return nil }
-        guard let index = readingUnitIds.firstIndex(of: comicId) else { return nil }
+        guard let index = readingUnitIndexById[comicId] else { return nil }
         return ReadingGroupContext(groupId: detail.id, volumeIds: readingUnitIds, currentIndex: index)
     }
 
     private func updateDetail(_ newDetail: GroupDetailResponse?) {
         detail = newDetail
         readingUnitIds = newDetail?.readingUnits.map { $0.id } ?? []
+        readingUnitIndexById = [:]
+        for (index, comicId) in readingUnitIds.enumerated()
+        where readingUnitIndexById[comicId] == nil {
+            readingUnitIndexById[comicId] = index
+        }
     }
 }
 
@@ -477,21 +504,6 @@ struct SeriesDetailView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(APIClient.self) private var api
     @State private var isGrid = true
-    @State private var selectedSectionId: String?
-
-    private static let unsectionedSectionId = "__unsectioned"
-
-    private var visibleItems: [SeriesItem] {
-        guard let detail = viewModel.detail else { return [] }
-        guard let selectedSectionId else { return viewModel.allItems }
-        if selectedSectionId == Self.unsectionedSectionId {
-            return detail.unsectioned.sorted { $0.sortIndex < $1.sortIndex }
-        }
-        return detail.sections
-            .first { $0.id == selectedSectionId }?
-            .items
-            .sorted { $0.sortIndex < $1.sortIndex } ?? []
-    }
 
     var body: some View {
         Group {
@@ -515,26 +527,26 @@ struct SeriesDetailView: View {
                                 HStack(spacing: 8) {
                                     SeriesFilterButton(
                                         title: "全部 \(viewModel.allItems.count)",
-                                        isSelected: selectedSectionId == nil
+                                        isSelected: viewModel.selectedSectionId == nil
                                     ) {
-                                        selectedSectionId = nil
+                                        viewModel.selectSection(nil)
                                     }
 
                                     if !detail.unsectioned.isEmpty {
                                         SeriesFilterButton(
                                             title: "未分季 \(detail.unsectioned.count)",
-                                            isSelected: selectedSectionId == Self.unsectionedSectionId
+                                            isSelected: viewModel.selectedSectionId == SeriesDetailViewModel.unsectionedSectionId
                                         ) {
-                                            selectedSectionId = Self.unsectionedSectionId
+                                            viewModel.selectSection(SeriesDetailViewModel.unsectionedSectionId)
                                         }
                                     }
 
                                     ForEach(detail.sections) { section in
                                         SeriesFilterButton(
                                             title: "\(section.title) \(section.items.count)",
-                                            isSelected: selectedSectionId == section.id
+                                            isSelected: viewModel.selectedSectionId == section.id
                                         ) {
-                                            selectedSectionId = section.id
+                                            viewModel.selectSection(section.id)
                                         }
                                     }
                                 }
@@ -546,7 +558,7 @@ struct SeriesDetailView: View {
                         if isGrid {
                             let cols = Array(repeating: GridItem(.flexible(), spacing: 12), count: sizeClass == .regular ? 5 : 3)
                             LazyVGrid(columns: cols, spacing: 16) {
-                                ForEach(visibleItems) { item in
+                                ForEach(viewModel.visibleItems) { item in
                                     NavigationLink {
                                         ComicDetailView(
                                             comicId: item.comic.id,
@@ -562,7 +574,7 @@ struct SeriesDetailView: View {
                             .padding(.bottom, 24)
                         } else {
                             LazyVStack(spacing: 0) {
-                                ForEach(visibleItems) { item in
+                                ForEach(viewModel.visibleItems) { item in
                                     NavigationLink {
                                         ComicDetailView(
                                             comicId: item.comic.id,
@@ -819,11 +831,17 @@ struct SeriesUnitListRowView: View {
 @MainActor
 @Observable
 final class SeriesDetailViewModel {
+    static let unsectionedSectionId = "__unsectioned"
+
     var detail: SeriesDetailResponse?
     var isLoading = false
     var errorMessage: String?
     private(set) var allItems: [SeriesItem] = []
+    private(set) var visibleItems: [SeriesItem] = []
+    private(set) var selectedSectionId: String?
     private var allItemIds: [String] = []
+    private var allItemIndexById: [String: Int] = [:]
+    private var sectionItemsById: [String: [SeriesItem]] = [:]
 
     var continueItem: SeriesItem? {
         if let inProgress = allItems.first(where: { hasStarted($0) && !isFinished($0) }) {
@@ -847,17 +865,49 @@ final class SeriesDetailViewModel {
     }
 
     func readingContext(for item: SeriesItem) -> ReadingGroupContext? {
-        guard let index = allItemIds.firstIndex(of: item.comic.id) else { return nil }
+        guard let index = allItemIndexById[item.comic.id] else { return nil }
         return ReadingGroupContext(groupId: 0, volumeIds: allItemIds, currentIndex: index)
+    }
+
+    func selectSection(_ sectionId: String?) {
+        selectedSectionId = sectionId
+        guard let sectionId else {
+            visibleItems = allItems
+            return
+        }
+        visibleItems = sectionItemsById[sectionId] ?? []
     }
 
     private func updateDetail(_ newDetail: SeriesDetailResponse?) {
         detail = newDetail
-        allItems = newDetail.map {
-            ($0.unsectioned + $0.sections.flatMap { $0.items })
-                .sorted { $0.sortIndex < $1.sortIndex }
-        } ?? []
+        guard let newDetail else {
+            allItems = []
+            visibleItems = []
+            selectedSectionId = nil
+            sectionItemsById = [:]
+            allItemIds = []
+            allItemIndexById = [:]
+            return
+        }
+
+        let unsectioned = newDetail.unsectioned.sorted { $0.sortIndex < $1.sortIndex }
+        let sortedSectionItems = newDetail.sections.map { section in
+            (section.id, section.items.sorted { $0.sortIndex < $1.sortIndex })
+        }
+        sectionItemsById = Dictionary(
+            uniqueKeysWithValues: sortedSectionItems
+        )
+        sectionItemsById[Self.unsectionedSectionId] = unsectioned
+        allItems = (unsectioned + sortedSectionItems.flatMap(\.1))
+            .sorted { $0.sortIndex < $1.sortIndex }
+        selectedSectionId = nil
+        visibleItems = allItems
         allItemIds = allItems.map { $0.comic.id }
+        allItemIndexById = [:]
+        for (index, comicId) in allItemIds.enumerated()
+        where allItemIndexById[comicId] == nil {
+            allItemIndexById[comicId] = index
+        }
     }
 
     private func isFinished(_ item: SeriesItem) -> Bool {

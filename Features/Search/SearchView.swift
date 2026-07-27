@@ -14,12 +14,11 @@ struct SearchView: View {
                 TextField("搜索漫画或小说...", text: $viewModel.query)
                     .textInputAutocapitalization(.never)
                     .onSubmit {
-                        viewModel.search()
+                        viewModel.search(immediately: true)
                     }
                 if !viewModel.query.isEmpty {
                     Button {
-                        viewModel.query = ""
-                        viewModel.results = []
+                        viewModel.clear()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
@@ -126,15 +125,20 @@ final class SearchViewModel {
     private let api = APIClient.shared
     private var searchTask: Task<Void, Never>?
 
-    func search() {
+    func search(immediately: Bool = false) {
         searchTask?.cancel()
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else {
             results = []
+            isLoading = false
             return
         }
 
         searchTask = Task {
+            if !immediately {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+            }
             isLoading = true
 
             do {
@@ -147,7 +151,17 @@ final class SearchViewModel {
                     AppLogger.error("搜索失败: \(error)")
                 }
             }
-            isLoading = false
+            if !Task.isCancelled {
+                isLoading = false
+            }
         }
+    }
+
+    func clear() {
+        searchTask?.cancel()
+        searchTask = nil
+        query = ""
+        results = []
+        isLoading = false
     }
 }

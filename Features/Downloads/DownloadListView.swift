@@ -6,8 +6,6 @@ struct DownloadListView: View {
     private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @State private var showClearAlert = false
-    @State private var offlineSize: Int64 = 0
-    @State private var isLoadingStorageSize = false
 
     var body: some View {
         let activeTasks = downloadManager.activeTasks
@@ -55,7 +53,11 @@ struct DownloadListView: View {
                     HStack {
                         Label("已用空间", systemImage: "internaldrive")
                         Spacer()
-                        Text(isLoadingStorageSize ? "计算中..." : formatFileSize(offlineSize))
+                        Text(
+                            downloadManager.isStorageUsageLoaded
+                                ? formatFileSize(downloadManager.usedStorageBytes)
+                                : "计算中..."
+                        )
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -76,34 +78,20 @@ struct DownloadListView: View {
         .navigationTitle("已下载")
         .task {
             downloadManager.setModelContext(modelContext)
-            downloadManager.restoreFromStore(context: modelContext)
-            await loadStorageSize()
-        }
-        .onChange(of: downloadManager.completedTasks.count) { _, _ in
-            Task { await loadStorageSize() }
+            await downloadManager.restoreFromStore(context: modelContext)
         }
         .alert("清除全部下载", isPresented: $showClearAlert) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
-                for task in downloadManager.completedTasks {
-                    downloadManager.deleteDownload(comicId: task.comicId)
-                }
-                Task { await loadStorageSize() }
+                downloadManager.deleteDownloads(
+                    comicIds: downloadManager.completedTasks.map(\.comicId)
+                )
             }
         } message: {
             Text("将删除所有已下载的漫画文件，此操作不可恢复。")
         }
     }
 
-    @MainActor
-    private func loadStorageSize() async {
-        isLoadingStorageSize = true
-        let size = await Task.detached(priority: .utility) {
-            OfflineFileManager.shared.totalDiskSize
-        }.value
-        offlineSize = size
-        isLoadingStorageSize = false
-    }
 }
 
 // MARK: - 下载中的任务行
@@ -171,7 +159,7 @@ struct DownloadTaskRow: View {
                     comicId: task.comicId,
                     title: task.title,
                     pageCount: task.totalPages,
-                    fileSize: nil,
+                    fileSize: task.fileSize,
                     isNovel: task.isNovel
                 )
             } label: {

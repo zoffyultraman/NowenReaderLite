@@ -16,7 +16,6 @@ struct ComicReaderView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @State private var showOverlay = false
-    @AppStorage("pageTransitionStyle") private var pageTransitionStyle: String = "翻书"
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -84,7 +83,7 @@ struct ComicReaderView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .statusBarHidden(!showOverlay)
+        .readerStatusBarHidden(!showOverlay)
         .task {
             viewModel.setModelContext(modelContext)
             await viewModel.load(comicId: comicId, initialPage: initialPage, groupContext: groupContext)
@@ -224,6 +223,9 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
+    private var imageLoadTask: Task<Void, Never>?
+    private var fittedBoundsSize = CGSize.zero
+    private var hasFittedImage = false
 
     init(imageURL: URL, pageIndex: Int, comicId: String, cachedImage: UIImage? = nil) {
         self.imageURL = imageURL
@@ -234,6 +236,10 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        imageLoadTask?.cancel()
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -279,55 +285,45 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
             return
         }
 
-        // 离线优先：检查本地已下载文件
-        if let localData = OfflineFileManager.shared.loadPageData(comicId: comicId, page: pageIndex) {
-            if let image = UIImage(data: localData) {
-                activityIndicator.stopAnimating()
-                imageView.image = image
-                fitImage()
-                onImageLoaded?(image)
-                return
-            } else {
-                AppLogger.log("本地图片解码失败: \(comicId) page \(pageIndex), 大小 \(localData.count) bytes")
-            }
-        }
-
-        // 网络不可达时直接跳过，不等超时
-        guard APIClient.shared.isNetworkReachable else {
-            AppLogger.log("网络不可达，跳过网络加载: \(comicId) page \(pageIndex)")
-            return
-        }
-
-        let request = APIClient.shared.authenticatedRequest(url: imageURL)
-
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        imageLoadTask?.cancel()
+        imageLoadTask = Task { [weak self] in
             guard let self else { return }
-            if let error {
-                AppLogger.log("页面加载失败: \(self.comicId) page \(self.pageIndex): \(error.localizedDescription)")
-                return
-            }
-            guard let data, let image = UIImage(data: data) else { return }
-            DispatchQueue.main.async {
-                self.activityIndicator.stopAnimating()
-                self.imageView.image = image
-                self.fitImage()
-                self.onImageLoaded?(image)
-            }
-        }.resume()
+            guard let image = await ReaderCacheManager.shared.loadSourceImage(
+                comicId: comicId,
+                page: pageIndex,
+                imageURL: imageURL
+            ), !Task.isCancelled else { return }
+            display(image)
+        }
+    }
+
+    private func display(_ image: UIImage) {
+        activityIndicator.stopAnimating()
+        imageView.image = image
+        fitImage()
+        onImageLoaded?(image)
     }
 
     /// 更新图片（用于超分完成后替换）
     func updateImage(_ image: UIImage) {
         imageView.image = image
-        fitImage()
+        fitImage(preservingViewport: true)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        fitImage()
+        scrollView.frame = view.bounds
+        guard imageView.image != nil else {
+            imageView.frame = scrollView.bounds
+            return
+        }
+        guard fittedBoundsSize != scrollView.bounds.size else { return }
+        fitImage(preservingViewport: hasFittedImage)
     }
 
-    private func fitImage() {
+    private func fitImage(preservingViewport: Bool = false) {
+        let previousZoomScale = scrollView.zoomScale
+        let previousContentOffset = scrollView.contentOffset
         scrollView.frame = view.bounds
         scrollView.zoomScale = 1.0
         guard let image = imageView.image else {
@@ -342,6 +338,21 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
         imageView.frame = CGRect(x: 0, y: 0, width: w, height: h)
         scrollView.contentSize = CGSize(width: w, height: h)
         updateInset()
+        fittedBoundsSize = scrollView.bounds.size
+
+        if preservingViewport {
+            let zoomScale = min(
+                max(previousZoomScale, scrollView.minimumZoomScale),
+                scrollView.maximumZoomScale
+            )
+            scrollView.setZoomScale(zoomScale, animated: false)
+            updateInset()
+            scrollView.setContentOffset(
+                clampedContentOffset(previousContentOffset),
+                animated: false
+            )
+        }
+        hasFittedImage = true
     }
 
     // MARK: - UIScrollViewDelegate
@@ -357,9 +368,26 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     }
 
     private func updateInset() {
-        let offsetX = max((scrollView.bounds.width - scrollView.contentSize.width * scrollView.zoomScale) / 2, 0)
-        let offsetY = max((scrollView.bounds.height - scrollView.contentSize.height * scrollView.zoomScale) / 2, 0)
+        let offsetX = max((scrollView.bounds.width - scrollView.contentSize.width) / 2, 0)
+        let offsetY = max((scrollView.bounds.height - scrollView.contentSize.height) / 2, 0)
         scrollView.contentInset = UIEdgeInsets(top: offsetY, left: offsetX, bottom: offsetY, right: offsetX)
+    }
+
+    private func clampedContentOffset(_ offset: CGPoint) -> CGPoint {
+        let minX = -scrollView.contentInset.left
+        let minY = -scrollView.contentInset.top
+        let maxX = max(
+            minX,
+            scrollView.contentSize.width - scrollView.bounds.width + scrollView.contentInset.right
+        )
+        let maxY = max(
+            minY,
+            scrollView.contentSize.height - scrollView.bounds.height + scrollView.contentInset.bottom
+        )
+        return CGPoint(
+            x: min(max(offset.x, minX), maxX),
+            y: min(max(offset.y, minY), maxY)
+        )
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -380,14 +408,71 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
 }
 
 // MARK: - 全局阅读器缓存
-class ReaderCacheManager {
+@MainActor
+final class ReaderCacheManager {
     static let shared = ReaderCacheManager()
     let imageCache = NSCache<NSString, UIImage>()
     let upscaledCache = NSCache<NSString, UIImage>()
-    
+    private var sourceImageTasks: [String: (id: UUID, task: Task<UIImage?, Never>)] = [:]
+
+    func loadSourceImage(comicId: String, page: Int, imageURL: URL) async -> UIImage? {
+        let key = "\(comicId)_page_\(page)"
+        if let cached = imageCache.object(forKey: key as NSString) {
+            return cached
+        }
+        if let existing = sourceImageTasks[key] {
+            return await existing.task.value
+        }
+
+        let taskID = UUID()
+        let task = Task<UIImage?, Never> {
+            if let image = await loadOfflinePageImage(comicId: comicId, page: page) {
+                return image
+            }
+            guard !Task.isCancelled, APIClient.shared.isNetworkReachable else {
+                return nil
+            }
+            let request = APIClient.shared.authenticatedRequest(url: imageURL)
+            guard let (data, _) = try? await URLSession.shared.data(for: request),
+                  !Task.isCancelled else {
+                return nil
+            }
+            return await decodePageImage(data)
+        }
+        sourceImageTasks[key] = (taskID, task)
+
+        let image = await task.value
+        if sourceImageTasks[key]?.id == taskID {
+            sourceImageTasks.removeValue(forKey: key)
+            if let image {
+                imageCache.setObject(image, forKey: key as NSString)
+            }
+        }
+        return image
+    }
+
     func clear() {
+        sourceImageTasks.values.forEach { $0.task.cancel() }
+        sourceImageTasks.removeAll()
         imageCache.removeAllObjects()
         upscaledCache.removeAllObjects()
+    }
+}
+
+private actor ReaderUpscaleScheduler {
+    static let shared = ReaderUpscaleScheduler()
+
+    func upscale(
+        _ image: UIImage,
+        mode: UpscaleMode,
+        keepOriginalSize: Bool
+    ) throws -> UIImage {
+        try Task.checkCancellation()
+        return try ImageUpscaler.shared.upscale(
+            image,
+            mode: mode,
+            keepOriginalSize: keepOriginalSize
+        )
     }
 }
 
@@ -465,6 +550,12 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     var basePageIndex: Int = 0
     private var preloadingTasks: [Int: Task<Void, Never>] = [:]
     private var upscalingTasks: [Int: Task<Void, Never>] = [:]
+    private var preloadingTaskIDs: [Int: UUID] = [:]
+    private var upscalingTaskIDs: [Int: UUID] = [:]
+    private var upscaleTargetIndices: Set<Int> = []
+    private var pendingUpscaleImages: [Int: UIImage] = [:]
+    private var unavailableUpscaleIndices: Set<Int> = []
+    private var activeUpscaleIndex: Int?
     
     init(comicId: String, totalPages: Int, initialPage: Int, isDoublePageMode: Bool, isRTL: Bool, upscaleMode: UpscaleMode) {
         self.comicId = comicId
@@ -738,10 +829,6 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         return "\(comicId)_page_\(index)" as NSString
     }
     
-    private func upscaleTaskKey(for index: Int, mode: UpscaleMode) -> String {
-        return "\(comicId)_\(index)_\(mode.rawValue)"
-    }
-    
     private func upscaledCacheKey(for index: Int) -> NSString {
         return "\(comicId)_upscaled_\(index)" as NSString
     }
@@ -749,9 +836,33 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     private func preloadPages(around currentIndex: Int) {
         let preloadRange = isDoublePageMode ? (currentIndex-4...currentIndex+5) : (currentIndex-2...currentIndex+2)
         let upscaleRange = isDoublePageMode ? (currentIndex-2...currentIndex+3) : (currentIndex-1...currentIndex+3)
-        for i in preloadRange {
-            guard i >= 0 && i < totalPages else { continue }
-            let shouldUpscale = upscaleRange.contains(i)
+        let preloadIndices = Set(
+            preloadRange.filter { (0..<totalPages).contains($0) }
+        )
+        let upscaleIndices = Set(
+            upscaleRange.filter { (0..<totalPages).contains($0) }
+        )
+        let requestedIndices = preloadIndices.union(upscaleIndices)
+        upscaleTargetIndices = upscaleIndices
+
+        for index in Array(preloadingTasks.keys)
+        where !requestedIndices.contains(index) {
+            preloadingTaskIDs.removeValue(forKey: index)
+            preloadingTasks.removeValue(forKey: index)?.cancel()
+        }
+        for index in Array(upscalingTasks.keys)
+        where !upscaleIndices.contains(index) {
+            // 保留任务标识，等待取消完成后由统一收尾逻辑释放 activeUpscaleIndex。
+            upscalingTasks[index]?.cancel()
+        }
+        pendingUpscaleImages = pendingUpscaleImages.filter { upscaleIndices.contains($0.key) }
+        unavailableUpscaleIndices.formIntersection(upscaleIndices)
+
+        for i in orderedLoadIndices(
+            around: currentIndex,
+            requestedIndices: requestedIndices
+        ) {
+            let shouldUpscale = upscaleIndices.contains(i)
 
             if let cachedImage = ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: i)) {
                 if shouldUpscale {
@@ -761,78 +872,187 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
             }
 
             if preloadingTasks[i] == nil {
-                let task = Task { [weak self] in
+                unavailableUpscaleIndices.remove(i)
+                let taskID = UUID()
+                let priority = loadPriority(
+                    for: i,
+                    currentIndex: currentIndex,
+                    upscaleIndices: upscaleIndices
+                )
+                let task = Task(priority: priority) { [weak self] in
                     guard let self else { return }
                     defer {
                         Task { @MainActor [weak self] in
-                            self?.preloadingTasks[i] = nil
+                            guard self?.preloadingTaskIDs[i] == taskID else { return }
+                            self?.preloadingTaskIDs.removeValue(forKey: i)
+                            self?.preloadingTasks.removeValue(forKey: i)
                         }
                     }
                     if Task.isCancelled { return }
 
                     let image: UIImage?
-                    if let localData = OfflineFileManager.shared.loadPageData(comicId: comicId, page: i),
-                       let localImage = UIImage(data: localData) {
-                        image = localImage
-                    } else if APIClient.shared.isNetworkReachable,
-                              let url = APIClient.shared.pageImageURL(comicId: comicId, page: i),
-                              let (data, _) = try? await URLSession.shared.data(for: APIClient.shared.authenticatedRequest(url: url)),
-                              let remoteImage = UIImage(data: data) {
-                        image = remoteImage
+                    if let url = APIClient.shared.pageImageURL(comicId: comicId, page: i) {
+                        image = await ReaderCacheManager.shared.loadSourceImage(
+                            comicId: comicId,
+                            page: i,
+                            imageURL: url
+                        )
                     } else {
                         image = nil
                     }
 
-                    guard let image, !Task.isCancelled else { return }
-                    ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: i))
-                    if shouldUpscale {
-                        await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        if let image {
+                            ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: i))
                             self.startUpscaleIfNeeded(for: i, image: image)
+                        } else if self.upscaleTargetIndices.contains(i) {
+                            self.unavailableUpscaleIndices.insert(i)
+                            self.reprioritizeUpscaleWork()
                         }
                     }
                 }
+                preloadingTaskIDs[i] = taskID
                 preloadingTasks[i] = task
             }
         }
+        reprioritizeUpscaleWork()
+    }
+
+    private func orderedLoadIndices(
+        around currentIndex: Int,
+        requestedIndices: Set<Int>
+    ) -> [Int] {
+        let upscaleOffsets = isDoublePageMode
+            ? [0, 1, 2, 3, -1, -2]
+            : [0, 1, 2, 3, -1]
+        var ordered = upscaleOffsets
+            .map { currentIndex + $0 }
+            .filter { requestedIndices.contains($0) }
+        let scheduled = Set(ordered)
+
+        ordered.append(contentsOf: requestedIndices
+            .filter { $0 > currentIndex && !scheduled.contains($0) }
+            .sorted())
+        ordered.append(contentsOf: requestedIndices
+            .filter { $0 < currentIndex && !scheduled.contains($0) }
+            .sorted(by: >))
+        return ordered
+    }
+
+    private func loadPriority(
+        for index: Int,
+        currentIndex: Int,
+        upscaleIndices: Set<Int>
+    ) -> TaskPriority {
+        if index == currentIndex || index == currentIndex + 1 {
+            return .high
+        }
+        return upscaleIndices.contains(index) ? .medium : .low
     }
     
     private func startUpscaleIfNeeded(for index: Int, image: UIImage) {
-        let mode = self.upscaleMode
-        guard mode != .off else { return }
+        guard upscaleMode != .off, upscaleTargetIndices.contains(index) else { return }
+        guard ReaderCacheManager.shared.upscaledCache.object(forKey: upscaledCacheKey(for: index)) == nil else {
+            return
+        }
+        pendingUpscaleImages[index] = image
+        unavailableUpscaleIndices.remove(index)
+        reprioritizeUpscaleWork()
+    }
+
+    private func reprioritizeUpscaleWork() {
+        guard upscaleMode != .off else {
+            activeUpscaleIndex.flatMap { upscalingTasks[$0] }?.cancel()
+            return
+        }
+
+        let preferredIndex = nextUpscaleIndex()
+        if let activeUpscaleIndex {
+            if preferredIndex != activeUpscaleIndex {
+                upscalingTasks[activeUpscaleIndex]?.cancel()
+            }
+            return
+        }
+
+        guard let preferredIndex else { return }
+        guard let image = pendingUpscaleImages[preferredIndex]
+                ?? ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: preferredIndex)) else {
+            // 严格等待更高优先级页面的原图，避免后页抢先占用模型。
+            return
+        }
+
+        beginUpscale(for: preferredIndex, image: image)
+    }
+
+    private func nextUpscaleIndex() -> Int? {
+        for index in orderedUpscaleIndices(around: basePageIndex)
+        where upscaleTargetIndices.contains(index) {
+            if ReaderCacheManager.shared.upscaledCache.object(forKey: upscaledCacheKey(for: index)) != nil {
+                continue
+            }
+            if unavailableUpscaleIndices.contains(index) {
+                continue
+            }
+            return index
+        }
+        return nil
+    }
+
+    private func orderedUpscaleIndices(around currentIndex: Int) -> [Int] {
+        let offsets = isDoublePageMode
+            ? [0, 1, 2, 3, -1, -2]
+            : [0, 1, 2, 3, -1]
+        return offsets
+            .map { currentIndex + $0 }
+            .filter { (0..<totalPages).contains($0) }
+    }
+
+    private func beginUpscale(for index: Int, image: UIImage) {
+        let mode = upscaleMode
         let key = upscaledCacheKey(for: index)
-        
-        if ReaderCacheManager.shared.upscaledCache.object(forKey: key) != nil { return }
-        
-        // 检查是否已有任务在运行
-        if let existingTask = upscalingTasks[index], !existingTask.isCancelled { return }
-        
-        let priority: TaskPriority = (index == basePageIndex || index == basePageIndex + 1) ? .high : .medium
-        
-        let task = Task { [weak self] in
+        let priority: TaskPriority = index == basePageIndex ? .high : .medium
+        let taskID = UUID()
+        activeUpscaleIndex = index
+        let task = Task(priority: priority) { [weak self] in
             guard let self else { return }
             let shouldKeepOriginalSize = UserDefaults.standard.bool(forKey: "keepOriginalSize")
-            
+            var succeeded = false
+
             do {
-                // 使用 Task.detached 在后台执行，不继承 MainActor
-                let result = try await Task.detached(priority: priority) {
-                    try ImageUpscaler.shared.upscale(image, mode: mode, keepOriginalSize: shouldKeepOriginalSize)
-                }.value
+                try Task.checkCancellation()
+                let result = try await ReaderUpscaleScheduler.shared.upscale(
+                    image,
+                    mode: mode,
+                    keepOriginalSize: shouldKeepOriginalSize
+                )
                 
                 if !Task.isCancelled {
                     ReaderCacheManager.shared.upscaledCache.setObject(result, forKey: key)
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
-                        self.checkAndShowUpscaledImage(for: index)
-                    }
+                    succeeded = true
+                    self.checkAndShowUpscaledImage(for: index)
                 }
+            } catch is CancellationError {
+                // 翻页或切换模式时取消属于正常控制流。
             } catch {
                 print(">>> Upscale failed for page \(index): \(error)")
             }
-            
-            DispatchQueue.main.async { [weak self] in
-                self?.upscalingTasks.removeValue(forKey: index)
+
+            if self.upscalingTaskIDs[index] == taskID {
+                self.upscalingTaskIDs.removeValue(forKey: index)
+                self.upscalingTasks.removeValue(forKey: index)
+                if self.activeUpscaleIndex == index {
+                    self.activeUpscaleIndex = nil
+                }
+                if succeeded {
+                    self.pendingUpscaleImages.removeValue(forKey: index)
+                } else if !Task.isCancelled {
+                    self.unavailableUpscaleIndices.insert(index)
+                }
+                self.reprioritizeUpscaleWork()
             }
         }
+        upscalingTaskIDs[index] = taskID
         upscalingTasks[index] = task
     }
     
@@ -841,17 +1061,20 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         ReaderCacheManager.shared.upscaledCache.removeAllObjects()
         upscalingTasks.values.forEach { $0.cancel() }
         upscalingTasks.removeAll()
+        upscalingTaskIDs.removeAll()
+        pendingUpscaleImages.removeAll()
+        unavailableUpscaleIndices.removeAll()
+        activeUpscaleIndex = nil
         
-        guard let viewControllers = self.viewControllers else { return }
-        for vc in viewControllers {
+        for vc in viewControllers ?? [] {
             if let zvc = vc as? ZoomablePageVC {
                 // Remove upscaled image currently showing
                 if let cached = ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: zvc.pageIndex)) {
                     zvc.updateImage(cached)
-                    startUpscaleIfNeeded(for: zvc.pageIndex, image: cached)
                 }
             }
         }
+        preloadPages(around: basePageIndex)
     }
 
     private func checkAndShowUpscaledImage(for index: Int) {
@@ -863,6 +1086,34 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
                 zvc.updateImage(upscaled)
             }
         }
+    }
+}
+
+private func loadOfflinePageImage(comicId: String, page: Int) async -> UIImage? {
+    let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
+        guard !Task.isCancelled,
+              let data = OfflineFileManager.shared.loadPageData(comicId: comicId, page: page),
+              !Task.isCancelled else {
+            return nil
+        }
+        return UIImage(data: data)
+    }
+    return await withTaskCancellationHandler {
+        await task.value
+    } onCancel: {
+        task.cancel()
+    }
+}
+
+private func decodePageImage(_ data: Data) async -> UIImage? {
+    let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
+        guard !Task.isCancelled else { return nil }
+        return UIImage(data: data)
+    }
+    return await withTaskCancellationHandler {
+        await task.value
+    } onCancel: {
+        task.cancel()
     }
 }
 
@@ -880,20 +1131,13 @@ import SwiftUI
 
 struct ReaderSettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("pageTransitionStyle") private var pageTransitionStyle: String = "翻书"
     @AppStorage("isRTL") private var isRTL: Bool = true
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
     
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("阅读设置")) {
-                    Picker("翻页效果", selection: $pageTransitionStyle) {
-                        Text("翻书").tag("翻书")
-                        Text("平移").tag("平移")
-                    }
-                    .pickerStyle(.segmented)
-                    
+                Section("阅读设置") {
                     Toggle("从右向左阅读 (RTL)", isOn: $isRTL)
                     
                     Picker("超分辨率", selection: $upscaleMode) {

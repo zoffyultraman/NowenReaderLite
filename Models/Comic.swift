@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 漫画/小说数据模型
 
-struct Comic: Codable, Identifiable {
+struct Comic: Codable, Identifiable, Sendable {
     let id: String
     let title: String
     let author: String?
@@ -75,13 +75,13 @@ struct Comic: Codable, Identifiable {
     }
 }
 
-struct TagItem: Codable, Hashable {
+struct TagItem: Codable, Hashable, Sendable {
     let id: Int?
     let name: String
     let color: String?
 }
 
-struct CategoryItem: Codable, Hashable {
+struct CategoryItem: Codable, Hashable, Sendable {
     let id: Int
     let name: String
     let slug: String?
@@ -89,7 +89,7 @@ struct CategoryItem: Codable, Hashable {
 
 // MARK: - 列表响应
 
-struct ComicListResponse: Codable {
+struct ComicListResponse: Codable, Sendable {
     let comics: [Comic]
     let total: Int
     let page: Int
@@ -104,14 +104,14 @@ struct ComicListResponse: Codable {
 
 // MARK: - 页面列表
 
-struct PageList: Codable {
+struct PageList: Codable, Sendable {
     let totalPages: Int
     let isNovel: Bool?
     let isPdf: Bool?
     let pages: [PageEntry]?
 }
 
-struct PageEntry: Codable {
+struct PageEntry: Codable, Sendable {
     let index: Int
     let name: String?
     let title: String?
@@ -119,7 +119,7 @@ struct PageEntry: Codable {
 
 // MARK: - 章节内容
 
-struct ChapterContent: Codable {
+struct ChapterContent: Codable, Sendable {
     let title: String?
     let content: String?
     let chapterIndex: Int?

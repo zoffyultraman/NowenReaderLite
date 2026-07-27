@@ -64,11 +64,8 @@ struct FavoritesMainContent: View {
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
         }
-        .task {
+        .task(id: api.selectedLibraryId) {
             await viewModel.loadFavorites()
-        }
-        .onChange(of: api.selectedLibraryId) { _, _ in
-            Task { await viewModel.loadFavorites() }
         }
         .overlay {
             if viewModel.isLoading && viewModel.comics.isEmpty {
@@ -106,23 +103,35 @@ struct OfflineUnavailableView: View {
 final class FavoritesViewModel {
     var comics: [Comic] = []
     var isLoading = false
+    private var loadVersion = 0
 
     func loadFavorites() async {
+        loadVersion += 1
+        let version = loadVersion
         // 离线或网络不可达：立即返回，不挂起等超时
         guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
             comics = []
             isLoading = false
             return
         }
-        guard !isLoading else { return }
         isLoading = true
+        defer {
+            if version == loadVersion {
+                isLoading = false
+            }
+        }
         do {
             let resp = try await APIClient.shared.fetchComics(page: 1, pageSize: 50, favorites: true)
+            guard !Task.isCancelled, version == loadVersion else { return }
             comics = resp.comics
         } catch {
+            guard !Task.isCancelled,
+                  (error as? URLError)?.code != .cancelled,
+                  version == loadVersion else {
+                return
+            }
             AppLogger.error("加载收藏失败: \(error)")
             if APIClient.shared.isOfflineMode { comics = [] }
         }
-        isLoading = false
     }
 }
