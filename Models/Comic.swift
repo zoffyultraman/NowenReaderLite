@@ -31,7 +31,12 @@ struct Comic: Codable, Identifiable, Sendable {
 
     var progress: Int {
         guard pageCount > 0 else { return 0 }
-        guard lastReadPage > 0 || readingStatus == "reading" || readingStatus == "finished" else { return 0 }
+        guard lastReadPage > 0
+                || lastReadAt != nil
+                || readingStatus == "reading"
+                || readingStatus == "finished" else {
+            return 0
+        }
         return min(100, Int(Double(lastReadPage + 1) / Double(pageCount) * 100))
     }
 
@@ -45,9 +50,8 @@ struct Comic: Codable, Identifiable, Sendable {
 
     var seriesProgress: Int {
         guard isSeriesShelfItem, pageCount > 0 else { return progress }
-        guard lastReadAt != nil || lastReadPage > 0 else { return 0 }
-        let currentItem = min(max(lastReadPage + 1, 0), pageCount)
-        return min(100, Int(Double(currentItem) / Double(pageCount) * 100))
+        let completedItems = min(max(lastReadPage, 0), pageCount)
+        return min(100, Int(Double(completedItems) / Double(pageCount) * 100))
     }
 
     enum ContentType: String {
@@ -105,16 +109,24 @@ struct ComicListResponse: Codable, Sendable {
 // MARK: - 页面列表
 
 struct PageList: Codable, Sendable {
+    let comicId: String?
+    let title: String?
     let totalPages: Int
     let isNovel: Bool?
     let isPdf: Bool?
     let pages: [PageEntry]?
 }
 
-struct PageEntry: Codable, Sendable {
+struct PageEntry: Codable, Identifiable, Hashable, Sendable {
     let index: Int
     let name: String?
+    let url: String?
     let title: String?
+    let level: Int?
+    let parentIndex: Int?
+    let hasChildren: Bool?
+
+    var id: Int { index }
 }
 
 // MARK: - 章节内容

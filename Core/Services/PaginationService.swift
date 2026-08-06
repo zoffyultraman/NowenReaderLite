@@ -4,6 +4,32 @@ import UIKit
 /// 纯文本分页算法，无状态，可在任意线程调用
 enum PaginationService {
 
+    /// EPUB 章节可能是 HTML；纯文本章节保持原样。
+    static func readableText(content: String, mimeType: String?) -> String {
+        guard isHTML(content: content, mimeType: mimeType),
+              let data = content.data(using: .utf8),
+              let attributed = try? NSAttributedString(
+                data: data,
+                options: [
+                    .documentType: NSAttributedString.DocumentType.html,
+                    .characterEncoding: String.Encoding.utf8.rawValue,
+                ],
+                documentAttributes: nil
+              ) else {
+            return content
+        }
+
+        return attributed.string
+            .replacingOccurrences(of: "\u{fffc}", with: "\n")
+            .replacingOccurrences(of: "\u{00a0}", with: " ")
+            .replacingOccurrences(
+                of: #"\n[ \t]*\n(?:[ \t]*\n)+"#,
+                with: "\n\n",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// 将纯文本按屏幕尺寸分页，返回每页的文本字符串
     static func paginate(
         text: String,
@@ -60,6 +86,19 @@ enum PaginationService {
     }
 
     // MARK: - Private
+
+    private static func isHTML(content: String, mimeType: String?) -> Bool {
+        if mimeType?.localizedCaseInsensitiveContains("html") == true {
+            return true
+        }
+        let prefix = content.prefix(2048).lowercased()
+        return prefix.contains("<html")
+            || prefix.contains("<body")
+            || prefix.contains("<p")
+            || prefix.contains("<div")
+            || prefix.contains("<br")
+            || prefix.contains("<h1")
+    }
 
     private static func sentenceBoundaryLength(
         in source: NSString,

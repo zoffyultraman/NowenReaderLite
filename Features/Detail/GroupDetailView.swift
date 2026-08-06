@@ -77,6 +77,8 @@ struct GroupDetailView: View {
                         }
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
+
+                        WorkDescriptionSection(text: detail.description)
                     }
 
                     VStack(alignment: .leading, spacing: 20) {
@@ -124,8 +126,9 @@ struct GroupDetailView: View {
                 }
             }
         }
-        .navigationTitle(viewModel.detail?.name ?? "合集")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 // 下载全部按钮
@@ -522,7 +525,7 @@ struct SeriesDetailView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
 
-                        if !detail.sections.isEmpty || !detail.unsectioned.isEmpty {
+                        if !detail.sections.isEmpty {
                             ScrollView(.horizontal) {
                                 HStack(spacing: 8) {
                                     SeriesFilterButton(
@@ -534,7 +537,7 @@ struct SeriesDetailView: View {
 
                                     if !detail.unsectioned.isEmpty {
                                         SeriesFilterButton(
-                                            title: "未分季 \(detail.unsectioned.count)",
+                                            title: "其他 \(detail.unsectioned.count)",
                                             isSelected: viewModel.selectedSectionId == SeriesDetailViewModel.unsectionedSectionId
                                         ) {
                                             viewModel.selectSection(SeriesDetailViewModel.unsectionedSectionId)
@@ -605,8 +608,9 @@ struct SeriesDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle(viewModel.detail?.series.title ?? "目录作品")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -631,6 +635,15 @@ struct SeriesHeaderView: View {
     private var coverImageURL: URL? {
         guard let cover = series.coverUrl, !cover.isEmpty else { return nil }
         return URL(string: cover.hasPrefix("http") ? cover : "\(serverURL)\(cover)")
+    }
+
+    private var displayPath: String? {
+        let path = series.rootRelativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty,
+              path.localizedCaseInsensitiveCompare(series.title) != .orderedSame else {
+            return nil
+        }
+        return path
     }
 
     var body: some View {
@@ -659,8 +672,17 @@ struct SeriesHeaderView: View {
                         .font(.title3.weight(.bold))
                         .lineLimit(2)
 
-                    if !series.rootRelativePath.isEmpty {
-                        Text(series.rootRelativePath)
+                    if let author = series.author?.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ), !author.isEmpty {
+                        Label(author, systemImage: "person")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    if let displayPath {
+                        Text(displayPath)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -676,6 +698,12 @@ struct SeriesHeaderView: View {
                         }
                         if series.totalReadTime > 0 {
                             Label(formatDuration(series.totalReadTime), systemImage: "clock")
+                        }
+                        if let year = series.year {
+                            Label(
+                                year.formatted(.number.grouping(.never)),
+                                systemImage: "calendar"
+                            )
                         }
                     }
                     .font(.caption)
@@ -710,6 +738,57 @@ struct SeriesHeaderView: View {
                     ProgressView(value: Double(series.completedItemCount), total: Double(max(series.itemCount, 1)))
                 }
             }
+
+            WorkDescriptionSection(text: series.description, horizontalPadding: 0)
+        }
+    }
+}
+
+struct WorkDescriptionSection: View {
+    let text: String?
+    var horizontalPadding: CGFloat = 20
+    @State private var isExpanded = false
+
+    private var normalizedText: String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var canExpand: Bool {
+        guard let normalizedText else { return false }
+        return normalizedText.count > 100 || normalizedText.filter(\.isNewline).count >= 3
+    }
+
+    var body: some View {
+        if let normalizedText {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("作品简介", systemImage: "text.alignleft")
+                    .font(.headline)
+                Text(normalizedText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(4)
+                    .lineLimit(isExpanded ? nil : 5)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if canExpand {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        Label(
+                            isExpanded ? "收起" : "展开",
+                            systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                        )
+                        .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                }
+            }
+            .padding(.horizontal, horizontalPadding)
         }
     }
 }

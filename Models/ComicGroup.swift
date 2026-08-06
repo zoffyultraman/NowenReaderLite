@@ -235,6 +235,17 @@ struct SeriesSummary: Codable, Identifiable, Hashable, Sendable {
     let sortTitle: String?
     let coverComicId: String?
     let coverUrl: String?
+    let author: String?
+    let description: String?
+    let year: Int?
+    let publisher: String?
+    let language: String?
+    let genre: String?
+    let status: String?
+    let externalRating: Double?
+    let externalRatingMax: Double?
+    let externalRatingSource: String?
+    let tags: [TagItem]?
     let itemCount: Int
     let sectionCount: Int
     let completedItemCount: Int

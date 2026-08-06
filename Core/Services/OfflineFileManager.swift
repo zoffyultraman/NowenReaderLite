@@ -42,6 +42,11 @@ final class OfflineFileManager {
         comicDir(for: comicId).appendingPathComponent("meta.json")
     }
 
+    /// 小说章节目录元数据
+    func novelPageListURL(comicId: String) -> URL {
+        comicDir(for: comicId).appendingPathComponent("novel_pages.json")
+    }
+
     // MARK: - 判断
 
     /// 某页是否已下载到本地
@@ -84,6 +89,44 @@ final class OfflineFileManager {
         return try? Data(contentsOf: url)
     }
 
+    func loadNovelPageList(comicId: String) -> PageList? {
+        withComicFilesLock {
+            guard let data = try? Data(contentsOf: novelPageListURL(comicId: comicId)) else {
+                return nil
+            }
+            return try? JSONDecoder().decode(PageList.self, from: data)
+        }
+    }
+
+    /// 兼容新版完整章节 JSON 与旧版纯正文字节。
+    func loadNovelChapter(comicId: String, chapter: Int) -> ChapterContent? {
+        withComicFilesLock {
+            guard let data = try? Data(contentsOf: pageURL(comicId: comicId, page: chapter)) else {
+                return nil
+            }
+            if let content = try? JSONDecoder().decode(ChapterContent.self, from: data) {
+                return content
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            let pageList: PageList?
+            if let pageListData = try? Data(
+                contentsOf: novelPageListURL(comicId: comicId)
+            ) {
+                pageList = try? JSONDecoder().decode(PageList.self, from: pageListData)
+            } else {
+                pageList = nil
+            }
+            let title = pageList?.pages?.first(where: { $0.index == chapter })?.title
+            return ChapterContent(
+                title: title,
+                content: text,
+                chapterIndex: chapter,
+                totalChapters: pageList?.totalPages,
+                mimeType: Self.looksLikeHTML(text) ? "text/html; charset=utf-8" : "text/plain; charset=utf-8"
+            )
+        }
+    }
+
     // MARK: - 写入
 
     /// 保存某页的原始 JPEG Data
@@ -101,6 +144,22 @@ final class OfflineFileManager {
             }
             let url = pageURL(comicId: comicId, page: page)
             try data.write(to: url, options: .atomic)
+        }
+    }
+
+    func saveNovelPageList(
+        _ pageList: PageList,
+        comicId: String,
+        generation: String? = nil
+    ) throws {
+        try withComicFilesLock {
+            try validateWriteUnlocked(comicId: comicId, generation: generation)
+            let dir = comicDir(for: comicId)
+            if !fileManager.fileExists(atPath: dir.path) {
+                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            let data = try JSONEncoder().encode(pageList)
+            try data.write(to: novelPageListURL(comicId: comicId), options: .atomic)
         }
     }
 
@@ -124,6 +183,16 @@ final class OfflineFileManager {
         } else {
             acceptedDownloadGenerations[comicId] = generation
         }
+    }
+
+    private static func looksLikeHTML(_ text: String) -> Bool {
+        let prefix = text.prefix(2048).lowercased()
+        return prefix.contains("<p")
+            || prefix.contains("<div")
+            || prefix.contains("<br")
+            || prefix.contains("<h1")
+            || prefix.contains("<html")
+            || prefix.contains("<body")
     }
 
     // MARK: - 元数据

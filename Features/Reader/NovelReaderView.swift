@@ -134,6 +134,7 @@ struct NovelReaderView: View {
                 ChapterListView(
                     totalChapters: viewModel.totalChapters,
                     currentChapter: viewModel.currentChapter,
+                    chapters: viewModel.chapterEntries,
                     chapterTitles: viewModel.chapterTitles,
                     onSelect: { index in
                         showChapterList = false
@@ -357,36 +358,80 @@ struct NovelBottomOverlay: View {
 
 // MARK: - 目录弹窗
 
+private struct ChapterListRow: Identifiable {
+    let id: Int
+    let title: String
+    let level: Int
+    let parentIndex: Int?
+    let hasChildren: Bool
+}
+
 struct ChapterListView: View {
     let totalChapters: Int
     let currentChapter: Int
+    let chapters: [PageEntry]
     let chapterTitles: [Int: String]
     let onSelect: (Int) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var collapsedIndexes = Set<Int>()
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 List {
-                    // 章节列表在切换漫画时整体重建，index-based identity 不会导致 diff 异常
-                    ForEach(0..<totalChapters, id: \.self) { index in
-                        Button {
-                            onSelect(index)
-                        } label: {
-                            HStack {
-                                Text(chapterTitles[index] ?? "第 \(index + 1) 章")
-                                    .foregroundStyle(index == currentChapter ? Color.accentColor : .primary)
-                                    .fontWeight(index == currentChapter ? .semibold : .regular)
-                                    .lineLimit(1)
-                                Spacer()
-                                if index == currentChapter {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(Color.accentColor)
-                                        .font(.subheadline.weight(.semibold))
+                    ForEach(visibleRows) { row in
+                        HStack(spacing: 6) {
+                            if row.hasChildren {
+                                Button {
+                                    toggleCollapsed(row.id)
+                                } label: {
+                                    Image(
+                                        systemName: collapsedIndexes.contains(row.id)
+                                            ? "chevron.right"
+                                            : "chevron.down"
+                                    )
+                                    .font(.caption.weight(.semibold))
+                                    .frame(width: 20, height: 28)
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    collapsedIndexes.contains(row.id) ? "展开" : "折叠"
+                                )
+                            } else {
+                                Color.clear
+                                    .frame(width: 20, height: 28)
+                                    .accessibilityHidden(true)
                             }
+
+                            Button {
+                                onSelect(row.id)
+                            } label: {
+                                HStack {
+                                    Text(row.title)
+                                        .foregroundStyle(
+                                            row.id == currentChapter
+                                                ? Color.accentColor
+                                                : .primary
+                                        )
+                                        .fontWeight(
+                                            row.id == currentChapter
+                                                ? .semibold
+                                                : .regular
+                                        )
+                                        .lineLimit(2)
+                                    Spacer()
+                                    if row.id == currentChapter {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(Color.accentColor)
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
+                        .padding(.leading, CGFloat(min(row.level, 6)) * 14)
                     }
                 }
                 .onAppear {
@@ -401,6 +446,87 @@ struct ChapterListView: View {
                 }
             }
         }
+    }
+
+    private var rows: [ChapterListRow] {
+        let entries: [PageEntry]
+        if chapters.isEmpty {
+            entries = (0..<totalChapters).map {
+                PageEntry(
+                    index: $0,
+                    name: nil,
+                    url: nil,
+                    title: chapterTitles[$0],
+                    level: nil,
+                    parentIndex: nil,
+                    hasChildren: nil
+                )
+            }
+        } else {
+            entries = chapters
+        }
+
+        var ancestors: [Int] = []
+        var provisional: [(entry: PageEntry, level: Int, parent: Int?)] = []
+        for entry in entries {
+            let level = min(max(0, entry.level ?? 0), ancestors.count)
+            while ancestors.count > level {
+                ancestors.removeLast()
+            }
+            let inferredParent = level > 0 ? ancestors.last : nil
+            let explicitParent = entry.parentIndex.flatMap { $0 >= 0 ? $0 : nil }
+            provisional.append((entry, level, explicitParent ?? inferredParent))
+            ancestors.append(entry.index)
+        }
+
+        let parentIndexes = Set(provisional.compactMap(\.parent))
+        return provisional.enumerated().map { offset, item in
+            let title = nonempty(item.entry.title)
+                ?? nonempty(item.entry.name)
+                ?? chapterTitles[item.entry.index]
+                ?? "第 \(item.entry.index + 1) 章"
+            let nextIsChild = provisional.indices.contains(offset + 1)
+                && provisional[offset + 1].level > item.level
+            return ChapterListRow(
+                id: item.entry.index,
+                title: title,
+                level: item.level,
+                parentIndex: item.parent,
+                hasChildren: item.entry.hasChildren
+                    ?? (parentIndexes.contains(item.entry.index) || nextIsChild)
+            )
+        }
+    }
+
+    private var visibleRows: [ChapterListRow] {
+        let allRows = rows
+        let rowsByIndex = Dictionary(uniqueKeysWithValues: allRows.map { ($0.id, $0) })
+        return allRows.filter { row in
+            var parent = row.parentIndex
+            var visited = Set<Int>()
+            while let parentIndex = parent, visited.insert(parentIndex).inserted {
+                if collapsedIndexes.contains(parentIndex) {
+                    return false
+                }
+                parent = rowsByIndex[parentIndex]?.parentIndex
+            }
+            return true
+        }
+    }
+
+    private func toggleCollapsed(_ index: Int) {
+        if collapsedIndexes.contains(index) {
+            collapsedIndexes.remove(index)
+        } else {
+            collapsedIndexes.insert(index)
+        }
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 
@@ -642,6 +768,7 @@ final class NovelReaderViewModel {
     var groupContext: ReadingGroupContext?
     var currentComicId: String
     var chapterTitles: [Int: String] = [:]
+    var chapterEntries: [PageEntry] = []
     private(set) var paginationGeneration = 0
 
     /// 各章节的起始页索引 [章节号: 在 pages 中的起始位置]
@@ -709,6 +836,7 @@ final class NovelReaderViewModel {
         chapterContent = cached
         currentChapter = chapter
         chapterTitles = cache.chapterTitles
+        chapterEntries = cache.chapterEntries
         await repaginate(fontSize: fontSize)
         updateActivityProgress()
         isLoading = false
@@ -718,12 +846,19 @@ final class NovelReaderViewModel {
     // MARK: - 加载
 
     func load(comicId: String, chapter: Int, fontSize: Double = 17, groupContext: ReadingGroupContext? = nil) async {
-        if !currentComicId.isEmpty, currentComicId != comicId {
+        let isSwitchingComic = !currentComicId.isEmpty && currentComicId != comicId
+        if isSwitchingComic {
             await finishActivity()
+            cache.clear()
+            chapterTitles = [:]
+            chapterEntries = []
+            totalChapters = 0
         }
         self.comicId = comicId
         self.currentComicId = comicId
-        self.groupContext = groupContext
+        if let groupContext {
+            self.groupContext = groupContext
+        }
 
         if await applyFromCache(chapter: chapter, fontSize: fontSize) {
             cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
@@ -733,18 +868,22 @@ final class NovelReaderViewModel {
         self.currentChapter = chapter
         isLoading = true
         do {
-            chapterContent = try await api.fetchChapter(comicId: comicId, index: chapter)
+            chapterContent = try await loadChapterContent(
+                comicId: comicId,
+                index: chapter
+            )
             if let content = chapterContent {
                 cache.put(content, for: chapter)
             }
             if let t = chapterContent?.totalChapters {
                 totalChapters = t
             }
-            if totalChapters == 0 || cache.chapterTitles.isEmpty {
-                if let pageList = try? await api.fetchPages(comicId: comicId) {
+            if totalChapters == 0 || cache.chapterEntries.isEmpty {
+                if let pageList = await loadPageList(comicId: comicId) {
                     totalChapters = pageList.totalPages
                     cache.extractTitles(from: pageList)
                     chapterTitles = cache.chapterTitles
+                    chapterEntries = cache.chapterEntries
                 }
             }
             cache.evict(keeping: chapter)
@@ -777,12 +916,18 @@ final class NovelReaderViewModel {
         cache.clear()
 
         do {
-            let pageList = try await api.fetchPages(comicId: comicId)
+            guard let pageList = await loadPageList(comicId: comicId) else {
+                throw APIError.dataFormat
+            }
             self.totalChapters = max(1, pageList.totalPages)
             cache.extractTitles(from: pageList)
             chapterTitles = cache.chapterTitles
+            chapterEntries = cache.chapterEntries
             let safeChapter = min(chapter, self.totalChapters - 1)
-            chapterContent = try await api.fetchChapter(comicId: comicId, index: safeChapter)
+            chapterContent = try await loadChapterContent(
+                comicId: comicId,
+                index: safeChapter
+            )
             if let content = chapterContent {
                 cache.put(content, for: safeChapter)
             }
@@ -814,7 +959,7 @@ final class NovelReaderViewModel {
     func prevChapter(fontSize: Double = 17) async {
         guard currentChapter > 0 else {
             guard let prevId = groupContext?.previousVolumeId else { return }
-            if let pageList = try? await api.fetchPages(comicId: prevId) {
+            if let pageList = await loadPageList(comicId: prevId) {
                 let lastChapter = max(0, pageList.totalPages - 1)
                 await loadVolume(comicId: prevId, chapter: lastChapter, fontSize: fontSize)
             }
@@ -880,7 +1025,8 @@ final class NovelReaderViewModel {
         let requestID = UUID()
         paginationRequestID = requestID
 
-        let text = content.content ?? ""
+        let rawContent = content.content ?? ""
+        let mimeType = content.mimeType
         let title = content.title
         let chapter = currentChapter
         let size = paginationSize
@@ -888,7 +1034,11 @@ final class NovelReaderViewModel {
         currentChapterTitle = title
 
         let worker = Task.detached(priority: .userInitiated) {
-            PaginationService.paginate(
+            let text = PaginationService.readableText(
+                content: rawContent,
+                mimeType: mimeType
+            )
+            return PaginationService.paginate(
                 text: text,
                 fontSize: fontSize,
                 maxWidth: size.width,
@@ -951,7 +1101,10 @@ final class NovelReaderViewModel {
                 content = cached
             } else {
                 do {
-                    content = try await self.api.fetchChapter(comicId: self.comicId, index: nextIndex)
+                    content = try await self.loadChapterContent(
+                        comicId: self.comicId,
+                        index: nextIndex
+                    )
                     self.cache.put(content, for: nextIndex)
                 } catch {
                     guard self.appendPaginationRequestID == requestID else { return }
@@ -961,11 +1114,16 @@ final class NovelReaderViewModel {
                 }
             }
 
-            let text = content.content ?? ""
+            let rawContent = content.content ?? ""
+            let mimeType = content.mimeType
             let titleHeight: CGFloat = content.title == nil ? 0 : fontSize * 2.5
             let size = self.paginationSize
             let worker = Task.detached(priority: .utility) {
-                PaginationService.paginate(
+                let text = PaginationService.readableText(
+                    content: rawContent,
+                    mimeType: mimeType
+                )
+                return PaginationService.paginate(
                     text: text,
                     fontSize: fontSize,
                     maxWidth: size.width,
@@ -1005,6 +1163,70 @@ final class NovelReaderViewModel {
         currentChapter = nextIndex
         nextChapterAppended = false
         cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
+    }
+
+    // MARK: - 在线与离线数据源
+
+    private func loadChapterContent(
+        comicId: String,
+        index: Int
+    ) async throws -> ChapterContent {
+        do {
+            return try await api.fetchChapter(comicId: comicId, index: index)
+        } catch {
+            let manager = OfflineFileManager.shared
+            if let local = await Task.detached(priority: .utility, operation: {
+                manager.loadNovelChapter(comicId: comicId, chapter: index)
+            }).value {
+                AppLogger.log("网络不可用，从本地缓存加载小说章节")
+                return local
+            }
+            throw error
+        }
+    }
+
+    private func loadPageList(comicId: String) async -> PageList? {
+        do {
+            let pageList = try await api.fetchPages(comicId: comicId)
+            let manager = OfflineFileManager.shared
+            await Task.detached(priority: .utility) {
+                guard manager.loadMeta(comicId: comicId)?.isNovel == true else {
+                    return
+                }
+                try? manager.saveNovelPageList(pageList, comicId: comicId)
+            }.value
+            return pageList
+        } catch {
+            let manager = OfflineFileManager.shared
+            return await Task.detached(priority: .utility) {
+                if let pageList = manager.loadNovelPageList(comicId: comicId) {
+                    return pageList
+                }
+                guard let meta = manager.loadMeta(comicId: comicId),
+                      meta.isNovel == true else {
+                    return nil
+                }
+                let pages = (0..<meta.pageCount).map {
+                    PageEntry(
+                        index: $0,
+                        name: nil,
+                        url: nil,
+                        title: nil,
+                        level: nil,
+                        parentIndex: nil,
+                        hasChildren: nil
+                    )
+                }
+                return PageList(
+                    comicId: comicId,
+                    title: meta.title,
+                    totalPages: meta.pageCount,
+                    isNovel: true,
+                    isPdf: false,
+                    pages: pages
+                )
+            }.value
+        }
     }
 }
 

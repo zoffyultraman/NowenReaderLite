@@ -51,8 +51,9 @@ struct MainTabView: View {
             }
             .tag(4)
         }
-        .tint(Color.accentColor)
-        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
+        .tint(.accentColor)
+        .toolbarBackground(.regularMaterial, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .onAppear {
             downloadManager.setModelContext(modelContext)
             api.startNetworkRecovery()

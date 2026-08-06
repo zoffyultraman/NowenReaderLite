@@ -26,6 +26,7 @@ struct ComicDetailView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .task {
             viewModel.setModelContext(modelContext)
             DownloadManager.shared.setModelContext(modelContext)
@@ -47,6 +48,9 @@ struct ComicDetailContent: View {
                 comicId: comic.id,
                 title: comic.title,
                 author: comic.author,
+                publisher: comic.publisher,
+                year: comic.year,
+                language: comic.language,
                 pageCount: comic.pageCount,
                 isNovel: comic.isNovel,
                 fileSize: comic.fileSize,
@@ -159,6 +163,9 @@ struct ComicCoverInfoSection: View {
     let comicId: String
     let title: String
     let author: String?
+    let publisher: String?
+    let year: Int?
+    let language: String?
     let pageCount: Int
     let isNovel: Bool
     let fileSize: Int64?
@@ -179,6 +186,25 @@ struct ComicCoverInfoSection: View {
 
                 if let author, !author.isEmpty {
                     Label(author, systemImage: "person")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let publisher, !publisher.isEmpty {
+                    Label(publisher, systemImage: "building.2")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if let year {
+                    Label(year.formatted(.number.grouping(.never)), systemImage: "calendar")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let language, !language.isEmpty {
+                    Label(language, systemImage: "globe")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -297,7 +323,7 @@ struct DownloadButton: View {
                     HStack(spacing: 6) {
                         if isDownloading {
                             ProgressView()
-                                .scaleEffect(0.7)
+                                .controlSize(.small)
                             Text("\(Int((task?.progress ?? 0) * 100))%")
                                 .font(.subheadline.weight(.medium))
                         } else {
@@ -421,7 +447,7 @@ struct ComicProgressSection: View {
     let isNovel: Bool
 
     var body: some View {
-        if progress > 0 {
+        if progress > 0, pageCount > 0 {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("阅读进度")
@@ -460,7 +486,7 @@ struct ReadingStatusSection: View {
     let onSelect: (String?) -> Void
 
     private let statuses: [(key: String, icon: String)] = [
-        ("want", "heart"),
+        ("want", "bookmark"),
         ("reading", "book.fill"),
         ("finished", "checkmark.circle.fill"),
         ("shelved", "archivebox"),
@@ -535,16 +561,46 @@ struct ComicTagsSection: View {
 
 struct ComicDescriptionSection: View {
     let description: String?
+    @State private var isExpanded = false
+
+    private var text: String? {
+        guard let description else { return nil }
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var canExpand: Bool {
+        guard let text else { return false }
+        return text.count > 100 || text.filter(\.isNewline).count >= 3
+    }
 
     var body: some View {
-        if let desc = description, !desc.isEmpty {
+        if let text {
             VStack(alignment: .leading, spacing: 8) {
-                Text("简介")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(desc)
+                Label("作品简介", systemImage: "text.alignleft")
+                    .font(.headline)
+                Text(text)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .lineSpacing(4)
+                    .lineLimit(isExpanded ? nil : 5)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if canExpand {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        Label(
+                            isExpanded ? "收起" : "展开",
+                            systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                        )
+                        .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                }
             }
             .padding(.horizontal, 20)
         }

@@ -71,7 +71,7 @@ final class APIClient {
         config.httpCookieStorage = cookieStorage
         config.httpCookieAcceptPolicy = .always
         config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 30
+        config.timeoutIntervalForResource = 120
         self.session = URLSession(configuration: config)
         self.selectedLibraryId = UserDefaults.standard.string(forKey: "selectedLibraryId")
 
@@ -474,11 +474,17 @@ final class APIClient {
     // MARK: - Pages & Content
 
     func fetchPages(comicId: String) async throws -> PageList {
-        try await get("/api/comics/\(comicId)/pages")
+        try await get(
+            "/api/comics/\(comicId)/pages",
+            timeout: 120
+        )
     }
 
     func fetchChapter(comicId: String, index: Int) async throws -> ChapterContent {
-        try await get("/api/comics/\(comicId)/chapter/\(index)")
+        try await get(
+            "/api/comics/\(comicId)/chapter/\(index)",
+            timeout: 120
+        )
     }
 
     func thumbnailURL(comicId: String) -> URL? {
@@ -738,7 +744,8 @@ final class APIClient {
 
     private func get<T: Decodable & Sendable>(
         _ path: String,
-        query: [String: String]? = nil
+        query: [String: String]? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> T {
         // 网络不可达时立即失败，不等超时
         guard isNetworkReachable else { throw APIError.networkError }
@@ -752,6 +759,9 @@ final class APIClient {
         guard let url = components.url else { throw APIError.invalidURL }
 
         var request = URLRequest(url: url)
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let (data, response) = try await session.data(for: request)

@@ -120,7 +120,7 @@ struct ComicReaderView: View {
 
     private var volumeLabel: String {
         guard let ctx = viewModel.groupContext else { return "" }
-        return "\(ctx.currentIndex + 1)/\(ctx.volumeIds.count)"
+        return "卷 \(ctx.currentIndex + 1)/\(ctx.volumeIds.count)"
     }
 }
 
@@ -146,46 +146,36 @@ struct ReaderOverlayView: View {
                     Image(systemName: "chevron.left")
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
                 }
+                .accessibilityLabel("返回")
 
                 Spacer()
-
-                if hasGroupContext {
-                    Text(volumeLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .padding(.trailing, 8)
-                }
 
                 Button(action: { showSettings = true }) {
                     Image(systemName: "gearshape")
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
                 }
+                .accessibilityLabel("阅读设置")
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(
-                LinearGradient(
-                    colors: [.black.opacity(0.85), .clear],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea(edges: .top)
-            )
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.72))
 
             Spacer()
 
             // Bottom Toolbar
             HStack {
-                Text("Page \(currentPage + 1) / \(totalPages)")
+                Text(positionLabel)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.white)
 
                 Spacer()
 
                 Toggle(isOn: $isRTL) {
-                    Text("RTL Mode")
+                    Text("从右向左翻页")
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.white)
                 }
@@ -196,19 +186,18 @@ struct ReaderOverlayView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 8)
-            .background(
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.85)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea(edges: .bottom)
-            )
+            .background(.black.opacity(0.72))
         }
         .transition(.opacity)
         .sheet(isPresented: $showSettings) {
             ReaderSettingsView()
         }
+    }
+
+    private var positionLabel: String {
+        let page = "页 \(currentPage + 1)/\(totalPages)"
+        guard hasGroupContext, !volumeLabel.isEmpty else { return page }
+        return "\(volumeLabel) · \(page)"
     }
 }
 

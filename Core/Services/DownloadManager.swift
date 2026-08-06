@@ -40,6 +40,7 @@ final class DownloadManager {
     /// 最大并发下载任务数（对于 background session，OS 会自行调度，但这控制着“同时处在 downloading 状态的整书任务数”）
     private let maxConcurrent = 3
     private let pageTimeout: TimeInterval = 30
+    private let novelChapterTimeout: TimeInterval = 120
 
     // MARK: - 存储上限
 
@@ -641,12 +642,27 @@ final class DownloadManager {
 
         Task {
             let manager = fileManager
+            let novelPageList: PageList?
+            if task.isNovel {
+                novelPageList = try? await APIClient.shared.fetchPages(
+                    comicId: comicId
+                )
+            } else {
+                novelPageList = nil
+            }
             let downloadedIndices = await Task.detached(priority: .utility) {
                 try? manager.saveMeta(
                     meta,
                     comicId: comicId,
                     generation: generation
                 )
+                if let novelPageList {
+                    try? manager.saveNovelPageList(
+                        novelPageList,
+                        comicId: comicId,
+                        generation: generation
+                    )
+                }
                 return manager.downloadedPageIndices(comicId: comicId)
             }.value
 
@@ -677,7 +693,11 @@ final class DownloadManager {
                 }
                 guard let validURL = url else { continue }
 
-                let request = APIClient.shared.authenticatedRequest(url: validURL, timeout: pageTimeout)
+                let timeout = task.isNovel ? novelChapterTimeout : pageTimeout
+                let request = APIClient.shared.authenticatedRequest(
+                    url: validURL,
+                    timeout: timeout
+                )
                 let downloadTask = backgroundSession.downloadTask(with: request)
                 downloadTask.taskDescription = [
                     comicId,
@@ -1071,14 +1091,15 @@ final class SessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Se
         do {
             let data = try Data(contentsOf: location)
             if descriptor.isNovel {
-                guard let response = try? JSONDecoder().decode(ChapterContent.self, from: data),
-                      let text = response.content,
-                      let textData = text.data(using: .utf8) else {
+                guard let response = try? JSONDecoder().decode(
+                    ChapterContent.self,
+                    from: data
+                ), response.content != nil else {
                     AppLogger.error("解析小说章节 JSON 失败: \(comicId)/\(index)")
                     return
                 }
                 try OfflineFileManager.shared.savePageData(
-                    textData,
+                    data,
                     comicId: comicId,
                     page: index,
                     generation: descriptor.generation

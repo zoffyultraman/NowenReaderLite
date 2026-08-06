@@ -11,10 +11,12 @@ struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
     @FocusState private var isSearchFocused: Bool
+    @State private var isSearchPresented = false
 
     /// 是否处于搜索状态
     private var isSearching: Bool {
-        !searchVM.query.trimmingCharacters(in: .whitespaces).isEmpty
+        isSearchPresented
+            || !searchVM.query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
@@ -23,7 +25,12 @@ struct HomeView: View {
             if isSearching {
                 HomeSearchResults(
                     searchVM: searchVM,
-                    isSearchFocused: $isSearchFocused
+                    isSearchFocused: $isSearchFocused,
+                    onCancel: {
+                        searchVM.clear()
+                        isSearchFocused = false
+                        isSearchPresented = false
+                    }
                 )
             } else {
                 HomeMainContent(
@@ -35,6 +42,23 @@ struct HomeView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                HomeSiteIdentityView()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    isSearchPresented = true
+                    Task { @MainActor in
+                        await Task.yield()
+                        isSearchFocused = true
+                    }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("搜索")
+            }
+        }
         .navigationDestination(for: String.self) { value in
             if value.hasPrefix("group_") {
                 let route = parseGroupRoute(value)
@@ -80,6 +104,41 @@ private enum HomeSection: String, CaseIterable {
     }
 }
 
+private enum HomeViewMode {
+    case grid
+    case list
+}
+
+private enum LibrarySortOption: String, CaseIterable {
+    case addedAt
+    case title
+    case lastReadAt
+    case rating
+    case readTime
+
+    var label: String {
+        switch self {
+        case .addedAt: return "最近添加"
+        case .title: return "标题"
+        case .lastReadAt: return "最近阅读"
+        case .rating: return "评分"
+        case .readTime: return "阅读时间"
+        }
+    }
+}
+
+private enum CollectionSortOption: String, CaseIterable {
+    case defaultOrder
+    case title
+
+    var label: String {
+        switch self {
+        case .defaultOrder: return "默认排序"
+        case .title: return "标题"
+        }
+    }
+}
+
 private struct HomeRefreshID: Hashable {
     let selectedLibraryId: String?
     let isOffline: Bool
@@ -96,15 +155,48 @@ private struct LibraryContentLoadID: Hashable {
 
 // MARK: - 搜索栏
 
+private struct HomeSiteIdentityView: View {
+    @Environment(APIClient.self) private var api
+
+    private var displayName: String {
+        let name = api.siteName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "弄文阅读" : name
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if !api.isOfflineMode,
+               api.isNetworkReachable,
+               let iconURL = api.siteIconURL {
+                AuthenticatedImage(url: iconURL)
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+            } else {
+                Image(systemName: "books.vertical.fill")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 30, height: 30)
+            }
+
+            Text(displayName)
+                .font(.title3.weight(.bold))
+                .lineLimit(1)
+                .layoutPriority(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct HomeSearchBar: View {
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
+    var onCancel: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("搜索漫画或小说...", text: $searchVM.query)
+            TextField("搜索漫画或小说", text: $searchVM.query)
                 .textInputAutocapitalization(.never)
                 .focused($isSearchFocused)
                 .onSubmit { searchVM.search(immediately: true) }
@@ -119,11 +211,17 @@ struct HomeSearchBar: View {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
+                .accessibilityLabel("清除搜索")
+            }
+
+            if let onCancel {
+                Button("取消", action: onCancel)
+                    .font(.subheadline.weight(.medium))
             }
         }
         .padding(12)
-        .background(Color(.systemGray6))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 16)
     }
 }
@@ -145,24 +243,47 @@ struct LibraryPickerView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: api.selectedLibraryIcon)
-                        .foregroundStyle(.secondary)
-                    Text(api.selectedLibraryName)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(12)
-                .background(Color(.systemGray6))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                LibraryPickerLabel(
+                    icon: api.selectedLibraryIcon,
+                    title: api.selectedLibraryName,
+                    showsChevron: true
+                )
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
+        } else {
+            LibraryPickerLabel(
+                icon: api.selectedLibraryIcon,
+                title: api.selectedLibraryName,
+                showsChevron: false
+            )
         }
+    }
+}
+
+private struct LibraryPickerLabel: View {
+    let icon: String
+    let title: String
+    let showsChevron: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(.tint)
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            if showsChevron {
+                Image(systemName: "chevron.down")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -171,6 +292,7 @@ struct LibraryPickerView: View {
 struct HomeSearchResults: View {
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
+    let onCancel: () -> Void
     @Environment(APIClient.self) private var api
 
     var body: some View {
@@ -181,6 +303,9 @@ struct HomeSearchResults: View {
                     ProgressView()
                     Spacer()
                 }
+            } else if searchVM.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ContentUnavailableView("搜索漫画或小说", systemImage: "magnifyingglass")
+                    .listRowBackground(Color.clear)
             } else if searchVM.results.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -204,9 +329,16 @@ struct HomeSearchResults: View {
         }
         .listStyle(.plain)
         .safeAreaInset(edge: .top, spacing: 0) {
-            HomeSearchBar(searchVM: searchVM, isSearchFocused: $isSearchFocused)
+            HomeSearchBar(
+                searchVM: searchVM,
+                isSearchFocused: $isSearchFocused,
+                onCancel: onCancel
+            )
                 .padding(.vertical, 8)
                 .background(.bar)
+        }
+        .onAppear {
+            isSearchFocused = true
         }
     }
 }
@@ -219,6 +351,9 @@ struct HomeMainContent: View {
     @FocusState.Binding var isSearchFocused: Bool
     @Environment(APIClient.self) private var api
     @State private var selectedSection: HomeSection = .library
+    @State private var viewMode: HomeViewMode = .grid
+    @State private var librarySortOption: LibrarySortOption = .addedAt
+    @State private var collectionSortOption: CollectionSortOption = .defaultOrder
 
     /// 根据选中的书库类型决定内容筛选
     private var selectedLibraryType: String? {
@@ -233,11 +368,6 @@ struct HomeMainContent: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             ScrollView {
-                HomeSearchBar(searchVM: searchVM, isSearchFocused: $isSearchFocused)
-                    .padding(.top, 16)
-
-                LibraryPickerView()
-
                 ContinueReadingSection(
                     items: continueReadingVM.items,
                     errorMessage: continueReadingVM.errorMessage
@@ -250,17 +380,34 @@ struct HomeMainContent: View {
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
-                .padding(.bottom, 4)
+                .padding(.bottom, 10)
+
+                HomeLibraryControlBar(
+                    selectedSection: selectedSection,
+                    viewMode: $viewMode,
+                    librarySortOption: $librarySortOption,
+                    collectionSortOption: $collectionSortOption
+                )
+                .padding(.horizontal, 16)
 
                 if selectedSection == .library {
-                    LibraryContentView(contentType: selectedLibraryType)
+                    LibraryContentView(
+                        contentType: selectedLibraryType,
+                        viewMode: $viewMode,
+                        sortOption: $librarySortOption
+                    )
                 } else {
-                    CollectionContentView(contentType: selectedLibraryType)
+                    CollectionContentView(
+                        contentType: selectedLibraryType,
+                        viewMode: $viewMode,
+                        sortOption: $collectionSortOption
+                    )
                 }
             }
             .refreshable {
                 await continueReadingVM.load()
             }
+            .contentMargins(.bottom, 104, for: .scrollContent)
 
             if api.isOfflineMode {
                 Button {
@@ -285,21 +432,104 @@ struct HomeMainContent: View {
     }
 }
 
-// MARK: - 继续观看段落
+private struct HomeLibraryControlBar: View {
+    let selectedSection: HomeSection
+    @Binding var viewMode: HomeViewMode
+    @Binding var librarySortOption: LibrarySortOption
+    @Binding var collectionSortOption: CollectionSortOption
+
+    private var currentSortLabel: String {
+        switch selectedSection {
+        case .library: return librarySortOption.label
+        case .collections: return collectionSortOption.label
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            LibraryPickerView()
+                .frame(maxWidth: .infinity)
+
+            Menu {
+                if selectedSection == .library {
+                    ForEach(LibrarySortOption.allCases, id: \.self) { option in
+                        Button {
+                            librarySortOption = option
+                        } label: {
+                            Label(
+                                option.label,
+                                systemImage: librarySortOption == option ? "checkmark" : "circle"
+                            )
+                        }
+                    }
+                } else {
+                    ForEach(CollectionSortOption.allCases, id: \.self) { option in
+                        Button {
+                            collectionSortOption = option
+                        } label: {
+                            Label(
+                                option.label,
+                                systemImage: collectionSortOption == option ? "checkmark" : "circle"
+                            )
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down")
+                    Text(currentSortLabel)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 44)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .accessibilityLabel("排序：\(currentSortLabel)")
+
+            Button {
+                withAnimation(.snappy) {
+                    viewMode = viewMode == .grid ? .list : .grid
+                }
+            } label: {
+                Image(systemName: viewMode == .grid ? "list.bullet" : "square.grid.2x2")
+                    .font(.body.weight(.medium))
+                    .frame(width: 44, height: 44)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .accessibilityLabel(viewMode == .grid ? "切换到列表" : "切换到网格")
+        }
+    }
+}
+
+// MARK: - 继续阅读段落
 
 struct ContinueReadingSection: View {
     let items: [Comic]
     let errorMessage: String?
     @Environment(APIClient.self) private var api
+    @State private var selectedItemID: String?
+
+    private var selectedIndex: Int {
+        guard let selectedItemID,
+              let index = items.firstIndex(where: { $0.id == selectedItemID }) else {
+            return 0
+        }
+        return index
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Image(systemName: "book.fill")
-                            .foregroundStyle(Color.accentColor)
-                        Text("继续观看")
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(.tint)
+                        Text("继续阅读")
                             .font(.title3.weight(.bold))
                     }
                     .padding(.horizontal, 16)
@@ -310,17 +540,54 @@ struct ContinueReadingSection: View {
                                 NavigationLink {
                                     comic.readerView()
                                 } label: {
-                                    ContinueReadingCard(id: comic.id, title: comic.title, progress: comic.progress, serverURL: api.serverURL)
+                                    ContinueReadingCard(
+                                        id: comic.id,
+                                        title: comic.title,
+                                        progress: comic.progress,
+                                        lastReadPage: comic.lastReadPage,
+                                        pageCount: comic.pageCount,
+                                        isNovel: comic.isNovel,
+                                        serverURL: api.serverURL
+                                    )
                                 }
                                 .buttonStyle(.plain)
+                                .id(comic.id)
+                                .containerRelativeFrame(.horizontal) { length, _ in
+                                    min(length * 0.84, 340)
+                                }
                             }
                         }
                         .padding(.horizontal, 16)
+                        .scrollTargetLayout()
                     }
                     .scrollIndicators(.hidden)
-                    .frame(height: 160)
+                    .scrollTargetBehavior(.viewAligned)
+                    .scrollPosition(id: $selectedItemID)
+                    .frame(height: 184)
+
+                    if items.count > 1 {
+                        HStack(spacing: 8) {
+                            ForEach(0..<min(items.count, 5), id: \.self) { index in
+                                Capsule()
+                                    .fill(index == min(selectedIndex, 4) ? Color.accentColor : Color.secondary.opacity(0.45))
+                                    .frame(width: index == min(selectedIndex, 4) ? 16 : 6, height: 6)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .accessibilityHidden(true)
+                    }
                 }
                 .padding(.top, 16)
+                .onAppear {
+                    if selectedItemID == nil {
+                        selectedItemID = items.first?.id
+                    }
+                }
+                .onChange(of: items.map(\.id)) { _, ids in
+                    if !ids.contains(selectedItemID ?? "") {
+                        selectedItemID = ids.first
+                    }
+                }
             }
 
             if let error = errorMessage {
@@ -341,87 +608,109 @@ struct ContinueReadingSection: View {
     }
 }
 
-// MARK: - 继续观看卡片（Hero 横向卡片）
+// MARK: - 继续阅读卡片
 
 struct ContinueReadingCard: View {
     let id: String
     let title: String
     let progress: Int
+    let lastReadPage: Int
+    let pageCount: Int
+    let isNovel: Bool
     let serverURL: String
+
+    private var currentPage: Int {
+        min(lastReadPage + 1, max(pageCount, 1))
+    }
 
     var body: some View {
         HStack(spacing: 12) {
-            // 封面
             AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                 .aspectRatio(3/4, contentMode: .fill)
-                .frame(width: 90, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .frame(width: 116, height: 158)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topLeading) {
+                    Text(isNovel ? "小说" : "漫画")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(isNovel ? Color.blue.opacity(0.88) : Color.green.opacity(0.88))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(7)
+                }
 
-            // 信息区
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.headline)
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
+                Text("第 \(currentPage) \(isNovel ? "章" : "页")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
                 Spacer()
 
-                // 进度信息
-                HStack(spacing: 6) {
-                    Image(systemName: "book.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Color.accentColor)
-                    Text("\(progress)% 已读")
-                        .font(.caption)
+                HStack(spacing: 4) {
+                    Text("\(progress)%")
+                        .foregroundStyle(.tint)
+                    Text("· \(currentPage)/\(max(pageCount, 1)) \(isNovel ? "章" : "页")")
                         .foregroundStyle(.secondary)
                 }
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
 
-                // 进度条
-                GeometryReader { geo in
+                GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         Capsule()
                             .fill(Color(.systemGray5))
                         Capsule()
-                            .fill(Color.accentColor)
-                            .frame(width: geo.size.width * CGFloat(progress) / 100)
+                            .fill(.tint)
+                            .frame(
+                                width: geometry.size.width
+                                    * CGFloat(min(max(progress, 0), 100))
+                                    / 100
+                            )
                     }
                 }
-                .frame(height: 3)
+                .frame(height: 4)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("阅读进度")
+                .accessibilityValue("\(progress)%")
+
+                Text("继续阅读")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 38)
+                    .background(Color.accentColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .padding(.vertical, 8)
-        } 
+        }
         .padding(10)
-        .frame(width: 240, height: 140)
-        .background(Color(.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+        .frame(maxWidth: .infinity, minHeight: 178, maxHeight: 178)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+        }
     }
 }
 
 // MARK: - 内容列表（漫画 or 小说）
 
-struct LibraryContentView: View {
+private struct LibraryContentView: View {
     let contentType: String?
     @State private var viewModel = LibraryViewModel()
-    @State private var viewMode: ViewMode = .grid
-    @State private var sortOption: SortOption = .addedAt
+    @Binding var viewMode: HomeViewMode
+    @Binding var sortOption: LibrarySortOption
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
-
-    enum ViewMode { case grid, list }
-    enum SortOption: String, CaseIterable {
-        case addedAt, title, lastReadAt, rating, readTime
-        var label: String {
-            switch self {
-            case .addedAt: return "最近添加"
-            case .title: return "标题"
-            case .lastReadAt: return "最近阅读"
-            case .rating: return "评分"
-            case .readTime: return "阅读时间"
-            }
-        }
-    }
 
     var comics: [Comic] { viewModel.comics }
 
@@ -432,15 +721,6 @@ struct LibraryContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "books.vertical")
-                    .foregroundStyle(Color.accentColor)
-                Text(api.selectedLibraryName)
-                    .font(.title3.weight(.bold))
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-
             Group {
                 if comics.isEmpty && !viewModel.isLoading {
                     LibraryEmptyState(contentType: contentType)
@@ -459,43 +739,6 @@ struct LibraryContentView: View {
                         isLoading: viewModel.isLoading,
                         loadMore: { await viewModel.loadMore() }
                     )
-                }
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    if let iconURL = api.siteIconURL {
-                        AuthenticatedImage(url: iconURL)
-                            .frame(width: 22, height: 22)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                    Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                }
-            }
-
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    withAnimation { viewMode = viewMode == .grid ? .list : .grid }
-                } label: {
-                    Image(systemName: viewMode == .grid ? "list.bullet" : "square.grid.2x2")
-                }
-
-                Menu {
-                    ForEach(SortOption.allCases, id: \.self) { option in
-                        Button {
-                            sortOption = option
-                        } label: {
-                            HStack {
-                                Text(option.label)
-                                if sortOption == option { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "arrow.up.arrow.down")
                 }
             }
         }
@@ -615,12 +858,20 @@ private struct LibraryComicListView: View {
 private struct LibraryEmptyState: View {
     let contentType: String?
 
+    private var title: String {
+        switch contentType {
+        case "comic": return "还没有漫画"
+        case "novel": return "还没有小说"
+        default: return "还没有作品"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: contentType == "novel" ? "text.book.closed" : "photo.stack")
+            Image(systemName: contentType == "novel" ? "text.book.closed" : "books.vertical")
                 .font(.system(size: 44))
                 .foregroundStyle(.tertiary)
-            Text(contentType == "novel" ? "还没有小说" : "还没有漫画")
+            Text(title)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -630,26 +881,14 @@ private struct LibraryEmptyState: View {
 
 // MARK: - 合集列表
 
-struct CollectionContentView: View {
+private struct CollectionContentView: View {
     let contentType: String?
     @State private var viewModel = CollectionViewModel()
-    @State private var viewMode: ViewMode = .grid
-    @State private var sortOption: SortOption = .defaultOrder
+    @Binding var viewMode: HomeViewMode
+    @Binding var sortOption: CollectionSortOption
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
-
-    enum ViewMode { case grid, list }
-    enum SortOption: String, CaseIterable {
-        case defaultOrder, title
-
-        var label: String {
-            switch self {
-            case .defaultOrder: return "默认排序"
-            case .title: return "标题"
-            }
-        }
-    }
 
     private var gridColumns: [GridItem] {
         let count = sizeClass == .regular ? 5 : 3
@@ -658,15 +897,6 @@ struct CollectionContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "rectangle.stack")
-                    .foregroundStyle(Color.accentColor)
-                Text("合集")
-                    .font(.title3.weight(.bold))
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-
             Group {
                 if viewModel.groups.isEmpty && !viewModel.isLoading {
                     CollectionEmptyState()
@@ -688,52 +918,18 @@ struct CollectionContentView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    if let iconURL = api.siteIconURL {
-                        AuthenticatedImage(url: iconURL)
-                            .frame(width: 22, height: 22)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                    Text(api.siteName.isEmpty ? (URL(string: api.serverURL)?.host ?? "") : api.siteName)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                }
-            }
-
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    withAnimation { viewMode = viewMode == .grid ? .list : .grid }
-                } label: {
-                    Image(systemName: viewMode == .grid ? "list.bullet" : "square.grid.2x2")
-                }
-
-                Menu {
-                    ForEach(SortOption.allCases, id: \.self) { option in
-                        Button {
-                            sortOption = option
-                            viewModel.updateSort(by: option.rawValue, order: "asc")
-                        } label: {
-                            HStack {
-                                Text(option.label)
-                                if sortOption == option { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "arrow.up.arrow.down")
-                }
-            }
+        .refreshable {
+            await viewModel.load(refresh: true)
         }
         .task(id: LibraryContentLoadID(
             selectedLibraryId: api.selectedLibraryId,
             contentType: contentType,
-            sortOption: nil,
+            sortOption: sortOption.rawValue,
             isOffline: api.isOfflineMode,
             networkRecovered: api.networkRecovered
         )) {
             viewModel.setModelContext(modelContext)
+            viewModel.updateSort(by: sortOption.rawValue, order: "asc")
             await viewModel.setContentType(contentType)
         }
     }
@@ -822,7 +1018,6 @@ private struct CollectionEmptyState: View {
 struct GroupCardView: View {
     let group: ComicGroup
     let serverURL: String
-    private let titleAreaHeight: CGFloat = 42
 
     private var coverImageURL: URL? {
         if let cover = group.coverUrl, !cover.isEmpty {
@@ -835,45 +1030,58 @@ struct GroupCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: .bottom) {
+            Group {
                 if let url = coverImageURL {
                     AuthenticatedImage(url: url)
-                        .aspectRatio(3/4, contentMode: .fill)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.systemGray5))
-                        .aspectRatio(3/4, contentMode: .fill)
+                    Color(.systemGray5)
                         .overlay {
                             Image(systemName: "rectangle.stack")
                                 .font(.title2)
                                 .foregroundStyle(.tertiary)
                         }
                 }
+            }
+            .aspectRatio(3/4, contentMode: .fill)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(group.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 4) {
-                    Image(systemName: "rectangle.stack.fill").font(.system(size: 8))
-                    Text("\(group.comicCount ?? 0)卷")
+                    Image(systemName: "rectangle.stack.fill")
+                    Text("\(group.comicCount ?? 0) 卷")
                 }
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.black.opacity(0.6))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .padding(8)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.88))
             }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.black.opacity(0.68))
 
-            Text(group.name)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .padding(.top, 8)
-                .frame(height: titleAreaHeight, alignment: .topLeading)
+            Text("合集")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.orange.opacity(0.9))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .padding(6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+        .aspectRatio(3/4, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(group.name)
+        .accessibilityValue("\(group.comicCount ?? 0) 卷")
     }
 }
 
@@ -882,8 +1090,6 @@ struct GroupCardView: View {
 struct SeriesShelfCardView: View {
     let comic: Comic
     let serverURL: String
-    private let titleAreaHeight: CGFloat = 42
-    private let accessoryAreaHeight: CGFloat = 14
 
     private var coverImageURL: URL? {
         guard let cover = comic.coverUrl, !cover.isEmpty else { return nil }
@@ -891,98 +1097,87 @@ struct SeriesShelfCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                Group {
-                    if let url = coverImageURL {
-                        AuthenticatedImage(url: url)
-                    } else {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemGray5))
-                            .overlay {
-                                Image(systemName: "books.vertical")
-                                    .font(.title2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                    }
-                }
-                .aspectRatio(3/4, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(.gray.opacity(0.12), lineWidth: 0.5)
-                )
-
-                Text("目录")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.black.opacity(0.6))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .padding(6)
-
-                VStack {
-                    Spacer()
-                    HStack {
-                        if comic.seriesProgress > 0 {
-                            Text("\(comic.seriesProgress)%")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.black.opacity(0.6))
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                                .padding(.leading, 6)
+        ZStack(alignment: .bottom) {
+            Group {
+                if let url = coverImageURL {
+                    AuthenticatedImage(url: url)
+                } else {
+                    Color(.systemGray5)
+                        .overlay {
+                            Image(systemName: "books.vertical")
+                                .font(.title2)
+                                .foregroundStyle(.tertiary)
                         }
-                        Spacer()
-                        Text("\(comic.pageCount)项")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.black.opacity(0.6))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .padding(.trailing, 8)
-                    }
-
-                    if comic.seriesProgress > 0 {
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Rectangle()
-                                    .fill(.black.opacity(0.25))
-                                Rectangle()
-                                    .fill(Color.accentColor)
-                                    .frame(width: geo.size.width * CGFloat(comic.seriesProgress) / 100)
-                            }
-                        }
-                        .frame(height: 3)
-                    }
-                }
-
-                if comic.isFavorite {
-                    Image(systemName: "heart.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                        .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .padding(6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }
+            .aspectRatio(3/4, contentMode: .fill)
 
-            Text(comic.title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .padding(.top, 8)
-                .frame(height: titleAreaHeight, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(comic.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            Color.clear
-                .frame(height: accessoryAreaHeight)
+                HStack(spacing: 4) {
+                    Text("\(comic.pageCount) 项")
+                    Spacer(minLength: 2)
+                    if comic.seriesProgress > 0 {
+                        Text("\(comic.seriesProgress)%")
+                            .monospacedDigit()
+                    }
+                }
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.88))
+
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.2))
+                        Capsule()
+                            .fill(Color.accentColor)
+                            .frame(
+                                width: geometry.size.width
+                                    * CGFloat(min(max(comic.seriesProgress, 0), 100))
+                                    / 100
+                            )
+                    }
+                }
+                .frame(height: 3)
+                .opacity(comic.seriesProgress > 0 ? 1 : 0)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.black.opacity(0.68))
+
+            Text("目录")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.orange.opacity(0.9))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .padding(6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            if comic.isFavorite {
+                Image(systemName: "heart.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+        .aspectRatio(3/4, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(comic.title)
+        .accessibilityValue("\(comic.pageCount) 项，进度 \(comic.seriesProgress)%")
     }
 }
 
@@ -1024,7 +1219,15 @@ struct SeriesShelfListRowView: View {
                     .lineLimit(1)
 
                 let sizeText = comic.fileSize.map { formatFileSize($0) } ?? ""
-                Text("目录作品 · \(comic.pageCount) 项\(comic.seriesProgress > 0 ? " · \(comic.seriesProgress)% 已读" : "")\(sizeText.isEmpty ? "" : " · \(sizeText)")")
+                Text(
+                    "目录作品 · \(comic.pageCount) 项"
+                        + (
+                            comic.seriesProgress > 0
+                                ? " · \(ReadingStatus.progressLabel(progress: comic.seriesProgress, status: comic.seriesProgress >= 100 ? "finished" : "reading"))"
+                                : ""
+                        )
+                        + (sizeText.isEmpty ? "" : " · \(sizeText)")
+                )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1108,7 +1311,7 @@ struct GroupListRowView: View {
     }
 }
 
-// MARK: - 继续观看 ViewModel
+// MARK: - 继续阅读 ViewModel
 
 @MainActor
 @Observable
@@ -1142,7 +1345,11 @@ final class ContinueReadingViewModel {
                 sortOrder: "desc"
             )
             guard !Task.isCancelled, version == loadVersion else { return }
-            items = resp.comics.filter { $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
+            items = resp.comics.filter {
+                ($0.lastReadPage > 0 || $0.lastReadAt != nil || $0.readingStatus == "reading")
+                    && $0.progress > 0
+                    && $0.progress < 100
+            }
             errorMessage = nil
         } catch {
             guard !Task.isCancelled,
@@ -1150,7 +1357,7 @@ final class ContinueReadingViewModel {
                   version == loadVersion else {
                 return
             }
-            AppLogger.log("加载继续观看失败，使用本地缓存: \(error.localizedDescription)")
+            AppLogger.log("加载继续阅读失败，使用本地缓存: \(error.localizedDescription)")
             await loadFromCache(version: version)
         }
     }
@@ -1162,11 +1369,16 @@ final class ContinueReadingViewModel {
         }.value
         guard !Task.isCancelled, version == loadVersion else { return }
         guard let context = modelContext else { return }
-        let cached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载继续观看")
+        let cached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载继续阅读")
 
         // 优先显示已下载且有阅读进度的漫画
         let offlineItems = cached
-            .filter { downloadedIds.contains($0.id) && $0.lastReadPage > 0 && $0.progress > 0 && $0.progress < 100 }
+            .filter {
+                downloadedIds.contains($0.id)
+                    && ($0.lastReadPage > 0 || $0.lastReadAt != nil || $0.readingStatus == "reading")
+                    && $0.progress > 0
+                    && $0.progress < 100
+            }
             .sorted { ($0.lastReadAt ?? .distantPast) > ($1.lastReadAt ?? .distantPast) }
             .map { $0.toComic() }
 

@@ -15,6 +15,8 @@ final class ChapterCache {
 
     /// 章节标题索引
     private(set) var chapterTitles: [Int: String] = [:]
+    /// 服务端原始顺序的章节目录，index 用于所有阅读接口。
+    private(set) var chapterEntries: [PageEntry] = []
 
     private let api = APIClient.shared
 
@@ -65,6 +67,7 @@ final class ChapterCache {
         preloadTaskIDs.removeAll()
         cache.removeAll()
         chapterTitles.removeAll()
+        chapterEntries.removeAll()
         cacheBytes = 0
         Self.totalNovelCacheBytes = 0
     }
@@ -90,7 +93,10 @@ final class ChapterCache {
                     }
                 }
                 do {
-                    let content = try await api.fetchChapter(comicId: comicId, index: target)
+                    let content = try await loadChapter(
+                        comicId: comicId,
+                        index: target
+                    )
                     guard !Task.isCancelled, generation == requestGeneration else { return }
                     put(content, for: target)
                     evict(keeping: currentChapter)
@@ -106,6 +112,8 @@ final class ChapterCache {
     /// 从 PageList 提取章节标题
     func extractTitles(from pageList: PageList) {
         guard let pages = pageList.pages else { return }
+        chapterEntries = pages
+        chapterTitles.removeAll(keepingCapacity: true)
         for entry in pages {
             if let title = entry.title, !title.isEmpty {
                 chapterTitles[entry.index] = title
@@ -114,6 +122,23 @@ final class ChapterCache {
     }
 
     // MARK: - Private
+
+    private func loadChapter(
+        comicId: String,
+        index: Int
+    ) async throws -> ChapterContent {
+        do {
+            return try await api.fetchChapter(comicId: comicId, index: index)
+        } catch {
+            let manager = OfflineFileManager.shared
+            if let local = await Task.detached(priority: .utility, operation: {
+                manager.loadNovelChapter(comicId: comicId, chapter: index)
+            }).value {
+                return local
+            }
+            throw error
+        }
+    }
 
     private func byteSize(_ content: ChapterContent) -> Int {
         var size = 0

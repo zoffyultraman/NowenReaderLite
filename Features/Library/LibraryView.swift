@@ -23,6 +23,27 @@ enum ReadingStatus {
         default: return .gray
         }
     }
+
+    static func effectiveStatus(explicit status: String?, progress: Int) -> String? {
+        if let status, !status.isEmpty {
+            return status
+        }
+        if progress >= 100 {
+            return "finished"
+        }
+        return progress > 0 ? "reading" : nil
+    }
+
+    static func progressLabel(progress: Int, status: String?) -> String {
+        let effective = effectiveStatus(explicit: status, progress: progress)
+        if effective == "finished" {
+            return "\(progress)% · 已读"
+        }
+        if progress > 0 {
+            return "\(progress)% · 在读"
+        }
+        return "未读"
+    }
 }
 
 // MARK: - 漫画卡片
@@ -36,110 +57,96 @@ struct ComicCardView: View {
     let serverURL: String
     let readingStatus: String?
     let rating: Double?
-    private let titleAreaHeight: CGFloat = 42
-    private let ratingAreaHeight: CGFloat = 14
 
-    private var ratingValue: Int {
-        guard let rating, rating > 0 else { return 0 }
-        return Int(rating)
+    private var displayStatus: String? {
+        ReadingStatus.effectiveStatus(explicit: readingStatus, progress: progress)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // 封面 3:4 比例
-            ZStack(alignment: .topTrailing) {
-                AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
-                    .aspectRatio(3/4, contentMode: .fill)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(.gray.opacity(0.12), lineWidth: 0.5)
-                    )
+        ZStack(alignment: .bottom) {
+            AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
+                .aspectRatio(3/4, contentMode: .fill)
 
-                // 收藏标记
-                if isFavorite {
-                    Image(systemName: "heart.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                        .padding(6)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .padding(6)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Spacer(minLength: 0)
 
-                // 小说标记
-                if isNovel {
-                    Text("小说")
-                        .font(.system(size: 9, weight: .bold))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.black.opacity(0.6))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .padding(6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                // 底部叠加层：阅读状态标记 + 进度条
-                VStack(spacing: 2) {
-                    // 阅读状态标记
-                    if let status = readingStatus, !status.isEmpty {
-                        HStack {
-                            HStack(spacing: 3) {
-                                Circle()
-                                    .fill(ReadingStatus.color(for: status))
-                                    .frame(width: 6, height: 6)
-                                Text(ReadingStatus.label(for: status))
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(.white)
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.black.opacity(0.6))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .padding(.leading, 6)
-                            Spacer()
+                    HStack(spacing: 4) {
+                        if let status = displayStatus {
+                            Circle()
+                                .fill(ReadingStatus.color(for: status))
+                                .frame(width: 6, height: 6)
+                            Text(ReadingStatus.label(for: status))
+                        } else {
+                            Text("未读")
+                        }
+
+                        Spacer(minLength: 2)
+
+                        if progress > 0 {
+                            Text("\(progress)%")
+                                .monospacedDigit()
                         }
                     }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.88))
 
-                    // 进度条
-                    if progress > 0 {
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Rectangle()
-                                    .fill(.black.opacity(0.2))
-                                Rectangle()
-                                    .fill(Color.accentColor)
-                                    .frame(width: geo.size.width * CGFloat(progress) / 100)
-                            }
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.2))
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .frame(
+                                    width: geometry.size.width
+                                        * CGFloat(min(max(progress, 0), 100))
+                                        / 100
+                                )
                         }
-                        .frame(height: 3)
-                        .clipShape(RoundedRectangle(cornerRadius: 1.5))
                     }
+                    .frame(height: 3)
+                    .opacity(progress > 0 ? 1 : 0)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(8)
+                .background(.black.opacity(0.68))
             }
 
-            // 标题
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .padding(.top, 8)
-                .frame(height: titleAreaHeight, alignment: .topLeading)
+            Text(isNovel ? "小说" : "漫画")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(isNovel ? Color.blue.opacity(0.9) : Color.green.opacity(0.9))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .padding(6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            // 评分
-            HStack(spacing: 1) {
-                ForEach(1...5, id: \.self) { i in
-                    Image(systemName: i <= ratingValue ? "star.fill" : "star")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.yellow)
-                }
+            if isFavorite {
+                Image(systemName: "heart.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
-            .frame(height: ratingAreaHeight, alignment: .topLeading)
-            .opacity(ratingValue > 0 ? 1 : 0)
-            .accessibilityHidden(ratingValue == 0)
         }
-        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+        .aspectRatio(3/4, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(
+            ReadingStatus.progressLabel(progress: progress, status: readingStatus)
+        )
     }
 }
 
@@ -187,7 +194,10 @@ struct ComicListRowView: View {
                     }
                 }
 
-                if let status = readingStatus, !status.isEmpty {
+                if let status = ReadingStatus.effectiveStatus(
+                    explicit: readingStatus,
+                    progress: progress
+                ) {
                     Text(ReadingStatus.label(for: status))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(ReadingStatus.color(for: status))
@@ -195,7 +205,10 @@ struct ComicListRowView: View {
 
                 if pageCount > 0 {
                     let sizeText = fileSize.map { formatFileSize($0) } ?? ""
-                    Text("\(pageCount) 页 · \(progress)% 已读\(sizeText.isEmpty ? "" : " · \(sizeText)")")
+                    Text(
+                        "\(pageCount) 页 · \(ReadingStatus.progressLabel(progress: progress, status: readingStatus))"
+                            + (sizeText.isEmpty ? "" : " · \(sizeText)")
+                    )
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
