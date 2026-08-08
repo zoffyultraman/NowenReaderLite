@@ -92,18 +92,6 @@ private func parseGroupRoute(_ value: String) -> (id: Int, contentType: String?)
     return (id, contentType)
 }
 
-private enum HomeSection: String, CaseIterable {
-    case library
-    case collections
-
-    var title: String {
-        switch self {
-        case .library: return "书库"
-        case .collections: return "合集"
-        }
-    }
-}
-
 private enum HomeViewMode {
     case grid
     case list
@@ -123,18 +111,6 @@ private enum LibrarySortOption: String, CaseIterable {
         case .lastReadAt: return "最近阅读"
         case .rating: return "评分"
         case .readTime: return "阅读时间"
-        }
-    }
-}
-
-private enum CollectionSortOption: String, CaseIterable {
-    case defaultOrder
-    case title
-
-    var label: String {
-        switch self {
-        case .defaultOrder: return "默认排序"
-        case .title: return "标题"
         }
     }
 }
@@ -350,10 +326,8 @@ struct HomeMainContent: View {
     @Bindable var searchVM: SearchViewModel
     @FocusState.Binding var isSearchFocused: Bool
     @Environment(APIClient.self) private var api
-    @State private var selectedSection: HomeSection = .library
     @State private var viewMode: HomeViewMode = .grid
     @State private var librarySortOption: LibrarySortOption = .addedAt
-    @State private var collectionSortOption: CollectionSortOption = .defaultOrder
 
     /// 根据选中的书库类型决定内容筛选
     private var selectedLibraryType: String? {
@@ -373,36 +347,17 @@ struct HomeMainContent: View {
                     errorMessage: continueReadingVM.errorMessage
                 )
 
-                Picker("内容", selection: $selectedSection) {
-                    ForEach(HomeSection.allCases, id: \.self) { section in
-                        Text(section.title).tag(section)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
-
                 HomeLibraryControlBar(
-                    selectedSection: selectedSection,
                     viewMode: $viewMode,
-                    librarySortOption: $librarySortOption,
-                    collectionSortOption: $collectionSortOption
+                    sortOption: $librarySortOption
                 )
                 .padding(.horizontal, 16)
 
-                if selectedSection == .library {
-                    LibraryContentView(
-                        contentType: selectedLibraryType,
-                        viewMode: $viewMode,
-                        sortOption: $librarySortOption
-                    )
-                } else {
-                    CollectionContentView(
-                        contentType: selectedLibraryType,
-                        viewMode: $viewMode,
-                        sortOption: $collectionSortOption
-                    )
-                }
+                LibraryContentView(
+                    contentType: selectedLibraryType,
+                    viewMode: $viewMode,
+                    sortOption: $librarySortOption
+                )
             }
             .refreshable {
                 await continueReadingVM.load()
@@ -433,17 +388,8 @@ struct HomeMainContent: View {
 }
 
 private struct HomeLibraryControlBar: View {
-    let selectedSection: HomeSection
     @Binding var viewMode: HomeViewMode
-    @Binding var librarySortOption: LibrarySortOption
-    @Binding var collectionSortOption: CollectionSortOption
-
-    private var currentSortLabel: String {
-        switch selectedSection {
-        case .library: return librarySortOption.label
-        case .collections: return collectionSortOption.label
-        }
-    }
+    @Binding var sortOption: LibrarySortOption
 
     var body: some View {
         HStack(spacing: 10) {
@@ -451,33 +397,20 @@ private struct HomeLibraryControlBar: View {
                 .frame(maxWidth: .infinity)
 
             Menu {
-                if selectedSection == .library {
-                    ForEach(LibrarySortOption.allCases, id: \.self) { option in
-                        Button {
-                            librarySortOption = option
-                        } label: {
-                            Label(
-                                option.label,
-                                systemImage: librarySortOption == option ? "checkmark" : "circle"
-                            )
-                        }
-                    }
-                } else {
-                    ForEach(CollectionSortOption.allCases, id: \.self) { option in
-                        Button {
-                            collectionSortOption = option
-                        } label: {
-                            Label(
-                                option.label,
-                                systemImage: collectionSortOption == option ? "checkmark" : "circle"
-                            )
-                        }
+                ForEach(LibrarySortOption.allCases, id: \.self) { option in
+                    Button {
+                        sortOption = option
+                    } label: {
+                        Label(
+                            option.label,
+                            systemImage: sortOption == option ? "checkmark" : "circle"
+                        )
                     }
                 }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.down")
-                    Text(currentSortLabel)
+                    Text(sortOption.label)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.caption2)
@@ -488,7 +421,7 @@ private struct HomeLibraryControlBar: View {
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .accessibilityLabel("排序：\(currentSortLabel)")
+            .accessibilityLabel("排序：\(sortOption.label)")
 
             Button {
                 withAnimation(.snappy) {
@@ -706,13 +639,33 @@ struct ContinueReadingCard: View {
 private struct LibraryContentView: View {
     let contentType: String?
     @State private var viewModel = LibraryViewModel()
+    @State private var collectionViewModel = CollectionViewModel()
     @Binding var viewMode: HomeViewMode
     @Binding var sortOption: LibrarySortOption
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
 
-    var comics: [Comic] { viewModel.comics }
+    private var entries: [LibraryShelfEntry] {
+        let groups = collectionViewModel.groups.map(LibraryShelfEntry.group)
+        let comics = viewModel.comics
+            .filter { comic in
+                if collectionViewModel.groupedComicIds.contains(comic.id) {
+                    return false
+                }
+                guard let seriesId = comic.seriesId else { return true }
+                return !collectionViewModel.groupedSeriesIds.contains(seriesId)
+            }
+            .map(LibraryShelfEntry.comic)
+        guard sortOption == .title else { return groups + comics }
+        return (groups + comics).sorted {
+            $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
+    }
+
+    private var isLoading: Bool {
+        viewModel.isLoading || collectionViewModel.isLoading
+    }
 
     private var gridColumns: [GridItem] {
         let count = sizeClass == .regular ? 5 : 3
@@ -722,28 +675,32 @@ private struct LibraryContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Group {
-                if comics.isEmpty && !viewModel.isLoading {
+                if entries.isEmpty && !isLoading {
                     LibraryEmptyState(contentType: contentType)
                 } else if viewMode == .grid {
-                    LibraryComicGridView(
-                        comics: comics,
+                    LibraryShelfGridView(
+                        entries: entries,
                         columns: gridColumns,
                         serverURL: api.serverURL,
-                        isLoading: viewModel.isLoading,
+                        contentType: contentType,
+                        isLoading: isLoading,
                         loadMore: { await viewModel.loadMore() }
                     )
                 } else {
-                    LibraryComicListView(
-                        comics: comics,
+                    LibraryShelfListView(
+                        entries: entries,
                         serverURL: api.serverURL,
-                        isLoading: viewModel.isLoading,
+                        contentType: contentType,
+                        isLoading: isLoading,
                         loadMore: { await viewModel.loadMore() }
                     )
                 }
             }
         }
         .refreshable {
-            await viewModel.loadAll(refresh: true)
+            async let comics: Void = viewModel.loadAll(refresh: true)
+            async let groups: Void = collectionViewModel.load(refresh: true)
+            _ = await (comics, groups)
         }
         .task(id: LibraryContentLoadID(
             selectedLibraryId: api.selectedLibraryId,
@@ -753,44 +710,80 @@ private struct LibraryContentView: View {
             networkRecovered: api.networkRecovered
         )) {
             viewModel.setModelContext(modelContext)
-            await viewModel.configure(
+            collectionViewModel.setModelContext(modelContext)
+            async let comics: Void = viewModel.configure(
                 contentType: contentType,
                 sortBy: sortOption.rawValue,
                 sortOrder: sortOption == .title ? "asc" : "desc"
             )
+            async let groups: Void = collectionViewModel.configure(
+                contentType: contentType,
+                sortBy: sortOption == .title ? "title" : "defaultOrder",
+                sortOrder: "asc"
+            )
+            _ = await (comics, groups)
         }
     }
 
 }
 
-private struct LibraryComicGridView: View {
-    let comics: [Comic]
+private enum LibraryShelfEntry: Identifiable {
+    case group(ComicGroup)
+    case comic(Comic)
+
+    var id: String {
+        switch self {
+        case .group(let group): return "group-\(group.id)"
+        case .comic(let comic): return "comic-\(comic.id)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .group(let group): return group.name
+        case .comic(let comic): return comic.sortTitle
+        }
+    }
+}
+
+private struct LibraryShelfGridView: View {
+    let entries: [LibraryShelfEntry]
     let columns: [GridItem]
     let serverURL: String
+    let contentType: String?
     let isLoading: Bool
     let loadMore: () async -> Void
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(comics) { comic in
-                NavigationLink(value: comic.id) {
-                    if comic.isSeriesShelfItem {
-                        SeriesShelfCardView(comic: comic, serverURL: serverURL)
-                    } else {
-                        ComicCardView(
-                            id: comic.id,
-                            title: comic.title,
-                            isFavorite: comic.isFavorite,
-                            isNovel: comic.isNovel,
-                            progress: comic.progress,
-                            serverURL: serverURL,
-                            readingStatus: comic.readingStatus,
-                            rating: comic.rating
-                        )
+            ForEach(entries) { entry in
+                switch entry {
+                case .group(let group):
+                    NavigationLink(value: groupRoute(group.id, contentType: contentType)) {
+                        GroupCardView(group: group, serverURL: serverURL)
                     }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                case .comic(let comic):
+                    NavigationLink(value: comic.id) {
+                        if comic.isSeriesShelfItem {
+                            SeriesShelfCardView(comic: comic, serverURL: serverURL)
+                        } else {
+                            ComicCardView(
+                                id: comic.id,
+                                title: comic.title,
+                                isFavorite: comic.isFavorite,
+                                isNovel: comic.isNovel,
+                                progress: comic.progress,
+                                serverURL: serverURL,
+                                readingStatus: comic.readingStatus,
+                                rating: comic.rating
+                            )
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
             }
 
             if !isLoading {
@@ -808,38 +801,49 @@ private struct LibraryComicGridView: View {
     }
 }
 
-private struct LibraryComicListView: View {
-    let comics: [Comic]
+private struct LibraryShelfListView: View {
+    let entries: [LibraryShelfEntry]
     let serverURL: String
+    let contentType: String?
     let isLoading: Bool
     let loadMore: () async -> Void
 
     var body: some View {
         LazyVStack(spacing: 0) {
-            ForEach(comics) { comic in
+            ForEach(entries) { entry in
                 VStack {
-                    NavigationLink(value: comic.id) {
-                        if comic.isSeriesShelfItem {
-                            SeriesShelfListRowView(comic: comic, serverURL: serverURL)
+                    switch entry {
+                    case .group(let group):
+                        NavigationLink(value: groupRoute(group.id, contentType: contentType)) {
+                            GroupListRowView(group: group, serverURL: serverURL)
                                 .padding(.horizontal, 16)
-                        } else {
-                            ComicListRowView(
-                                id: comic.id,
-                                title: comic.title,
-                                author: comic.author,
-                                pageCount: comic.pageCount,
-                                fileSize: comic.fileSize,
-                                progress: comic.progress,
-                                isFavorite: comic.isFavorite,
-                                serverURL: serverURL,
-                                readingStatus: comic.readingStatus,
-                                rating: comic.rating
-                            )
-                            .padding(.horizontal, 16)
                         }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                    case .comic(let comic):
+                        NavigationLink(value: comic.id) {
+                            if comic.isSeriesShelfItem {
+                                SeriesShelfListRowView(comic: comic, serverURL: serverURL)
+                                    .padding(.horizontal, 16)
+                            } else {
+                                ComicListRowView(
+                                    id: comic.id,
+                                    title: comic.title,
+                                    author: comic.author,
+                                    pageCount: comic.pageCount,
+                                    fileSize: comic.fileSize,
+                                    progress: comic.progress,
+                                    isFavorite: comic.isFavorite,
+                                    serverURL: serverURL,
+                                    readingStatus: comic.readingStatus,
+                                    rating: comic.rating
+                                )
+                                .padding(.horizontal, 16)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
                     Divider().padding(.leading, 80)
                 }
             }
@@ -853,6 +857,11 @@ private struct LibraryComicListView: View {
             }
         }
     }
+}
+
+private func groupRoute(_ id: Int, contentType: String?) -> String {
+    guard let contentType, !contentType.isEmpty else { return "group_\(id)" }
+    return "group_\(id)_\(contentType)"
 }
 
 private struct LibraryEmptyState: View {
@@ -879,141 +888,7 @@ private struct LibraryEmptyState: View {
     }
 }
 
-// MARK: - 合集列表
-
-private struct CollectionContentView: View {
-    let contentType: String?
-    @State private var viewModel = CollectionViewModel()
-    @Binding var viewMode: HomeViewMode
-    @Binding var sortOption: CollectionSortOption
-    @Environment(\.horizontalSizeClass) private var sizeClass
-    @Environment(\.modelContext) private var modelContext
-    @Environment(APIClient.self) private var api
-
-    private var gridColumns: [GridItem] {
-        let count = sizeClass == .regular ? 5 : 3
-        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Group {
-                if viewModel.groups.isEmpty && !viewModel.isLoading {
-                    CollectionEmptyState()
-                } else if viewMode == .grid {
-                    CollectionGridView(
-                        groups: viewModel.groups,
-                        columns: gridColumns,
-                        serverURL: api.serverURL,
-                        contentType: contentType,
-                        isLoading: viewModel.isLoading
-                    )
-                } else {
-                    CollectionListView(
-                        groups: viewModel.groups,
-                        serverURL: api.serverURL,
-                        contentType: contentType,
-                        isLoading: viewModel.isLoading
-                    )
-                }
-            }
-        }
-        .refreshable {
-            await viewModel.load(refresh: true)
-        }
-        .task(id: LibraryContentLoadID(
-            selectedLibraryId: api.selectedLibraryId,
-            contentType: contentType,
-            sortOption: sortOption.rawValue,
-            isOffline: api.isOfflineMode,
-            networkRecovered: api.networkRecovered
-        )) {
-            viewModel.setModelContext(modelContext)
-            viewModel.updateSort(by: sortOption.rawValue, order: "asc")
-            await viewModel.setContentType(contentType)
-        }
-    }
-
-}
-
-private struct CollectionGridView: View {
-    let groups: [ComicGroup]
-    let columns: [GridItem]
-    let serverURL: String
-    let contentType: String?
-    let isLoading: Bool
-
-    var body: some View {
-        LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(groups) { group in
-                NavigationLink(value: navigationValue(for: group)) {
-                    GroupCardView(group: group, serverURL: serverURL)
-                }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-            }
-
-            if isLoading {
-                ProgressView()
-                    .gridCellColumns(columns.count)
-                    .padding()
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-
-    private func navigationValue(for group: ComicGroup) -> String {
-        guard let contentType, !contentType.isEmpty else { return "group_\(group.id)" }
-        return "group_\(group.id)_\(contentType)"
-    }
-}
-
-private struct CollectionListView: View {
-    let groups: [ComicGroup]
-    let serverURL: String
-    let contentType: String?
-    let isLoading: Bool
-
-    var body: some View {
-        LazyVStack(spacing: 0) {
-            ForEach(groups) { group in
-                NavigationLink(value: navigationValue(for: group)) {
-                    GroupListRowView(group: group, serverURL: serverURL)
-                        .padding(.horizontal, 16)
-                }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                Divider().padding(.leading, 80)
-            }
-
-            if isLoading {
-                ProgressView().padding()
-            }
-        }
-    }
-
-    private func navigationValue(for group: ComicGroup) -> String {
-        guard let contentType, !contentType.isEmpty else { return "group_\(group.id)" }
-        return "group_\(group.id)_\(contentType)"
-    }
-}
-
-private struct CollectionEmptyState: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "rectangle.stack")
-                .font(.system(size: 44))
-                .foregroundStyle(.tertiary)
-            Text("还没有合集")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.top, 60)
-    }
-}
-
-// MARK: - 合集卡片（网格）
+// MARK: - 合集卡片
 
 struct GroupCardView: View {
     let group: ComicGroup
@@ -1054,7 +929,7 @@ struct GroupCardView: View {
 
                 HStack(spacing: 4) {
                     Image(systemName: "rectangle.stack.fill")
-                    Text("\(group.comicCount ?? 0) 卷")
+                    Text("\(group.comicCount ?? 0) 项")
                 }
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.white.opacity(0.88))
@@ -1068,7 +943,7 @@ struct GroupCardView: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Color.orange.opacity(0.9))
+                .background(Color.indigo.opacity(0.9))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .padding(6)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1081,7 +956,7 @@ struct GroupCardView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(group.name)
-        .accessibilityValue("\(group.comicCount ?? 0) 卷")
+        .accessibilityValue("\(group.comicCount ?? 0) 项")
     }
 }
 
@@ -1296,7 +1171,7 @@ struct GroupListRowView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Text("\(group.comicCount ?? 0) 卷")
+                Text("\(group.comicCount ?? 0) 项")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

@@ -249,7 +249,7 @@ final class LibraryViewModel {
         self.modelContext = context
     }
 
-    /// 加载书库作品。合集已独立展示，不混入书库列表。
+    /// 加载普通书架作品；合集条目由 CollectionViewModel 合并展示。
     func loadAll(refresh: Bool = false) async {
         // 离线 + 已有数据 + 非手动刷新 → 跳过（避免切 tab 时清空再重载）
         if api.isOfflineMode && !comics.isEmpty && !refresh {
@@ -275,7 +275,7 @@ final class LibraryViewModel {
 
         // 离线模式或网络不可达：直接从缓存加载已下载漫画（不等 API 超时）
         if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
-            let downloadedIds = await completedDownloadedIds()
+            let downloadedIds = await visibleOfflineShelfIds()
             guard !Task.isCancelled, version == loadVersion else { return false }
             if let context = modelContext {
                 let cached = loadFromCache(context: context)
@@ -285,14 +285,6 @@ final class LibraryViewModel {
             return true
         }
 
-        // 首次加载时先显示缓存数据
-        if currentPage == 1, let context = modelContext {
-            let cached = loadFromCache(context: context)
-            if !cached.isEmpty && comics.isEmpty {
-                comics = cached
-            }
-        }
-
         do {
             let resp = try await api.fetchComics(
                 page: currentPage,
@@ -300,7 +292,7 @@ final class LibraryViewModel {
                 sortBy: sortBy,
                 sortOrder: sortOrder,
                 contentType: contentType,
-                excludeGrouped: nil,
+                excludeGrouped: true,
                 seriesView: useSeriesView
             )
             guard !Task.isCancelled, version == loadVersion else { return false }
@@ -322,7 +314,7 @@ final class LibraryViewModel {
             }
             if currentPage == 1 {
                 AppLogger.log("网络不可用，从本地缓存加载书架")
-                let downloadedIds = await completedDownloadedIds()
+                let downloadedIds = await visibleOfflineShelfIds()
                 guard !Task.isCancelled, version == loadVersion else {
                     return false
                 }
@@ -412,9 +404,15 @@ final class LibraryViewModel {
         Task.isCancelled || (error as? URLError)?.code == .cancelled
     }
 
-    private func completedDownloadedIds() async -> Set<String> {
+    private func visibleOfflineShelfIds() async -> Set<String> {
         await Task.detached(priority: .utility) {
-            Set(OfflineFileManager.shared.completedDownloads().keys)
+            let downloadedIds = Set(
+                OfflineFileManager.shared.completedDownloads().keys
+            )
+            let groupedIds = Set(
+                OfflineFileManager.shared.loadGroups().flatMap(\.comicIds)
+            )
+            return downloadedIds.subtracting(groupedIds)
         }.value
     }
 }
@@ -423,6 +421,8 @@ final class LibraryViewModel {
 @Observable
 final class CollectionViewModel {
     var groups: [ComicGroup] = []
+    var groupedComicIds: Set<String> = []
+    var groupedSeriesIds: Set<String> = []
     var isLoading = false
     var errorMessage: String?
 
@@ -448,42 +448,86 @@ final class CollectionViewModel {
         }
 
         let loaded: [ComicGroup]
+        let membership: GroupMembershipSnapshot
         if api.isOfflineMode || !api.isNetworkReachable {
             let cachedTypes = cachedComicTypesById()
             loaded = await loadOfflineGroups(cachedTypes: cachedTypes)
+            membership = .empty
         } else {
-            guard let remoteGroups = await loadRemoteGroups() else {
+            guard let remote = await loadRemoteGroups() else {
                 if version == loadVersion {
                     isLoading = false
                 }
                 return
             }
-            loaded = remoteGroups
+            loaded = remote.groups
+            membership = remote.membership
         }
 
         guard !Task.isCancelled, version == loadVersion else { return }
         groups = sortedGroups(loaded)
+        groupedComicIds = membership.comicIds
+        groupedSeriesIds = membership.seriesIds
         isLoading = false
     }
 
-    private func loadRemoteGroups() async -> [ComicGroup]? {
+    private func loadRemoteGroups() async -> RemoteGroupsSnapshot? {
         do {
             errorMessage = nil
+            let loadedGroups: [ComicGroup]
             if contentType == nil {
                 async let comicGroups = api.fetchGroups(contentType: "comic")
                 async let novelGroups = api.fetchGroups(contentType: "novel")
                 let allGroups = try await comicGroups + novelGroups
                 var seen = Set<Int>()
-                return allGroups.filter { seen.insert($0.id).inserted }
+                loadedGroups = allGroups.filter { seen.insert($0.id).inserted }
+            } else {
+                loadedGroups = try await api.fetchGroups(contentType: contentType)
             }
-            return try await api.fetchGroups(contentType: contentType)
+            let membership = await loadGroupMembership(for: loadedGroups)
+            return RemoteGroupsSnapshot(groups: loadedGroups, membership: membership)
         } catch {
             if Task.isCancelled || (error as? URLError)?.code == .cancelled {
                 return nil
             }
             AppLogger.error("加载合集失败: \(error)")
             errorMessage = error.localizedDescription
-            return []
+            return RemoteGroupsSnapshot(groups: [], membership: .empty)
+        }
+    }
+
+    private func loadGroupMembership(for groups: [ComicGroup]) async -> GroupMembershipSnapshot {
+        let selectedContentType = contentType
+        return await withTaskGroup(of: GroupMembershipSnapshot.self) { taskGroup in
+            for group in groups {
+                taskGroup.addTask { [api] in
+                    do {
+                        let detail = try await api.fetchGroupDetail(
+                            id: group.id,
+                            contentType: selectedContentType
+                        )
+                        return GroupMembershipSnapshot(
+                            comicIds: Set(
+                                detail.comics.map(\.id)
+                                    + detail.seriesList.flatMap { $0.comics.map(\.id) }
+                            ),
+                            seriesIds: Set(detail.seriesList.map(\.id))
+                        )
+                    } catch {
+                        if !Task.isCancelled {
+                            AppLogger.error("加载合集目录关系失败: \(error)")
+                        }
+                        return .empty
+                    }
+                }
+            }
+
+            var result = GroupMembershipSnapshot.empty
+            for await membership in taskGroup {
+                result.comicIds.formUnion(membership.comicIds)
+                result.seriesIds.formUnion(membership.seriesIds)
+            }
+            return result
         }
     }
 
@@ -557,14 +601,10 @@ final class CollectionViewModel {
         }
     }
 
-    func updateSort(by sortBy: String, order: String) {
+    func configure(contentType: String?, sortBy: String, sortOrder: String) async {
+        self.contentType = contentType
         self.sortBy = sortBy
-        self.sortOrder = order
-        groups = sortedGroups(groups)
-    }
-
-    func setContentType(_ type: String?) async {
-        contentType = type
+        self.sortOrder = sortOrder
         await load(refresh: true)
     }
 }
@@ -572,4 +612,16 @@ final class CollectionViewModel {
 private struct OfflineGroupsLoadSnapshot: Sendable {
     let groups: [OfflineGroupMeta]
     let downloadedIds: Set<String>
+}
+
+private struct RemoteGroupsSnapshot: Sendable {
+    let groups: [ComicGroup]
+    let membership: GroupMembershipSnapshot
+}
+
+private struct GroupMembershipSnapshot: Sendable {
+    var comicIds: Set<String>
+    var seriesIds: Set<String>
+
+    static let empty = GroupMembershipSnapshot(comicIds: [], seriesIds: [])
 }
