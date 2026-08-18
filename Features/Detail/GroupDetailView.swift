@@ -578,18 +578,21 @@ struct SeriesDetailView: View {
                         } else {
                             LazyVStack(spacing: 0) {
                                 ForEach(viewModel.visibleItems) { item in
-                                    NavigationLink {
-                                        ComicDetailView(
-                                            comicId: item.comic.id,
-                                            groupContext: viewModel.readingContext(for: item)
-                                        )
-                                    } label: {
-                                        SeriesUnitListRowView(item: item, serverURL: api.serverURL)
-                                            .padding(.horizontal, 20)
+                                    VStack(spacing: 0) {
+                                        NavigationLink {
+                                            ComicDetailView(
+                                                comicId: item.comic.id,
+                                                groupContext: viewModel.readingContext(for: item)
+                                            )
+                                        } label: {
+                                            SeriesUnitListRowView(item: item, serverURL: api.serverURL)
+                                                .padding(.horizontal, 20)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .contentShape(Rectangle())
+
+                                        Divider().padding(.leading, 80)
                                     }
-                                    .buttonStyle(.plain)
-                                    .contentShape(Rectangle())
-                                    Divider().padding(.leading, 80)
                                 }
                             }
                             .padding(.bottom, 24)

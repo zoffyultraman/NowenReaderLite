@@ -485,7 +485,7 @@ struct ReadingStatusSection: View {
     let currentStatus: String?
     let onSelect: (String?) -> Void
 
-    private let statuses: [(key: String, icon: String)] = [
+    private static let statuses: [(key: String, icon: String)] = [
         ("want", "bookmark"),
         ("reading", "book.fill"),
         ("finished", "checkmark.circle.fill"),
@@ -500,7 +500,7 @@ struct ReadingStatusSection: View {
 
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
-                    ForEach(statuses, id: \.key) { status in
+                    ForEach(Self.statuses, id: \.key) { status in
                         let isSelected = currentStatus == status.key
                         Button {
                             onSelect(isSelected ? nil : status.key)

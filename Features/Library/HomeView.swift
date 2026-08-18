@@ -673,25 +673,28 @@ private struct LibraryContentView: View {
     }
 
     var body: some View {
+        let shelfEntries = entries
+        let loading = isLoading
+
         VStack(alignment: .leading, spacing: 12) {
             Group {
-                if entries.isEmpty && !isLoading {
+                if shelfEntries.isEmpty && !loading {
                     LibraryEmptyState(contentType: contentType)
                 } else if viewMode == .grid {
                     LibraryShelfGridView(
-                        entries: entries,
+                        entries: shelfEntries,
                         columns: gridColumns,
                         serverURL: api.serverURL,
                         contentType: contentType,
-                        isLoading: isLoading,
+                        isLoading: loading,
                         loadMore: { await viewModel.loadMore() }
                     )
                 } else {
                     LibraryShelfListView(
-                        entries: entries,
+                        entries: shelfEntries,
                         serverURL: api.serverURL,
                         contentType: contentType,
-                        isLoading: isLoading,
+                        isLoading: loading,
                         loadMore: { await viewModel.loadMore() }
                     )
                 }

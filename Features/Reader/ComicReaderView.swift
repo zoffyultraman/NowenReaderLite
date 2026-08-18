@@ -12,6 +12,7 @@ struct ComicReaderView: View {
 
     @State private var viewModel = ComicReaderViewModel()
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
+    @AppStorage("isRTL") private var isRTL: Bool = true
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -52,7 +53,7 @@ struct ComicReaderView: View {
                         totalPages: viewModel.totalPages,
                         currentPage: $viewModel.currentPage,
                         isDoublePageMode: isLandscape,
-                        isRTL: UserDefaults.standard.bool(forKey: "isRTL"),
+                        isRTL: isRTL,
                         upscaleMode: upscaleMode,
                         onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
                         onPageChange: { page in viewModel.onPageChanged(page) },
@@ -114,6 +115,7 @@ struct ComicReaderView: View {
             sliderValue: $viewModel.sliderValue,
             hasGroupContext: viewModel.groupContext != nil,
             volumeLabel: volumeLabel,
+            isRTL: $isRTL,
             onDismiss: { dismiss() }
         )
     }
@@ -133,9 +135,9 @@ struct ReaderOverlayView: View {
     @Binding var sliderValue: Double
     let hasGroupContext: Bool
     let volumeLabel: String
+    @Binding var isRTL: Bool
     let onDismiss: () -> Void
 
-    @AppStorage("isRTL") private var isRTL: Bool = true
     @State private var showSettings = false
 
     var body: some View {

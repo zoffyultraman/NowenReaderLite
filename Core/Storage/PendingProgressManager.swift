@@ -33,8 +33,9 @@ final class PendingProgressManager: @unchecked Sendable {
         queue.sync { _cache }
     }
 
-    func remove(comicId: String) {
+    func remove(comicId: String, ifUnchangedSince updatedAt: Date) {
         queue.async(flags: .barrier) {
+            guard self._cache[comicId]?.updatedAt == updatedAt else { return }
             self._cache.removeValue(forKey: comicId)
             self.persist()
         }

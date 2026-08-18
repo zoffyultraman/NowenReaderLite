@@ -358,7 +358,7 @@ struct NovelBottomOverlay: View {
 
 // MARK: - 目录弹窗
 
-private struct ChapterListRow: Identifiable {
+private struct ChapterListRow: Identifiable, Sendable {
     let id: Int
     let title: String
     let level: Int
@@ -366,89 +366,48 @@ private struct ChapterListRow: Identifiable {
     let hasChildren: Bool
 }
 
-struct ChapterListView: View {
-    let totalChapters: Int
-    let currentChapter: Int
-    let chapters: [PageEntry]
-    let chapterTitles: [Int: String]
-    let onSelect: (Int) -> Void
+@MainActor
+@Observable
+private final class ChapterListModel {
+    private(set) var rows: [ChapterListRow] = []
+    private var rowsByIndex: [Int: ChapterListRow] = [:]
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var collapsedIndexes = Set<Int>()
+    func prepare(
+        totalChapters: Int,
+        chapters: [PageEntry],
+        chapterTitles: [Int: String]
+    ) async {
+        let preparedRows = await Task.detached(priority: .userInitiated) {
+            Self.makeRows(
+                totalChapters: totalChapters,
+                chapters: chapters,
+                chapterTitles: chapterTitles
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        rowsByIndex = Dictionary(uniqueKeysWithValues: preparedRows.map { ($0.id, $0) })
+        rows = preparedRows
+    }
 
-    var body: some View {
-        NavigationStack {
-            ScrollViewReader { proxy in
-                List {
-                    ForEach(visibleRows) { row in
-                        HStack(spacing: 6) {
-                            if row.hasChildren {
-                                Button {
-                                    toggleCollapsed(row.id)
-                                } label: {
-                                    Image(
-                                        systemName: collapsedIndexes.contains(row.id)
-                                            ? "chevron.right"
-                                            : "chevron.down"
-                                    )
-                                    .font(.caption.weight(.semibold))
-                                    .frame(width: 20, height: 28)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(
-                                    collapsedIndexes.contains(row.id) ? "展开" : "折叠"
-                                )
-                            } else {
-                                Color.clear
-                                    .frame(width: 20, height: 28)
-                                    .accessibilityHidden(true)
-                            }
-
-                            Button {
-                                onSelect(row.id)
-                            } label: {
-                                HStack {
-                                    Text(row.title)
-                                        .foregroundStyle(
-                                            row.id == currentChapter
-                                                ? Color.accentColor
-                                                : .primary
-                                        )
-                                        .fontWeight(
-                                            row.id == currentChapter
-                                                ? .semibold
-                                                : .regular
-                                        )
-                                        .lineLimit(2)
-                                    Spacer()
-                                    if row.id == currentChapter {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(Color.accentColor)
-                                            .font(.subheadline.weight(.semibold))
-                                    }
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.leading, CGFloat(min(row.level, 6)) * 14)
-                    }
+    func visibleRows(collapsedIndexes: Set<Int>) -> [ChapterListRow] {
+        rows.filter { row in
+            var parent = row.parentIndex
+            var visited = Set<Int>()
+            while let parentIndex = parent, visited.insert(parentIndex).inserted {
+                if collapsedIndexes.contains(parentIndex) {
+                    return false
                 }
-                .onAppear {
-                    proxy.scrollTo(currentChapter)
-                }
+                parent = rowsByIndex[parentIndex]?.parentIndex
             }
-            .navigationTitle("目录")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                }
-            }
+            return true
         }
     }
 
-    private var rows: [ChapterListRow] {
+    nonisolated private static func makeRows(
+        totalChapters: Int,
+        chapters: [PageEntry],
+        chapterTitles: [Int: String]
+    ) -> [ChapterListRow] {
         let entries: [PageEntry]
         if chapters.isEmpty {
             entries = (0..<totalChapters).map {
@@ -498,20 +457,119 @@ struct ChapterListView: View {
         }
     }
 
-    private var visibleRows: [ChapterListRow] {
-        let allRows = rows
-        let rowsByIndex = Dictionary(uniqueKeysWithValues: allRows.map { ($0.id, $0) })
-        return allRows.filter { row in
-            var parent = row.parentIndex
-            var visited = Set<Int>()
-            while let parentIndex = parent, visited.insert(parentIndex).inserted {
-                if collapsedIndexes.contains(parentIndex) {
-                    return false
-                }
-                parent = rowsByIndex[parentIndex]?.parentIndex
-            }
-            return true
+    nonisolated private static func nonempty(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
         }
+        return value
+    }
+}
+
+struct ChapterListView: View {
+    let totalChapters: Int
+    let currentChapter: Int
+    let chapters: [PageEntry]
+    let chapterTitles: [Int: String]
+    let onSelect: (Int) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var collapsedIndexes = Set<Int>()
+    @State private var model = ChapterListModel()
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                List {
+                    if model.rows.isEmpty && totalChapters > 0 {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    } else {
+                        ForEach(visibleRows) { row in
+                            HStack(spacing: 6) {
+                                if row.hasChildren {
+                                    Button {
+                                        toggleCollapsed(row.id)
+                                    } label: {
+                                        Image(
+                                            systemName: collapsedIndexes.contains(row.id)
+                                                ? "chevron.right"
+                                                : "chevron.down"
+                                        )
+                                        .font(.caption.weight(.semibold))
+                                        .frame(width: 20, height: 28)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(
+                                        collapsedIndexes.contains(row.id) ? "展开" : "折叠"
+                                    )
+                                } else {
+                                    Color.clear
+                                        .frame(width: 20, height: 28)
+                                        .accessibilityHidden(true)
+                                }
+
+                                Button {
+                                    onSelect(row.id)
+                                } label: {
+                                    HStack {
+                                        Text(row.title)
+                                            .foregroundStyle(
+                                                row.id == currentChapter
+                                                    ? Color.accentColor
+                                                    : .primary
+                                            )
+                                            .fontWeight(
+                                                row.id == currentChapter
+                                                    ? .semibold
+                                                    : .regular
+                                            )
+                                            .lineLimit(2)
+                                        Spacer()
+                                        if row.id == currentChapter {
+                                            Image(systemName: "checkmark")
+                                                .foregroundStyle(Color.accentColor)
+                                                .font(.subheadline.weight(.semibold))
+                                        }
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.leading, CGFloat(min(row.level, 6)) * 14)
+                            .id(row.id)
+                        }
+                    }
+                }
+                .onAppear {
+                    proxy.scrollTo(currentChapter)
+                }
+                .onChange(of: model.rows.count) { _, count in
+                    guard count > 0 else { return }
+                    proxy.scrollTo(currentChapter, anchor: .center)
+                }
+            }
+            .navigationTitle("目录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+        }
+        .task {
+            await model.prepare(
+                totalChapters: totalChapters,
+                chapters: chapters,
+                chapterTitles: chapterTitles
+            )
+        }
+    }
+
+    private var visibleRows: [ChapterListRow] {
+        model.visibleRows(collapsedIndexes: collapsedIndexes)
     }
 
     private func toggleCollapsed(_ index: Int) {
@@ -520,13 +578,6 @@ struct ChapterListView: View {
         } else {
             collapsedIndexes.insert(index)
         }
-    }
-
-    private func nonempty(_ value: String?) -> String? {
-        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return value
     }
 }
 

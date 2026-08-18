@@ -7,6 +7,7 @@ struct MainTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
     @State private var selectedTab = 0
+    @State private var pendingProgressSyncTask: Task<Void, Never>?
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -70,6 +71,10 @@ struct MainTabView: View {
                 Task { _ = try? await api.fetchAccessibleLibraries() }
             }
         }
+        .onDisappear {
+            pendingProgressSyncTask?.cancel()
+            pendingProgressSyncTask = nil
+        }
     }
 
     private func syncOfflineReadingState() {
@@ -87,14 +92,29 @@ struct MainTabView: View {
     /// 联网后同步离线阅读进度到服务端
     private func syncPendingProgress() {
         let api = APIClient.shared
-        guard !api.isOfflineMode, api.isNetworkReachable, PendingProgressManager.shared.hasPending else { return }
-        let pending = PendingProgressManager.shared.loadAll()
-        AppLogger.log("同步离线进度: \(pending.count) 本漫画")
-        for (comicId, record) in pending {
-            Task {
+        let manager = PendingProgressManager.shared
+        guard pendingProgressSyncTask == nil,
+              !api.isOfflineMode,
+              api.isNetworkReachable,
+              manager.hasPending else { return }
+
+        pendingProgressSyncTask = Task {
+            defer { pendingProgressSyncTask = nil }
+            let pending = manager.loadAll().sorted {
+                $0.value.updatedAt < $1.value.updatedAt
+            }
+            AppLogger.log("同步离线进度: \(pending.count) 本漫画")
+
+            for (comicId, record) in pending {
+                guard !Task.isCancelled,
+                      !api.isOfflineMode,
+                      api.isNetworkReachable else { return }
                 do {
                     try await api.updateProgress(comicId: comicId, page: record.page, totalPages: record.totalPages)
-                    PendingProgressManager.shared.remove(comicId: comicId)
+                    manager.remove(
+                        comicId: comicId,
+                        ifUnchangedSince: record.updatedAt
+                    )
                     AppLogger.log("离线进度已同步: \(comicId) page=\(record.page)")
                 } catch {
                     AppLogger.log("离线进度同步失败: \(comicId) \(error.localizedDescription)")

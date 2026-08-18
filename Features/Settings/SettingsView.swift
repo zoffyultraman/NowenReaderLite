@@ -5,7 +5,6 @@ struct SettingsView: View {
     private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
-    @Query private var cachedComics: [CachedComic]
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
     @State private var coverCacheSize: Int = 0
@@ -68,6 +67,10 @@ struct SettingsView: View {
 
     @MainActor
     private func loadCacheSize() async {
+        let cachedComics = modelContext.fetchOrLog(
+            FetchDescriptor<CachedComic>(),
+            label: "统计元数据缓存"
+        )
         let metaBytes = cachedComics.reduce(0) { total, comic in
             total
                 + (comic.id.utf8.count)

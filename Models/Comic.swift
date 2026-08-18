@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 漫画/小说数据模型
 
-struct Comic: Codable, Identifiable, Sendable {
+struct Comic: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let title: String
     let author: String?

@@ -26,17 +26,11 @@ struct FavoritesMainContent: View {
     var body: some View {
         Group {
             if viewModel.comics.isEmpty && !viewModel.isLoading {
-                VStack(spacing: 12) {
-                    Image(systemName: "heart")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.tertiary)
-                    Text("还没有收藏")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                    Text("在详情页点击心形收藏喜欢的漫画")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
+                ContentUnavailableView(
+                    "还没有收藏",
+                    systemImage: "heart",
+                    description: Text("在详情页点击心形收藏喜欢的漫画")
+                )
             } else {
                 ScrollView {
                     LazyVGrid(columns: [
