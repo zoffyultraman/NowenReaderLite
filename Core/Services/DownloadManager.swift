@@ -31,6 +31,7 @@ final class DownloadManager {
     private var storageReservations: [String: Int64] = [:]
     private var localStorageBytesByComic: [String: Int64] = [:]
     private var deletingComicIds = Set<String>()
+    private var pendingRouteRetryKeys = Set<String>()
     private var downloadStateVersion = 0
     private var storageRefreshVersion = 0
     private var isRestoring = false
@@ -685,28 +686,15 @@ final class DownloadManager {
 
             var startedTaskCount = 0
             for index in missingIndices {
-                let url: URL?
-                if task.isNovel {
-                    url = URL(string: "\(APIClient.shared.serverURL)/api/comics/\(comicId)/chapter/\(index)")
-                } else {
-                    url = APIClient.shared.pageImageURL(comicId: comicId, page: index)
+                if startPageDownload(
+                    comicId: comicId,
+                    pageIndex: index,
+                    isNovel: task.isNovel,
+                    generation: generation,
+                    routeRetryCount: 0
+                ) {
+                    startedTaskCount += 1
                 }
-                guard let validURL = url else { continue }
-
-                let timeout = task.isNovel ? novelChapterTimeout : pageTimeout
-                let request = APIClient.shared.authenticatedRequest(
-                    url: validURL,
-                    timeout: timeout
-                )
-                let downloadTask = backgroundSession.downloadTask(with: request)
-                downloadTask.taskDescription = [
-                    comicId,
-                    String(index),
-                    task.isNovel ? "novel" : "comic",
-                    generation,
-                ].joined(separator: "|")
-                downloadTask.resume()
-                startedTaskCount += 1
             }
 
             if startedTaskCount == 0 {
@@ -718,6 +706,38 @@ final class DownloadManager {
                 processQueue()
             }
         }
+    }
+
+    @discardableResult
+    private func startPageDownload(
+        comicId: String,
+        pageIndex: Int,
+        isNovel: Bool,
+        generation: String,
+        routeRetryCount: Int
+    ) -> Bool {
+        let url: URL?
+        if isNovel {
+            url = URL(
+                string: "\(APIClient.shared.serverURL)/api/comics/\(comicId)/chapter/\(pageIndex)"
+            )
+        } else {
+            url = APIClient.shared.pageImageURL(comicId: comicId, page: pageIndex)
+        }
+        guard let url else { return false }
+
+        let timeout = isNovel ? novelChapterTimeout : pageTimeout
+        let request = APIClient.shared.authenticatedRequest(url: url, timeout: timeout)
+        let downloadTask = backgroundSession.downloadTask(with: request)
+        downloadTask.taskDescription = [
+            comicId,
+            String(pageIndex),
+            isNovel ? "novel" : "comic",
+            generation,
+            String(routeRetryCount),
+        ].joined(separator: "|")
+        downloadTask.resume()
+        return true
     }
 
     // MARK: - URLSessionDownloadDelegate
@@ -752,6 +772,35 @@ final class DownloadManager {
                 return
             }
             AppLogger.error("下载页面失败 \(task.taskDescription ?? ""): \(error)")
+            if descriptor.routeRetryCount == 0 {
+                let retryKey = descriptor.retryKey
+                pendingRouteRetryKeys.insert(retryKey)
+                let failedURL = task.currentRequest?.url ?? task.originalRequest?.url
+                Task {
+                    let recovered = await APIClient.shared.recoverRoute(
+                        after: error,
+                        failedResourceURL: failedURL
+                    )
+                    guard tasks[comicId] === download,
+                          download.state == .downloading,
+                          download.generation == descriptor.generation else {
+                        pendingRouteRetryKeys.remove(retryKey)
+                        return
+                    }
+                    let restarted = recovered && startPageDownload(
+                        comicId: comicId,
+                        pageIndex: descriptor.pageIndex,
+                        isNovel: descriptor.isNovel,
+                        generation: descriptor.generation,
+                        routeRetryCount: 1
+                    )
+                    pendingRouteRetryKeys.remove(retryKey)
+                    if !restarted {
+                        checkTaskCompletion(for: comicId)
+                    }
+                }
+                return
+            }
         }
 
         checkTaskCompletion(for: comicId)
@@ -760,6 +809,11 @@ final class DownloadManager {
     private func checkTaskCompletion(for comicId: String) {
         guard let task = tasks[comicId], task.state == .downloading else { return }
         let generation = task.generation
+        guard !pendingRouteRetryKeys.contains(where: {
+            $0.hasPrefix("\(comicId)|") && $0.hasSuffix("|\(generation)")
+        }) else {
+            return
+        }
 
         backgroundSession.getAllTasks { [weak self] sessionTasks in
             guard let self = self else { return }
@@ -1000,6 +1054,11 @@ private struct BackgroundDownloadDescriptor: Sendable {
     let pageIndex: Int
     let isNovel: Bool
     let generation: String
+    let routeRetryCount: Int
+
+    var retryKey: String {
+        "\(comicId)|\(pageIndex)|\(generation)"
+    }
 
     init?(taskDescription: String?) {
         guard let taskDescription else { return nil }
@@ -1014,6 +1073,9 @@ private struct BackgroundDownloadDescriptor: Sendable {
         generation = parts.count >= 4
             ? String(parts[3])
             : "legacy-\(comicId)"
+        routeRetryCount = parts.count >= 5
+            ? Int(parts[4]) ?? 0
+            : 0
     }
 }
 
@@ -1087,6 +1149,15 @@ final class SessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Se
         }
         let comicId = descriptor.comicId
         let index = descriptor.pageIndex
+
+        guard let response = downloadTask.response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode) else {
+            AppLogger.error(
+                "下载页面返回异常状态: \(comicId)/\(index) "
+                    + "\((downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1)"
+            )
+            return
+        }
 
         do {
             let data = try Data(contentsOf: location)

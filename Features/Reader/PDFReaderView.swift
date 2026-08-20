@@ -133,7 +133,7 @@ struct PDFKitView: UIViewRepresentable {
     }
 
     class Coordinator {
-        var dataTask: URLSessionDataTask?
+        var dataTask: Task<Void, Never>?
         var currentLoadID: UUID?
         var lastReloadID: UUID?
         var lastURL: URL?
@@ -215,15 +215,18 @@ struct PDFKitView: UIViewRepresentable {
             loadError = false
         }
 
-        let request = APIClient.shared.authenticatedRequest(url: url, timeout: 60)
         let loadID = UUID()
         coordinator.currentLoadID = loadID
-        let task = URLSession.shared.dataTask(with: request) { data, _, error in
-            let document = data.flatMap(PDFDocument.init(data:))
-            DispatchQueue.main.async {
+        let task = Task { @MainActor in
+            do {
+                let data = try await APIClient.shared.authenticatedData(
+                    from: url,
+                    timeout: 60
+                )
+                let document = PDFDocument(data: data)
                 guard coordinator.currentLoadID == loadID else { return }
                 isLoading = false
-                if error == nil, let doc = document {
+                if let doc = document {
                     uiView.document = doc
                     let pageCount = doc.pageCount
                     let targetIndex = min(max(initialPage, 0), max(pageCount - 1, 0))
@@ -237,10 +240,13 @@ struct PDFKitView: UIViewRepresentable {
                 } else {
                     loadError = true
                 }
+            } catch {
+                guard coordinator.currentLoadID == loadID else { return }
+                isLoading = false
+                loadError = true
             }
         }
         coordinator.dataTask = task
-        task.resume()
     }
 
     static func dismantleUIView(_ uiView: PDFView, coordinator: Coordinator) {

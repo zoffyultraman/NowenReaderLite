@@ -20,7 +20,12 @@ struct SettingsView: View {
                 displayName: api.currentUser?.nickname ?? api.currentUser?.username ?? "用户",
                 username: api.currentUser?.username ?? ""
             )
-            ServerSettingsSection(serverURL: api.serverURL)
+            ServerSettingsSection(
+                primaryURL: api.primaryServerURL,
+                activeURL: api.serverURL,
+                activeRouteTitle: api.backupServerURL == nil ? nil : api.activeRouteTitle,
+                usesAPIKey: api.hasConfiguredAPIKey
+            )
             ImageEnhancementSettingsSection(
                 upscaleMode: $upscaleMode,
                 keepOriginalSize: $keepOriginalSize
@@ -129,7 +134,10 @@ private struct UserProfileSettingsSection: View {
 }
 
 private struct ServerSettingsSection: View {
-    let serverURL: String
+    let primaryURL: String
+    let activeURL: String
+    let activeRouteTitle: String?
+    let usesAPIKey: Bool
 
     var body: some View {
         Section("服务器") {
@@ -137,7 +145,7 @@ private struct ServerSettingsSection: View {
                 ServerListView()
             } label: {
                 HStack {
-                    let isHTTPS = serverURL.lowercased().hasPrefix("https://")
+                    let isHTTPS = activeURL.lowercased().hasPrefix("https://")
                     Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
                         .foregroundStyle(isHTTPS ? .green : .red)
                         .font(.caption)
@@ -145,10 +153,26 @@ private struct ServerSettingsSection: View {
                     Label("服务器", systemImage: "server.rack")
                         .foregroundStyle(.primary)
                     Spacer()
-                    Text(serverURL)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(primaryURL)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        if let activeRouteTitle {
+                            Text(activeRouteTitle)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        if usesAPIKey {
+                            Text("API Key")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            Text("Cookie")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                 }
             }
 
@@ -162,7 +186,7 @@ private struct ServerSettingsSection: View {
                 }
             }
 
-            if !serverURL.isEmpty && !serverURL.lowercased().hasPrefix("https://") {
+            if !activeURL.isEmpty && !activeURL.lowercased().hasPrefix("https://") {
                 Label {
                     Text("当前使用 HTTP 明文连接，数据（含密码）可能被截获")
                         .font(.caption2)

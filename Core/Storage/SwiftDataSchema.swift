@@ -19,11 +19,19 @@ enum SchemaV2: VersionedSchema {
     }
 }
 
+enum SchemaV3: VersionedSchema {
+    static let versionIdentifier = Schema.Version(3, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [CachedComic.self, ServerRecord.self, SavedAccount.self, DownloadedComicRecord.self]
+    }
+}
+
 // MARK: - Migration Plan
 
 enum ReaderMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
@@ -146,16 +154,40 @@ final class ServerRecord: Identifiable {
     @Attribute(.unique) var url: String
     var username: String?
     var lastUsed: Date
+    var backupURL: String?
+    var routeModeRawValue: String = ServerRouteMode.automatic.rawValue
     @Relationship(inverse: \SavedAccount.boundServers)
     var boundAccount: SavedAccount?
 
     /// 兼容旧代码的便捷访问
     var boundAccountId: String? { boundAccount?.id }
 
+    var routeMode: ServerRouteMode {
+        get { ServerRouteMode(rawValue: routeModeRawValue) ?? .automatic }
+        set { routeModeRawValue = newValue.rawValue }
+    }
+
     init(url: String, username: String? = nil) {
         self.url = url
         self.username = username
         self.lastUsed = Date()
+        self.backupURL = nil
+    }
+}
+
+enum ServerRouteMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case primary
+    case backup
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .automatic: "自动"
+        case .primary: "主线路"
+        case .backup: "备用线路"
+        }
     }
 }
 

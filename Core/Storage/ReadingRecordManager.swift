@@ -4,8 +4,14 @@ import Foundation
 
 enum UserDefaultsKey {
     static let serverURL = "server_url"
+    static let backupServerURL = "backup_server_url"
+    static let serverRouteMode = "server_route_mode"
     static let novelFontSize = "novel_font_size"
     static let readingRecords = "reading_records"
+
+    static func activeServerRoute(for primaryURL: String) -> String {
+        "active_server_route_\(primaryURL)"
+    }
 }
 
 // MARK: - 阅读记录管理器

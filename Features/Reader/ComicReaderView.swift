@@ -423,8 +423,7 @@ final class ReaderCacheManager {
             guard !Task.isCancelled, APIClient.shared.isNetworkReachable else {
                 return nil
             }
-            let request = APIClient.shared.authenticatedRequest(url: imageURL)
-            guard let (data, _) = try? await URLSession.shared.data(for: request),
+            guard let data = try? await APIClient.shared.authenticatedData(from: imageURL),
                   !Task.isCancelled else {
                 return nil
             }

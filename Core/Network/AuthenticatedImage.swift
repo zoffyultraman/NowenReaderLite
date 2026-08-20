@@ -56,10 +56,8 @@ struct AuthenticatedImage: View {
             return
         }
 
-        let request = APIClient.shared.authenticatedRequest(url: url)
-
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let data = try await APIClient.shared.authenticatedData(from: url)
             guard !Task.isCancelled, self.url?.absoluteString == urlString else { return }
             if let img = await Task.detached(priority: .userInitiated, operation: {
                 UIImage(data: data)

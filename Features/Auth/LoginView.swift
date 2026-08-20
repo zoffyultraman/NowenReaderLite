@@ -43,6 +43,12 @@ struct LoginView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
+
+                    if api.hasConfiguredAPIKey {
+                        Label("API Key 认证失败，可重新配置或使用密码登录", systemImage: "key.slash")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 .padding(.bottom, 40)
 
@@ -166,6 +172,10 @@ struct LoginView: View {
         isLoading = true
         Task {
             do {
+                if api.hasConfiguredAPIKey,
+                   !api.setAPIKey(nil, for: api.primaryServerURL) {
+                    throw APIError.secureStorage
+                }
                 if isRegistering {
                     _ = try await APIClient.shared.register(username: username, password: password, nickname: nickname)
                 } else {
