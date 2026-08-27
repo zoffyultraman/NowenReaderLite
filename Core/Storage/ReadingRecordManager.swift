@@ -12,6 +12,10 @@ enum UserDefaultsKey {
     static func activeServerRoute(for primaryURL: String) -> String {
         "active_server_route_\(primaryURL)"
     }
+
+    static func cookiePreferredRoutes(for primaryURL: String) -> String {
+        "cookie_preferred_routes_\(primaryURL)"
+    }
 }
 
 // MARK: - 阅读记录管理器

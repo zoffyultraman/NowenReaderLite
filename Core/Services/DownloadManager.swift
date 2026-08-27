@@ -32,6 +32,7 @@ final class DownloadManager {
     private var localStorageBytesByComic: [String: Int64] = [:]
     private var deletingComicIds = Set<String>()
     private var pendingRouteRetryKeys = Set<String>()
+    private var novelResourceFinalizations = Set<String>()
     private var downloadStateVersion = 0
     private var storageRefreshVersion = 0
     private var isRestoring = false
@@ -628,7 +629,8 @@ final class DownloadManager {
             pageCount: total,
             downloadedAt: Date(),
             fileSize: task.fileSize,
-            isNovel: task.isNovel
+            isNovel: task.isNovel,
+            novelResourcesComplete: task.isNovel ? false : nil
         )
         syncComicToCache(
             comicId: comicId,
@@ -674,13 +676,7 @@ final class DownloadManager {
             let missingIndices = (0..<total).filter { !downloadedIndices.contains($0) }
 
             if missingIndices.isEmpty {
-                task.state = .completed
-                downloadedComicIds.insert(comicId)
-                syncToStore(task: task)
-                refreshTaskLists()
-                refreshStats()
-                await reconcileStorageReservation(for: comicId)
-                processQueue()
+                await finalizeCompletedDownload(task)
                 return
             }
 
@@ -847,21 +843,77 @@ final class DownloadManager {
                     .count
                 
                 if (0..<task.totalPages).allSatisfy(finalDownloadedIndices.contains) {
-                    task.state = .completed
-                    self.downloadedComicIds.insert(comicId)
-                    AppLogger.log("下载完成: \(task.title) (\(task.totalPages))")
+                    await self.finalizeCompletedDownload(task)
                 } else {
                     task.state = .failed
                     AppLogger.error("下载失败，部分页面未成功下载: \(task.title)")
+                    await self.finishTaskStateChange(task)
                 }
-
-                self.refreshTaskLists()
-                self.refreshStats()
-                self.syncToStore(task: task)
-                await self.reconcileStorageReservation(for: comicId)
-                self.processQueue()
             }
         }
+    }
+
+    private func finalizeCompletedDownload(_ task: DownloadTask) async {
+        guard tasks[task.comicId] === task,
+              task.state == .downloading else {
+            return
+        }
+
+        if task.isNovel {
+            guard !novelResourceFinalizations.contains(task.comicId) else { return }
+            novelResourceFinalizations.insert(task.comicId)
+            let generation = task.generation
+            let resourcesCached = await NovelResourceService.cacheOfflineResources(
+                comicId: task.comicId,
+                totalChapters: task.totalPages,
+                generation: generation
+            )
+            novelResourceFinalizations.remove(task.comicId)
+            guard tasks[task.comicId] === task,
+                  task.state == .downloading,
+                  task.generation == generation else {
+                return
+            }
+            guard resourcesCached else {
+                task.state = .failed
+                AppLogger.error("下载失败，小说插图未能完整缓存: \(task.title)")
+                await finishTaskStateChange(task)
+                return
+            }
+
+            let manager = fileManager
+            let comicId = task.comicId
+            let marked = await Task.detached(priority: .utility) {
+                do {
+                    try manager.markNovelResourcesComplete(
+                        comicId: comicId,
+                        generation: generation
+                    )
+                    return true
+                } catch {
+                    return false
+                }
+            }.value
+            guard marked else {
+                task.state = .failed
+                AppLogger.error("下载失败，无法保存小说插图状态: \(task.title)")
+                await finishTaskStateChange(task)
+                return
+            }
+        }
+
+        task.state = .completed
+        downloadedComicIds.insert(task.comicId)
+        AppLogger.log("下载完成: \(task.title) (\(task.totalPages))")
+        await finishTaskStateChange(task)
+    }
+
+    private func finishTaskStateChange(_ task: DownloadTask) async {
+        refreshTaskLists()
+        refreshStats()
+        syncToStore(task: task)
+        await reconcileStorageReservation(for: task.comicId)
+        processQueue()
     }
 
     func handleBackgroundEventsFinished() {

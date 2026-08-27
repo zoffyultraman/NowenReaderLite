@@ -15,8 +15,11 @@ final class APIClient {
     private(set) var backupServerURL: String?
     private(set) var routeMode: ServerRouteMode
     private(set) var serverURL: String
+    private(set) var routeVerification: ServerRouteVerification
     private(set) var hasConfiguredAPIKey: Bool
     @ObservationIgnored private var apiKey: String?
+    @ObservationIgnored private var cookiePreferredRoutes: Set<String>
+    @ObservationIgnored private var isOnLocalNetwork = false
     var isLoggedIn: Bool = false
     var currentUser: AuthUser?
     /// 断网离线模式：有历史登录记录但服务器不可达
@@ -92,9 +95,15 @@ final class APIClient {
         self.primaryServerURL = primary
         self.backupServerURL = backup
         self.routeMode = effectiveMode
+        self.routeVerification = backup == nil ? .notConfigured : .unverified
         let storedAPIKey = KeychainHelper.readAPIKey(for: primary)
         self.apiKey = storedAPIKey
         self.hasConfiguredAPIKey = storedAPIKey != nil
+        self.cookiePreferredRoutes = Set(
+            defaults.stringArray(
+                forKey: UserDefaultsKey.cookiePreferredRoutes(for: primary)
+            ) ?? []
+        )
         switch effectiveMode {
         case .primary:
             self.serverURL = primary
@@ -125,6 +134,7 @@ final class APIClient {
             monitor.cancel()  // 只需要首次回调
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.isOnLocalNetwork = Self.pathUsesLocalNetwork(path)
                 if path.status == .satisfied {
                     // 有网络，测试服务器是否可达
                     let reachable = await self.testServerReachable()
@@ -191,8 +201,14 @@ final class APIClient {
         primaryServerURL = primary
         backupServerURL = normalizedBackup
         routeMode = effectiveMode
+        routeVerification = normalizedBackup == nil ? .notConfigured : .unverified
         apiKey = KeychainHelper.readAPIKey(for: primary)
         hasConfiguredAPIKey = apiKey != nil
+        cookiePreferredRoutes = Set(
+            UserDefaults.standard.stringArray(
+                forKey: UserDefaultsKey.cookiePreferredRoutes(for: primary)
+            ) ?? []
+        ).intersection(allowedRoutes)
         UserDefaults.standard.set(primary, forKey: UserDefaultsKey.serverURL)
         UserDefaults.standard.set(normalizedBackup, forKey: UserDefaultsKey.backupServerURL)
         UserDefaults.standard.set(effectiveMode.rawValue, forKey: UserDefaultsKey.serverRouteMode)
@@ -203,6 +219,24 @@ final class APIClient {
         Self.normalizedServerURL(primaryURL) == primaryServerURL
     }
 
+    /// 主线路地址变更前迁移客户端本地认证状态，不修改服务端。
+    func preparePrimaryRouteChange(from oldURL: String, to newURL: String) {
+        guard let oldPrimary = Self.normalizedServerURL(oldURL),
+              let newPrimary = Self.normalizedServerURL(newURL),
+              oldPrimary != newPrimary else {
+            return
+        }
+        copySessionCookie(from: oldPrimary, to: newPrimary)
+        let defaults = UserDefaults.standard
+        let oldLoginKey = "hasLoggedInBefore_\(oldPrimary)"
+        if defaults.bool(forKey: oldLoginKey) {
+            defaults.set(true, forKey: "hasLoggedInBefore_\(newPrimary)")
+        }
+        if let siteName = defaults.string(forKey: "siteName_\(oldPrimary)") {
+            defaults.set(siteName, forKey: "siteName_\(newPrimary)")
+        }
+    }
+
     var isUsingBackupRoute: Bool {
         guard let backupServerURL else { return false }
         return serverURL == backupServerURL
@@ -210,6 +244,17 @@ final class APIClient {
 
     var activeRouteTitle: String {
         isUsingBackupRoute ? "备用线路" : "主线路"
+    }
+
+    var activeRouteIsLocal: Bool {
+        Self.isLikelyLocalNetworkURL(serverURL)
+    }
+
+    var activeAuthenticationTitle: String {
+        if hasConfiguredAPIKey, !cookiePreferredRoutes.contains(serverURL) {
+            return "API Key"
+        }
+        return "Cookie"
     }
 
     @discardableResult
@@ -337,6 +382,292 @@ final class APIClient {
         }
     }
 
+    /// 使用同一份现有凭据比较两条线路返回的用户与书库身份。
+    func verifyServerPair(
+        primaryURL: String,
+        backupURL: String,
+        apiKeyOverride: String? = nil
+    ) async -> ServerRouteVerification {
+        guard let primary = Self.normalizedServerURL(primaryURL),
+              let backup = Self.normalizedServerURL(backupURL),
+              primary != backup else {
+            return .notConfigured
+        }
+
+        let credentials = routeVerificationCredentials(
+            primaryURL: primary,
+            backupURL: backup,
+            apiKeyOverride: apiKeyOverride
+        )
+        guard !credentials.isEmpty else {
+            return .authenticationRequired
+        }
+
+        async let primaryFingerprint = fetchServerFingerprint(
+            from: primary,
+            credentials: credentials
+        )
+        async let backupFingerprint = fetchServerFingerprint(
+            from: backup,
+            credentials: credentials
+        )
+        let (primaryResult, backupResult) = await (
+            primaryFingerprint,
+            backupFingerprint
+        )
+
+        switch (primaryResult, backupResult) {
+        case let (.success(primarySnapshot), .success(backupSnapshot)):
+            guard primarySnapshot.fingerprint == backupSnapshot.fingerprint else {
+                return .mismatch
+            }
+            updateRouteAuthenticationPreferences(
+                primaryURL: primary,
+                backupURL: backup,
+                primaryUsesCookie: primarySnapshot.usesCookie,
+                backupUsesCookie: backupSnapshot.usesCookie
+            )
+            return .verified
+        case (.authenticationFailed, _), (_, .authenticationFailed):
+            return .authenticationFailed
+        case (.unavailable, _), (_, .unavailable):
+            return .unavailable
+        }
+    }
+
+    @discardableResult
+    func refreshRouteVerification() async -> ServerRouteVerification {
+        guard let backupServerURL else {
+            routeVerification = .notConfigured
+            return .notConfigured
+        }
+        routeVerification = .checking
+        let result = await verifyServerPair(
+            primaryURL: primaryServerURL,
+            backupURL: backupServerURL
+        )
+        routeVerification = result
+        return result
+    }
+
+    private func routeVerificationCredentials(
+        primaryURL: String,
+        backupURL: String,
+        apiKeyOverride: String?
+    ) -> [ServerRouteCredential] {
+        var credentials: [ServerRouteCredential] = []
+        let candidateKey: String?
+        if let apiKeyOverride {
+            let trimmed = apiKeyOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            candidateKey = trimmed.isEmpty ? nil : trimmed
+        } else {
+            candidateKey = KeychainHelper.readAPIKey(for: primaryURL)
+        }
+        if let candidateKey {
+            credentials.append(.bearer(candidateKey))
+        }
+
+        for source in [primaryURL, backupURL] {
+            guard let url = URL(string: source) else { continue }
+            let sessionCookies = (cookieStorage.cookies(for: url) ?? [])
+                .filter { $0.name == "nowen_session" }
+            guard !sessionCookies.isEmpty,
+                  let cookieHeader = HTTPCookie.requestHeaderFields(
+                    with: sessionCookies
+                  )["Cookie"] else {
+                continue
+            }
+            credentials.append(.cookie(cookieHeader))
+            break
+        }
+        return credentials
+    }
+
+    private func fetchServerFingerprint(
+        from baseURL: String,
+        credentials: [ServerRouteCredential]
+    ) async -> ServerFingerprintResult {
+        for credential in credentials {
+            let result = await fetchServerFingerprint(
+                from: baseURL,
+                credential: credential
+            )
+            switch result {
+            case .success:
+                return result
+            case .authenticationFailed:
+                continue
+            case .unavailable:
+                return .unavailable
+            }
+        }
+        return .authenticationFailed
+    }
+
+    private func fetchServerFingerprint(
+        from baseURL: String,
+        credential: ServerRouteCredential
+    ) async -> ServerFingerprintResult {
+        guard let authURL = URL(string: "\(baseURL)/api/auth/me"),
+              let librariesURL = URL(string: "\(baseURL)/api/libraries/accessible") else {
+            return .unavailable
+        }
+
+        async let authRequest = fetchVerificationData(
+            from: authURL,
+            credential: credential
+        )
+        async let librariesRequest = fetchVerificationData(
+            from: librariesURL,
+            credential: credential
+        )
+        let (authResult, librariesResult) = await (authRequest, librariesRequest)
+
+        switch (authResult, librariesResult) {
+        case (.authenticationFailed, _), (_, .authenticationFailed):
+            return .authenticationFailed
+        case let (.success(authData), .success(librariesData)):
+            do {
+                let auth = try JSONDecoder().decode(AuthMeResponse.self, from: authData)
+                guard let user = auth.user else {
+                    AppLogger.log("线路验证认证失败: \(baseURL) 未返回登录用户")
+                    return .authenticationFailed
+                }
+                let libraries = try JSONDecoder().decode(
+                    LibraryListResponse.self,
+                    from: librariesData
+                )
+                let librarySignatures = libraries.libraries
+                    .map { "\($0.id)|\($0.type)" }
+                    .sorted()
+                return .success(AuthenticatedServerRouteFingerprint(
+                    fingerprint: ServerRouteFingerprint(
+                        userID: user.id,
+                        librarySignatures: librarySignatures
+                    ),
+                    usesCookie: credential.usesCookie
+                ))
+            } catch {
+                AppLogger.error("线路验证响应解析失败: \(baseURL) \(error.localizedDescription)")
+                return .unavailable
+            }
+        case (.unavailable, _), (_, .unavailable):
+            return .unavailable
+        }
+    }
+
+    private func fetchVerificationData(
+        from url: URL,
+        credential: ServerRouteCredential
+    ) async -> VerificationDataResult {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 6
+        request.httpShouldHandleCookies = false
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        switch credential {
+        case .bearer(let key):
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        case .cookie(let value):
+            request.setValue(value, forHTTPHeaderField: "Cookie")
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                AppLogger.log("线路验证失败: \(url.host ?? url.absoluteString) 未返回 HTTP 响应")
+                return .unavailable
+            }
+            switch http.statusCode {
+            case 200..<300:
+                return .success(data)
+            case 401, 403:
+                AppLogger.log(
+                    "线路验证认证失败: \(verificationEndpointDescription(url)) "
+                        + "HTTP \(http.statusCode)\(verificationErrorSummary(data))"
+                )
+                return .authenticationFailed
+            default:
+                AppLogger.log(
+                    "线路验证失败: \(verificationEndpointDescription(url)) "
+                        + "HTTP \(http.statusCode)\(verificationErrorSummary(data))"
+                )
+                return .unavailable
+            }
+        } catch {
+            AppLogger.log(
+                "线路验证连接失败: \(verificationEndpointDescription(url)) "
+                    + error.localizedDescription
+            )
+            return .unavailable
+        }
+    }
+
+    private func verificationEndpointDescription(_ url: URL) -> String {
+        let host = url.port.map { "\(url.host ?? "未知主机"):\($0)" }
+            ?? url.host
+            ?? url.absoluteString
+        return "\(host)\(url.path)"
+    }
+
+    private func verificationErrorSummary(_ data: Data) -> String {
+        guard !data.isEmpty,
+              let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            return ""
+        }
+        return ": \(text.prefix(160))"
+    }
+
+    private func updateRouteAuthenticationPreferences(
+        primaryURL: String,
+        backupURL: String,
+        primaryUsesCookie: Bool,
+        backupUsesCookie: Bool
+    ) {
+        let defaultsKey = UserDefaultsKey.cookiePreferredRoutes(for: primaryURL)
+        var preferences = Set(
+            UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+        )
+        if primaryUsesCookie {
+            preferences.insert(primaryURL)
+            copySessionCookieIfNeeded(to: primaryURL, candidates: [primaryURL, backupURL])
+        } else {
+            preferences.remove(primaryURL)
+        }
+        if backupUsesCookie {
+            preferences.insert(backupURL)
+            copySessionCookieIfNeeded(to: backupURL, candidates: [primaryURL, backupURL])
+        } else {
+            preferences.remove(backupURL)
+        }
+        UserDefaults.standard.set(Array(preferences).sorted(), forKey: defaultsKey)
+        if primaryURL == primaryServerURL {
+            cookiePreferredRoutes = preferences
+        }
+        if primaryUsesCookie || backupUsesCookie {
+            AppLogger.log("部分线路不接受 API Key，已自动改用 Cookie 认证")
+        }
+    }
+
+    private func copySessionCookieIfNeeded(
+        to destinationURL: String,
+        candidates: [String]
+    ) {
+        guard let destination = URL(string: destinationURL) else { return }
+        let hasCookie = (cookieStorage.cookies(for: destination) ?? [])
+            .contains { $0.name == "nowen_session" }
+        guard !hasCookie else { return }
+        for sourceURL in candidates where sourceURL != destinationURL {
+            guard let source = URL(string: sourceURL),
+                  (cookieStorage.cookies(for: source) ?? [])
+                    .contains(where: { $0.name == "nowen_session" }) else {
+                continue
+            }
+            copySessionCookie(from: sourceURL, to: destinationURL)
+            return
+        }
+    }
+
     /// 按当前模式选择可用线路。自动模式优先保留当前线路，失败后再尝试另一条。
     @discardableResult
     func selectReachableRoute() async -> Bool {
@@ -347,19 +678,46 @@ final class APIClient {
         case .backup:
             candidates = [backupServerURL].compactMap { $0 }
         case .automatic:
-            let alternate = serverURL == primaryServerURL ? backupServerURL : primaryServerURL
-            candidates = [serverURL, alternate].compactMap { $0 }
+            let verification = await refreshRouteVerification()
+            candidates = automaticRouteCandidates(for: verification)
         }
 
         for candidate in candidates where !candidate.isEmpty {
             if await testConnection(candidate) {
-                activateRoute(candidate, copyAuthentication: true)
+                activateRoute(
+                    candidate,
+                    copyAuthentication: routeVerification != .mismatch
+                )
                 isNetworkReachable = true
                 return true
             }
         }
         isNetworkReachable = false
         return false
+    }
+
+    private func automaticRouteCandidates(
+        for verification: ServerRouteVerification
+    ) -> [String] {
+        guard let backupServerURL else { return [primaryServerURL] }
+        if verification == .mismatch {
+            return [primaryServerURL]
+        }
+
+        let alternate = serverURL == primaryServerURL ? backupServerURL : primaryServerURL
+        let stickyOrder = [serverURL, alternate]
+        guard verification == .verified else { return stickyOrder }
+
+        let routes = [primaryServerURL, backupServerURL]
+        let localRoutes = routes.filter(Self.isLikelyLocalNetworkURL)
+        guard localRoutes.count == 1, let localRoute = localRoutes.first else {
+            return stickyOrder
+        }
+        let remoteRoute = routes.first { $0 != localRoute }
+        if isOnLocalNetwork {
+            return [localRoute, remoteRoute].compactMap { $0 }
+        }
+        return [remoteRoute, localRoute].compactMap { $0 }
     }
 
     private func activateRoute(_ newURL: String, copyAuthentication: Bool) {
@@ -403,7 +761,9 @@ final class APIClient {
     }
 
     private func alternateRoute(afterFailureAt failedURL: String) async -> String? {
-        guard routeMode == .automatic, let backupServerURL else { return nil }
+        guard routeMode == .automatic,
+              routeVerification != .mismatch,
+              let backupServerURL else { return nil }
         if serverURL != failedURL {
             return serverURL
         }
@@ -417,6 +777,37 @@ final class APIClient {
         isOfflineMode = false
         AppLogger.log("线路不可达，已自动切换到\(activeRouteTitle): \(alternate)")
         return alternate
+    }
+
+    private static func pathUsesLocalNetwork(_ path: NWPath) -> Bool {
+        path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
+    }
+
+    private static func isLikelyLocalNetworkURL(_ value: String) -> Bool {
+        guard let host = URL(string: value)?.host?.lowercased() else { return false }
+        if host == "localhost" || host.hasSuffix(".local") || !host.contains(".") {
+            return true
+        }
+
+        let ipv4Parts = host.split(separator: ".").compactMap { UInt8($0) }
+        if ipv4Parts.count == 4 {
+            let first = ipv4Parts[0]
+            let second = ipv4Parts[1]
+            return first == 10
+                || first == 127
+                || (first == 169 && second == 254)
+                || (first == 172 && (16...31).contains(second))
+                || (first == 192 && second == 168)
+        }
+
+        let ipv6 = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
+        return ipv6 == "::1"
+            || ipv6.hasPrefix("fc")
+            || ipv6.hasPrefix("fd")
+            || ipv6.hasPrefix("fe8")
+            || ipv6.hasPrefix("fe9")
+            || ipv6.hasPrefix("fea")
+            || ipv6.hasPrefix("feb")
     }
 
     private func shouldFailover(for error: Error) -> Bool {
@@ -448,6 +839,7 @@ final class APIClient {
                 isLoggedIn = true
                 isOfflineMode = false
                 markHasLoggedInBefore()
+                await preferLocalRouteAfterAuthentication()
                 await fetchSiteSettings()
             } else {
                 // 服务器明确返回未登录 → 清除历史记录
@@ -486,6 +878,7 @@ final class APIClient {
         isLoggedIn = true
         isOfflineMode = false
         markHasLoggedInBefore()
+        await preferLocalRouteAfterAuthentication()
         await fetchSiteSettings()
         return resp.user
     }
@@ -501,7 +894,17 @@ final class APIClient {
         isLoggedIn = true
         isOfflineMode = false
         markHasLoggedInBefore()
+        await preferLocalRouteAfterAuthentication()
         return resp.user
+    }
+
+    private func preferLocalRouteAfterAuthentication() async {
+        guard routeMode == .automatic,
+              backupServerURL != nil,
+              routeVerification != .verified else {
+            return
+        }
+        _ = await selectReachableRoute()
     }
 
     func logout() async {
@@ -569,6 +972,7 @@ final class APIClient {
         pathMonitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.isOnLocalNetwork = Self.pathUsesLocalNetwork(path)
                 if path.status == .satisfied {
                     let reachable = await self.testServerReachable()
                     self.isNetworkReachable = reachable
@@ -590,6 +994,22 @@ final class APIClient {
             }
         }
         pathMonitor.start(queue: DispatchQueue(label: "NetworkRecovery"))
+    }
+
+    /// App 回到前台时重新评估自动线路，覆盖网络路径未触发回调的情况。
+    func reevaluateAutomaticRoute() async {
+        guard routeMode == .automatic, backupServerURL != nil else { return }
+        let previousURL = serverURL
+        let reachable = await selectReachableRoute()
+        isNetworkReachable = reachable
+        guard reachable else {
+            if hasLocalAuthentication { isOfflineMode = true }
+            return
+        }
+        if serverURL != previousURL {
+            await checkAuth()
+            networkRecovered = true
+        }
     }
 
     /// 手动重试连接（离线提示按钮调用）
@@ -749,6 +1169,28 @@ final class APIClient {
         URL(string: "\(serverURL)/api/comics/\(comicId)/pdf")
     }
 
+    /// 将 EPUB 章节中的相对资源地址解析到当前线路。
+    func serverResourceURL(from source: String) -> URL? {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let absolute = URL(string: trimmed), absolute.scheme != nil {
+            return absolute
+        }
+        guard let baseURL = URL(string: serverURL),
+              var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        if trimmed.hasPrefix("/") {
+            guard let pathComponents = URLComponents(string: trimmed) else { return nil }
+            components.percentEncodedPath = pathComponents.percentEncodedPath
+            components.percentEncodedQuery = pathComponents.percentEncodedQuery
+            components.fragment = pathComponents.fragment
+            return components.url
+        }
+        let base = serverURL.hasSuffix("/") ? serverURL : "\(serverURL)/"
+        return URL(string: trimmed, relativeTo: URL(string: base))?.absoluteURL
+    }
+
     /// 创建带 Bearer 或 Cookie 认证的 URLRequest，供图片、PDF 和后台下载复用。
     func authenticatedRequest(url: URL, timeout: TimeInterval = 15) -> URLRequest {
         var request = URLRequest(url: url)
@@ -759,23 +1201,39 @@ final class APIClient {
 
     private func applyAuthentication(to request: inout URLRequest) {
         guard let url = request.url else { return }
-        if let apiKey, isCurrentServerResource(url) {
+        let serverBaseURL = currentServerBaseURL(for: url)
+        if let serverBaseURL,
+           cookiePreferredRoutes.contains(serverBaseURL),
+           applyCookies(to: &request, for: url) {
+            return
+        }
+        if let apiKey, serverBaseURL != nil {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             return
         }
-        if let cookies = cookieStorage.cookies(for: url) {
-            let cookieHeaders = HTTPCookie.requestHeaderFields(with: cookies)
-            for (field, value) in cookieHeaders {
-                request.setValue(value, forHTTPHeaderField: field)
-            }
+        _ = applyCookies(to: &request, for: url)
+    }
+
+    private func applyCookies(to request: inout URLRequest, for url: URL) -> Bool {
+        guard let cookies = cookieStorage.cookies(for: url), !cookies.isEmpty else {
+            return false
         }
+        let cookieHeaders = HTTPCookie.requestHeaderFields(with: cookies)
+        for (field, value) in cookieHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return cookieHeaders["Cookie"] != nil
     }
 
     private func isCurrentServerResource(_ url: URL) -> Bool {
+        currentServerBaseURL(for: url) != nil
+    }
+
+    private func currentServerBaseURL(for url: URL) -> String? {
         [primaryServerURL, backupServerURL]
             .compactMap { $0 }
-            .compactMap(URL.init(string:))
-            .contains { baseURL in
+            .first { value in
+                guard let baseURL = URL(string: value) else { return false }
                 guard url.scheme?.lowercased() == baseURL.scheme?.lowercased(),
                       url.host?.lowercased() == baseURL.host?.lowercased(),
                       url.port == baseURL.port else {
@@ -1237,6 +1695,49 @@ struct AuthLoginResponse: Decodable, Sendable {
 
 struct SiteSettingsResponse: Decodable, Sendable {
     let siteName: String?
+}
+
+private struct ServerRouteFingerprint: Equatable, Sendable {
+    let userID: String
+    let librarySignatures: [String]
+}
+
+private struct AuthenticatedServerRouteFingerprint: Sendable {
+    let fingerprint: ServerRouteFingerprint
+    let usesCookie: Bool
+}
+
+private enum ServerRouteCredential: Sendable {
+    case bearer(String)
+    case cookie(String)
+
+    var usesCookie: Bool {
+        if case .cookie = self { return true }
+        return false
+    }
+}
+
+private enum ServerFingerprintResult: Sendable {
+    case success(AuthenticatedServerRouteFingerprint)
+    case authenticationFailed
+    case unavailable
+}
+
+private enum VerificationDataResult: Sendable {
+    case success(Data)
+    case authenticationFailed
+    case unavailable
+}
+
+enum ServerRouteVerification: Equatable, Sendable {
+    case notConfigured
+    case unverified
+    case checking
+    case verified
+    case mismatch
+    case authenticationRequired
+    case authenticationFailed
+    case unavailable
 }
 
 struct RatingBody: Encodable, Sendable {

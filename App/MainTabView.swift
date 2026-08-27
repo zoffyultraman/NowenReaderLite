@@ -5,6 +5,7 @@ import Network
 struct MainTabView: View {
     private let downloadManager = DownloadManager.shared
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(APIClient.self) private var api
     @State private var selectedTab = 0
     @State private var pendingProgressSyncTask: Task<Void, Never>?
@@ -70,6 +71,10 @@ struct MainTabView: View {
                 syncOfflineReadingState()
                 Task { _ = try? await api.fetchAccessibleLibraries() }
             }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            Task { await api.reevaluateAutomaticRoute() }
         }
         .onDisappear {
             pendingProgressSyncTask?.cancel()

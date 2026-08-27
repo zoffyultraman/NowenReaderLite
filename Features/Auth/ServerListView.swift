@@ -86,6 +86,9 @@ struct ServerListView: View {
                                             Text(server.routeMode.title)
                                             if api.matchesServerProfile(server.url) {
                                                 Text("· \(api.activeRouteTitle)")
+                                                if api.activeRouteIsLocal {
+                                                    Text("· 内网")
+                                                }
                                             }
                                         }
                                         .font(.caption2)
@@ -171,13 +174,27 @@ struct ServerListView: View {
                 initialMode: server.routeMode,
                 initialHasAPIKey: KeychainHelper.hasAPIKey(for: server.url),
                 isCurrentServer: api.matchesServerProfile(server.url),
-                onSave: { backupURL, mode in
+                reservedPrimaryURLs: Set(
+                    servers
+                        .filter { $0.url != server.url }
+                        .map(\.url)
+                ),
+                onSave: { primaryURL, backupURL, mode in
+                    let previousPrimaryURL = server.url
+                    let wasCurrentServer = api.matchesServerProfile(previousPrimaryURL)
+                    if wasCurrentServer, previousPrimaryURL != primaryURL {
+                        api.preparePrimaryRouteChange(
+                            from: previousPrimaryURL,
+                            to: primaryURL
+                        )
+                    }
+                    server.url = primaryURL
                     server.backupURL = backupURL
                     server.routeMode = mode
                     modelContext.saveOrLog(label: "保存服务器线路")
-                    guard api.matchesServerProfile(server.url) else { return }
+                    guard wasCurrentServer else { return }
                     api.configureServerRoutes(
-                        primaryURL: server.url,
+                        primaryURL: primaryURL,
                         backupURL: backupURL,
                         mode: mode
                     )
@@ -373,13 +390,15 @@ private enum ServerAPIKeyUpdate {
 }
 
 private struct ServerRouteSettingsSheet: View {
-    let primaryURL: String
+    let initialPrimaryURL: String
     let initialHasAPIKey: Bool
     let isCurrentServer: Bool
-    let onSave: (String?, ServerRouteMode) -> Void
+    let reservedPrimaryURLs: Set<String>
+    let onSave: (String, String?, ServerRouteMode) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(APIClient.self) private var api
+    @State private var primaryURL: String
     @State private var backupURL: String
     @State private var routeMode: ServerRouteMode
     @State private var apiKey = ""
@@ -395,12 +414,15 @@ private struct ServerRouteSettingsSheet: View {
         initialMode: ServerRouteMode,
         initialHasAPIKey: Bool,
         isCurrentServer: Bool,
-        onSave: @escaping (String?, ServerRouteMode) -> Void
+        reservedPrimaryURLs: Set<String>,
+        onSave: @escaping (String, String?, ServerRouteMode) -> Void
     ) {
-        self.primaryURL = primaryURL
+        self.initialPrimaryURL = primaryURL
         self.initialHasAPIKey = initialHasAPIKey
         self.isCurrentServer = isCurrentServer
+        self.reservedPrimaryURLs = reservedPrimaryURLs
         self.onSave = onSave
+        _primaryURL = State(initialValue: primaryURL)
         _backupURL = State(initialValue: initialBackupURL)
         _routeMode = State(initialValue: initialMode)
     }
@@ -417,10 +439,15 @@ private struct ServerRouteSettingsSheet: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("主线路") {
-                    Label(primaryURL, systemImage: "1.circle.fill")
-                        .font(.subheadline)
-                        .textSelection(.enabled)
+                Section {
+                    TextField("https://主线路地址", text: $primaryURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("主线路")
+                } footer: {
+                    Text("请填写最终访问地址。跨域名、协议或端口重定向可能移除 API Key 认证头。")
                 }
 
                 Section {
@@ -431,7 +458,7 @@ private struct ServerRouteSettingsSheet: View {
                 } header: {
                     Text("备用线路")
                 } footer: {
-                    Text("备用地址应指向同一个 Nowen Reader 服务，书库、账号和数据必须一致。")
+                    Text("客户端会比较两条线路的登录用户与书库。验证一致后，自动模式会在局域网中优先使用内网线路。")
                 }
 
                 ServerAPIKeySettingsSection(
@@ -443,18 +470,40 @@ private struct ServerRouteSettingsSheet: View {
 
                 if isCurrentServer {
                     Section("当前连接") {
-                        LabeledContent("正在使用", value: api.activeRouteTitle)
-                        LabeledContent("认证方式") {
-                            if api.hasConfiguredAPIKey {
-                                Text("API Key")
-                            } else {
-                                Text("Cookie")
+                        LabeledContent("正在使用") {
+                            HStack(spacing: 5) {
+                                if api.activeRouteIsLocal {
+                                    Image(systemName: "wifi")
+                                }
+                                Text(api.activeRouteTitle)
                             }
                         }
-                        Text(api.serverURL)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                        if api.backupServerURL != nil {
+                            HStack(spacing: 12) {
+                                Text("线路验证")
+                                Spacer(minLength: 8)
+                                ServerRouteVerificationStatusView(
+                                    verification: api.routeVerification
+                                )
+                                Button {
+                                    Task {
+                                        _ = await api.refreshRouteVerification()
+                                    }
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                        .frame(width: 24, height: 24)
+                                }
+                                .buttonStyle(.plain)
+                                .controlSize(.small)
+                                .disabled(api.routeVerification == .checking)
+                                .accessibilityLabel("重新验证线路")
+                            }
+                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        LabeledContent("认证方式") {
+                            Text(api.activeAuthenticationTitle)
+                        }
                     }
                 }
             }
@@ -487,7 +536,11 @@ private struct ServerRouteSettingsSheet: View {
                 Button("取消", role: .cancel) {}
                 if errorAllowsSaving {
                     Button("仍然保存") {
-                        finishSave(backupURL: normalizedBackupURL)
+                        guard let normalizedPrimaryURL else { return }
+                        finishSave(
+                            primaryURL: normalizedPrimaryURL,
+                            backupURL: normalizedBackupURL
+                        )
                     }
                 }
             } message: {
@@ -501,15 +554,37 @@ private struct ServerRouteSettingsSheet: View {
             .onDisappear {
                 apiKey = ""
             }
+            .task {
+                guard isCurrentServer,
+                      api.backupServerURL != nil,
+                      api.routeVerification != .checking else {
+                    return
+                }
+                _ = await api.refreshRouteVerification()
+            }
         }
+    }
+
+    private var normalizedPrimaryURL: String? {
+        normalizedServerURL(primaryURL)
     }
 
     private var normalizedBackupURL: String? {
         let trimmed = backupURL.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !trimmed.isEmpty,
-              trimmed != primaryURL,
-              let url = URL(string: trimmed),
+              trimmed != normalizedPrimaryURL,
+              normalizedServerURL(trimmed) != nil else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func normalizedServerURL(_ value: String) -> String? {
+        let trimmed = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed),
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               url.host?.isEmpty == false,
@@ -520,6 +595,7 @@ private struct ServerRouteSettingsSheet: View {
     }
 
     private var canSave: Bool {
+        guard normalizedPrimaryURL != nil else { return false }
         let isEmpty = backupURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if isEmpty {
             return routeMode != .backup
@@ -528,10 +604,31 @@ private struct ServerRouteSettingsSheet: View {
     }
 
     private func save() {
+        guard let normalizedPrimaryURL else { return }
+        if reservedPrimaryURLs.contains(normalizedPrimaryURL) {
+            errorAllowsSaving = false
+            errorMessage = "该主线路地址已存在于服务器列表中。"
+            return
+        }
         let isEmpty = backupURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard isEmpty || normalizedBackupURL != nil else { return }
         isSaving = true
         Task {
+            var verification: ServerRouteVerification = .notConfigured
+            if let normalizedBackupURL {
+                verification = await api.verifyServerPair(
+                    primaryURL: normalizedPrimaryURL,
+                    backupURL: normalizedBackupURL,
+                    apiKeyOverride: routeVerificationAPIKeyOverride
+                )
+                if verification == .mismatch {
+                    isSaving = false
+                    errorAllowsSaving = false
+                    errorMessage = "主线路与备用线路属于不同的 Nowen Reader 服务，不能共享认证或自动切换。"
+                    return
+                }
+            }
+
             do {
                 if case .replace(let key) = apiKeyUpdate {
                     try await validateAPIKey(key)
@@ -543,17 +640,30 @@ private struct ServerRouteSettingsSheet: View {
                 return
             }
 
-            if let normalizedBackupURL {
-                let isReachable = await api.testConnection(normalizedBackupURL)
-                guard isReachable else {
-                    isSaving = false
-                    errorAllowsSaving = true
-                    errorMessage = "目前无法连接到备用地址。你可以检查后重试，也可以先保存配置。"
-                    return
-                }
+            switch verification {
+            case .unavailable:
+                isSaving = false
+                errorAllowsSaving = true
+                errorMessage = "目前无法同时连接两条线路，因此无法确认它们是否属于同一服务器。"
+                return
+            case .authenticationRequired:
+                isSaving = false
+                errorAllowsSaving = true
+                errorMessage = "当前没有可用于两条线路的登录凭据。保存后会在登录成功时自动验证。"
+                return
+            case .authenticationFailed:
+                isSaving = false
+                errorAllowsSaving = true
+                errorMessage = "当前 API Key 或登录状态无法同时通过两条线路认证。请检查线路地址和认证信息。"
+                return
+            default:
+                break
             }
             isSaving = false
-            finishSave(backupURL: normalizedBackupURL)
+            finishSave(
+                primaryURL: normalizedPrimaryURL,
+                backupURL: normalizedBackupURL
+            )
         }
     }
 
@@ -564,20 +674,30 @@ private struct ServerRouteSettingsSheet: View {
         return .unchanged
     }
 
-    private func validateAPIKey(_ key: String) async throws {
-        let candidates: [String]
-        if isCurrentServer {
-            candidates = [api.serverURL]
-        } else {
-            candidates = [primaryURL, normalizedBackupURL].compactMap { $0 }
+    private var routeVerificationAPIKeyOverride: String? {
+        switch apiKeyUpdate {
+        case .unchanged:
+            guard normalizedPrimaryURL != initialPrimaryURL else { return nil }
+            return KeychainHelper.readAPIKey(for: initialPrimaryURL)
+        case .replace(let key):
+            return key
+        case .remove:
+            return ""
         }
+    }
+
+    private func validateAPIKey(_ key: String) async throws {
+        let candidates = Array(Set(
+            [normalizedPrimaryURL, normalizedBackupURL, isCurrentServer ? api.serverURL : nil]
+                .compactMap { $0 }
+        ))
         var lastError: Error = APIError.networkError
         for candidate in candidates {
             do {
                 _ = try await api.testAPIKey(key, serverURL: candidate)
                 return
             } catch APIError.invalidAPIKey {
-                throw APIError.invalidAPIKey
+                lastError = APIError.invalidAPIKey
             } catch {
                 lastError = error
             }
@@ -585,23 +705,65 @@ private struct ServerRouteSettingsSheet: View {
         throw lastError
     }
 
-    private func finishSave(backupURL: String?) {
+    private func finishSave(primaryURL: String, backupURL: String?) {
         let keychainSaved: Bool
         switch apiKeyUpdate {
         case .unchanged:
-            keychainSaved = true
+            if primaryURL != initialPrimaryURL,
+               let storedKey = KeychainHelper.readAPIKey(for: initialPrimaryURL) {
+                keychainSaved = KeychainHelper.saveAPIKey(storedKey, for: primaryURL)
+            } else {
+                keychainSaved = true
+            }
         case .replace(let key):
             keychainSaved = api.setAPIKey(key, for: primaryURL)
         case .remove:
-            keychainSaved = api.setAPIKey(nil, for: primaryURL)
+            keychainSaved = KeychainHelper.deleteAPIKey(for: primaryURL)
+                && KeychainHelper.deleteAPIKey(for: initialPrimaryURL)
         }
         guard keychainSaved else {
             errorAllowsSaving = false
             errorMessage = "无法将 API Key 保存到本机 Keychain。"
             return
         }
-        onSave(backupURL, routeMode)
+        if primaryURL != initialPrimaryURL {
+            _ = KeychainHelper.deleteAPIKey(for: initialPrimaryURL)
+        }
+        onSave(primaryURL, backupURL, routeMode)
         dismiss()
+    }
+}
+
+private struct ServerRouteVerificationStatusView: View {
+    let verification: ServerRouteVerification
+
+    var body: some View {
+        switch verification {
+        case .verified:
+            Label("同一服务器", systemImage: "checkmark.shield.fill")
+                .foregroundStyle(.green)
+        case .mismatch:
+            Label("服务器不一致", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在验证")
+            }
+        case .authenticationRequired:
+            Text("登录后验证")
+                .foregroundStyle(.secondary)
+        case .authenticationFailed:
+            Label("认证失败", systemImage: "exclamationmark.shield.fill")
+                .foregroundStyle(.red)
+        case .unavailable:
+            Text("暂时无法验证")
+                .foregroundStyle(.secondary)
+        case .notConfigured, .unverified:
+            Text("等待验证")
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

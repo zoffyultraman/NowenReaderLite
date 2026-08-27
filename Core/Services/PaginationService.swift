@@ -87,7 +87,7 @@ enum PaginationService {
 
     // MARK: - Private
 
-    private static func isHTML(content: String, mimeType: String?) -> Bool {
+    static func isHTML(content: String, mimeType: String?) -> Bool {
         if mimeType?.localizedCaseInsensitiveContains("html") == true {
             return true
         }
@@ -100,7 +100,7 @@ enum PaginationService {
             || prefix.contains("<h1")
     }
 
-    private static func sentenceBoundaryLength(
+    static func sentenceBoundaryLength(
         in source: NSString,
         location: Int,
         visibleLength: Int

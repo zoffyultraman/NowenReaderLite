@@ -1,4 +1,5 @@
 import Foundation
+import CommonCrypto
 
 /// 离线漫画文件管理器
 /// 存储结构: Documents/OfflineComics/{comicId}/page_{000}.jpg
@@ -45,6 +46,12 @@ final class OfflineFileManager {
     /// 小说章节目录元数据
     func novelPageListURL(comicId: String) -> URL {
         comicDir(for: comicId).appendingPathComponent("novel_pages.json")
+    }
+
+    private func novelResourceURL(comicId: String, source: String) -> URL {
+        comicDir(for: comicId).appendingPathComponent(
+            "novel_resource_\(source.sha256hex)"
+        )
     }
 
     // MARK: - 判断
@@ -127,6 +134,12 @@ final class OfflineFileManager {
         }
     }
 
+    func loadNovelResourceData(comicId: String, source: String) -> Data? {
+        withComicFilesLock {
+            try? Data(contentsOf: novelResourceURL(comicId: comicId, source: source))
+        }
+    }
+
     // MARK: - 写入
 
     /// 保存某页的原始 JPEG Data
@@ -160,6 +173,48 @@ final class OfflineFileManager {
             }
             let data = try JSONEncoder().encode(pageList)
             try data.write(to: novelPageListURL(comicId: comicId), options: .atomic)
+        }
+    }
+
+    func saveNovelResourceData(
+        _ data: Data,
+        comicId: String,
+        source: String,
+        generation: String? = nil
+    ) throws {
+        try withComicFilesLock {
+            try validateWriteUnlocked(comicId: comicId, generation: generation)
+            let dir = comicDir(for: comicId)
+            if !fileManager.fileExists(atPath: dir.path) {
+                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            try data.write(
+                to: novelResourceURL(comicId: comicId, source: source),
+                options: .atomic
+            )
+        }
+    }
+
+    func markNovelResourcesComplete(
+        comicId: String,
+        generation: String
+    ) throws {
+        try withComicFilesLock {
+            try validateWriteUnlocked(comicId: comicId, generation: generation)
+            guard let meta = loadMetaUnlocked(comicId: comicId) else {
+                throw OfflineFileError.missingMetadata
+            }
+            let updated = OfflineComicMeta(
+                comicId: meta.comicId,
+                title: meta.title,
+                pageCount: meta.pageCount,
+                downloadedAt: meta.downloadedAt,
+                fileSize: meta.fileSize,
+                isNovel: meta.isNovel,
+                novelResourcesComplete: true
+            )
+            let data = try JSONEncoder().encode(updated)
+            try data.write(to: metaURL(comicId: comicId), options: .atomic)
         }
     }
 
@@ -335,7 +390,10 @@ final class OfflineFileManager {
                 pageIndices[comicId] = indices
                 guard let meta = loadMetaUnlocked(comicId: comicId) else { continue }
                 metas[comicId] = meta
+                let novelResourcesReady = meta.isNovel != true
+                    || meta.novelResourcesComplete != false
                 if meta.pageCount > 0,
+                   novelResourcesReady,
                    (0..<meta.pageCount).allSatisfy(indices.contains) {
                     completedIds.insert(comicId)
                 }
@@ -416,6 +474,7 @@ extension OfflineFileManager: @unchecked Sendable {}
 enum OfflineFileError: Error {
     case discardedDownload
     case staleDownloadGeneration
+    case missingMetadata
 }
 
 struct OfflineDiskUsageSnapshot: Sendable {
@@ -452,6 +511,8 @@ struct OfflineComicMeta: Codable, Sendable {
     let downloadedAt: Date
     let fileSize: Int64?       // 漫画原始 fileSize
     let isNovel: Bool?
+    /// nil 表示旧版下载；false 表示仍需补齐 EPUB 插图。
+    let novelResourcesComplete: Bool?
 
     init(
         comicId: String,
@@ -459,7 +520,8 @@ struct OfflineComicMeta: Codable, Sendable {
         pageCount: Int,
         downloadedAt: Date,
         fileSize: Int64?,
-        isNovel: Bool? = nil
+        isNovel: Bool? = nil,
+        novelResourcesComplete: Bool? = nil
     ) {
         self.comicId = comicId
         self.title = title
@@ -467,6 +529,18 @@ struct OfflineComicMeta: Codable, Sendable {
         self.downloadedAt = downloadedAt
         self.fileSize = fileSize
         self.isNovel = isNovel
+        self.novelResourcesComplete = novelResourcesComplete
+    }
+}
+
+private extension String {
+    var sha256hex: String {
+        let data = Data(utf8)
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { buffer in
+            _ = CC_SHA256(buffer.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 }
 

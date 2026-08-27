@@ -40,7 +40,6 @@ struct NovelReaderView: View {
                         pages: viewModel.pages,
                         fontSize: fontSize,
                         darkMode: viewModel.darkMode,
-                        chapterTitle: viewModel.currentChapterTitle,
                         paginationGeneration: viewModel.paginationGeneration,
                         initialPage: currentPage,
                         isPageInteractionEnabled: !showOverlay,
@@ -584,10 +583,9 @@ struct ChapterListView: View {
 // MARK: - 翻页控制器
 
 struct NovelPager: UIViewControllerRepresentable {
-    let pages: [String]
+    let pages: [NovelPage]
     let fontSize: Double
     let darkMode: Bool
-    let chapterTitle: String?
     let paginationGeneration: Int
     let initialPage: Int
     let isPageInteractionEnabled: Bool
@@ -637,13 +635,11 @@ struct NovelPager: UIViewControllerRepresentable {
         if isAppend {
             // 追加模式：只添加新页面的 VC，不重置当前位置
             for i in oldCount..<newCount {
-                let title: String? = (i == 0) ? chapterTitle : nil
                 let vc = NovelTextPageVC(
-                    text: pages[i],
+                    page: pages[i],
                     index: i,
                     fontSize: fontSize,
-                    darkMode: darkMode,
-                    title: title
+                    darkMode: darkMode
                 )
                 coord.cachedVCs.append(vc)
             }
@@ -655,7 +651,11 @@ struct NovelPager: UIViewControllerRepresentable {
             let pageJumped = initialPage != coord.currentIndex
 
             if pagesChanged || configurationChanged {
-                coord.rebuildCache(pages: pages, fontSize: fontSize, darkMode: darkMode, title: chapterTitle)
+                coord.rebuildCache(
+                    pages: pages,
+                    fontSize: fontSize,
+                    darkMode: darkMode
+                )
                 let page = min(initialPage, coord.cachedVCs.count - 1)
                 if page >= 0, page < coord.cachedVCs.count {
                     pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
@@ -691,16 +691,19 @@ struct NovelPager: UIViewControllerRepresentable {
             self.parent = parent
         }
 
-        func rebuildCache(pages: [String], fontSize: Double, darkMode: Bool, title: String?) {
+        func rebuildCache(
+            pages: [NovelPage],
+            fontSize: Double,
+            darkMode: Bool
+        ) {
             paginationGeneration = parent.paginationGeneration
             renderConfiguration = RenderConfiguration(fontSize: fontSize, darkMode: darkMode)
-            cachedVCs = pages.enumerated().map { index, text in
+            cachedVCs = pages.enumerated().map { index, page in
                 NovelTextPageVC(
-                    text: text,
+                    page: page,
                     index: index,
                     fontSize: fontSize,
-                    darkMode: darkMode,
-                    title: index == 0 ? title : nil
+                    darkMode: darkMode
                 )
             }
         }
@@ -736,20 +739,16 @@ struct NovelPager: UIViewControllerRepresentable {
 // MARK: - 单页 VC
 
 class NovelTextPageVC: UIViewController {
-    let pageText: String
+    let page: NovelPage
     let index: Int
     let fontSize: Double
     let darkMode: Bool
-    let titleText: String?
 
-    private let label = UILabel()
-
-    init(text: String, index: Int, fontSize: Double, darkMode: Bool, title: String?) {
-        self.pageText = text
+    init(page: NovelPage, index: Int, fontSize: Double, darkMode: Bool) {
+        self.page = page
         self.index = index
         self.fontSize = fontSize
         self.darkMode = darkMode
-        self.titleText = title
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -759,42 +758,205 @@ class NovelTextPageVC: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = darkMode ? UIColor(white: 0.1, alpha: 1) : .systemBackground
 
-        label.numberOfLines = 0
-        label.backgroundColor = .clear
-
         let textColor: UIColor = darkMode ? .white.withAlphaComponent(0.9) : .label
-        let style = NSMutableParagraphStyle()
-        style.lineSpacing = fontSize * 0.6
-
-        var fullText = pageText
-        if let title = titleText {
-            fullText = title + "\n\n" + pageText
-        }
-
-        let attr = NSMutableAttributedString(string: fullText, attributes: [
-            .font: UIFont.systemFont(ofSize: fontSize),
-            .foregroundColor: textColor,
-            .paragraphStyle: style,
-        ])
-
-        if let title = titleText {
-            let range = (fullText as NSString).range(of: title)
-            attr.addAttribute(.font, value: UIFont.boldSystemFont(ofSize: fontSize + 4), range: range)
-        }
-
-        label.attributedText = attr
-        label.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(label)
+        let contentView = UIView()
+        contentView.backgroundColor = .clear
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentView)
 
         NSLayoutConstraint.activate([
-            label.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
-            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            label.bottomAnchor.constraint(
-                lessThanOrEqualTo: view.bottomAnchor,
-                constant: -16
+            contentView.topAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.topAnchor,
+                constant: 16
             ),
+            contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            contentView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            contentView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
         ])
+
+        for item in page.items {
+            switch item {
+            case let .text(textItem):
+                addTextItem(textItem, color: textColor, to: contentView)
+            case let .image(imageItem):
+                addImageItem(imageItem, to: contentView)
+            }
+        }
+    }
+
+    private func addTextItem(
+        _ item: NovelTextPageItem,
+        color: UIColor,
+        to contentView: UIView
+    ) {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.backgroundColor = .clear
+        label.attributedText = NSAttributedString(
+            string: item.text,
+            attributes: PaginationService.attributes(
+                style: item.style,
+                fontSize: fontSize,
+                textColor: color
+            )
+        )
+        add(
+            label,
+            frame: item.frame.cgRect,
+            to: contentView
+        )
+    }
+
+    private func addImageItem(
+        _ item: NovelImagePageItem,
+        to contentView: UIView
+    ) {
+        guard let data = item.data, let image = UIImage(data: data) else {
+            let placeholder = NovelImagePlaceholderView(altText: item.altText)
+            add(placeholder, frame: item.frame.cgRect, to: contentView)
+            return
+        }
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
+        imageView.isUserInteractionEnabled = true
+        imageView.accessibilityLabel = item.altText ?? "小说插图"
+        imageView.accessibilityTraits = .image
+        let tap = UITapGestureRecognizer(target: self, action: #selector(openImage(_:)))
+        imageView.addGestureRecognizer(tap)
+        add(imageView, frame: item.frame.cgRect, to: contentView)
+    }
+
+    private func add(_ child: UIView, frame: CGRect, to contentView: UIView) {
+        child.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(child)
+        NSLayoutConstraint.activate([
+            child.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor,
+                constant: frame.minX
+            ),
+            child.topAnchor.constraint(
+                equalTo: contentView.topAnchor,
+                constant: frame.minY
+            ),
+            child.widthAnchor.constraint(equalToConstant: frame.width),
+            child.heightAnchor.constraint(equalToConstant: frame.height),
+        ])
+    }
+
+    @objc private func openImage(_ recognizer: UITapGestureRecognizer) {
+        guard let imageView = recognizer.view as? UIImageView,
+              let image = imageView.image else {
+            return
+        }
+        present(NovelImageViewerController(image: image), animated: true)
+    }
+}
+
+private final class NovelImagePlaceholderView: UIView {
+    init(altText: String?) {
+        super.init(frame: .zero)
+        backgroundColor = .tertiarySystemFill
+        layer.cornerRadius = 6
+
+        let icon = UIImageView(image: UIImage(systemName: "photo"))
+        icon.tintColor = .tertiaryLabel
+        icon.contentMode = .scaleAspectFit
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = UILabel()
+        label.text = altText?.isEmpty == false ? altText : "图片暂时无法显示"
+        label.textColor = .secondaryLabel
+        label.font = .preferredFont(forTextStyle: .caption1)
+        label.textAlignment = .center
+        label.numberOfLines = 2
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(icon)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -12),
+            icon.widthAnchor.constraint(equalToConstant: 28),
+            icon.heightAnchor.constraint(equalToConstant: 28),
+            label.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 8),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+        ])
+        isAccessibilityElement = true
+        accessibilityLabel = label.text
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+private final class NovelImageViewerController: UIViewController, UIScrollViewDelegate {
+    private let image: UIImage
+    private let scrollView = UIScrollView()
+    private let imageView = UIImageView()
+
+    init(image: UIImage) {
+        self.image = image
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .fullScreen
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        scrollView.delegate = self
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 5
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.frame = view.bounds
+        scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(scrollView)
+
+        imageView.image = image
+        imageView.contentMode = .scaleAspectFit
+        scrollView.addSubview(imageView)
+
+        let closeButton = UIButton(type: .close)
+        closeButton.tintColor = .white
+        closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            closeButton.widthAnchor.constraint(equalToConstant: 44),
+            closeButton.heightAnchor.constraint(equalToConstant: 44),
+        ])
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard scrollView.zoomScale == 1 else { return }
+        let bounds = scrollView.bounds.size
+        let ratio = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        let fitted = CGSize(
+            width: image.size.width * ratio,
+            height: image.size.height * ratio
+        )
+        imageView.frame = CGRect(
+            x: max(0, (bounds.width - fitted.width) / 2),
+            y: max(0, (bounds.height - fitted.height) / 2),
+            width: fitted.width,
+            height: fitted.height
+        )
+        scrollView.contentSize = bounds
+    }
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+        imageView
+    }
+
+    @objc private func close() {
+        dismiss(animated: true)
     }
 }
 
@@ -813,9 +975,8 @@ final class NovelReaderViewModel {
     var isLoading = false
     var currentChapter = 0
     var totalChapters: Int = 0
-    var currentChapterTitle: String? = nil
     var darkMode = false
-    var pages: [String] = []
+    var pages: [NovelPage] = []
     var groupContext: ReadingGroupContext?
     var currentComicId: String
     var chapterTitles: [Int: String] = [:]
@@ -1081,31 +1242,19 @@ final class NovelReaderViewModel {
         let title = content.title
         let chapter = currentChapter
         let size = paginationSize
-        let titleHeight: CGFloat = title == nil ? 0 : fontSize * 2.5
-        currentChapterTitle = title
-
-        let worker = Task.detached(priority: .userInitiated) {
-            let text = PaginationService.readableText(
-                content: rawContent,
-                mimeType: mimeType
-            )
-            return PaginationService.paginate(
-                text: text,
-                fontSize: fontSize,
-                maxWidth: size.width,
-                maxHeight: size.height,
-                firstPageMaxH: size.height - titleHeight
-            )
-        }
 
         let task = Task { @MainActor [weak self] in
-            let newPages = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            guard let self,
-                  !Task.isCancelled,
+            guard let self else { return }
+            let newPages = await self.buildPages(
+                rawContent: rawContent,
+                mimeType: mimeType,
+                title: title,
+                comicId: self.comicId,
+                fontSize: fontSize,
+                size: size,
+                priority: .userInitiated
+            )
+            guard !Task.isCancelled,
                   self.paginationRequestID == requestID else {
                 return
             }
@@ -1167,26 +1316,16 @@ final class NovelReaderViewModel {
 
             let rawContent = content.content ?? ""
             let mimeType = content.mimeType
-            let titleHeight: CGFloat = content.title == nil ? 0 : fontSize * 2.5
             let size = self.paginationSize
-            let worker = Task.detached(priority: .utility) {
-                let text = PaginationService.readableText(
-                    content: rawContent,
-                    mimeType: mimeType
-                )
-                return PaginationService.paginate(
-                    text: text,
-                    fontSize: fontSize,
-                    maxWidth: size.width,
-                    maxHeight: size.height,
-                    firstPageMaxH: size.height - titleHeight
-                )
-            }
-            let appendPages = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
+            let appendPages = await self.buildPages(
+                rawContent: rawContent,
+                mimeType: mimeType,
+                title: content.title,
+                comicId: self.comicId,
+                fontSize: fontSize,
+                size: size,
+                priority: .utility
+            )
 
             guard !Task.isCancelled,
                   self.appendPaginationRequestID == requestID,
@@ -1209,11 +1348,81 @@ final class NovelReaderViewModel {
         guard let content = appendedChapterContent ?? cache.get(nextIndex) else { return }
 
         chapterContent = content
-        currentChapterTitle = content.title
         appendedChapterContent = nil
         currentChapter = nextIndex
         nextChapterAppended = false
         cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
+    }
+
+    private func buildPages(
+        rawContent: String,
+        mimeType: String?,
+        title: String?,
+        comicId: String,
+        fontSize: Double,
+        size: CGSize,
+        priority: TaskPriority
+    ) async -> [NovelPage] {
+        let parseTask = Task.detached(priority: priority) {
+            NovelContentParser.blocks(content: rawContent, mimeType: mimeType)
+        }
+        let blocks = await withTaskCancellationHandler {
+            await parseTask.value
+        } onCancel: {
+            parseTask.cancel()
+        }
+        guard !Task.isCancelled else { return [] }
+
+        let references = Dictionary(
+            blocks.compactMap { block -> (String, NovelImageReference)? in
+                guard case let .image(reference) = block else { return nil }
+                return (reference.source, reference)
+            },
+            uniquingKeysWith: { first, _ in first }
+        ).values
+        var imagesBySource: [String: NovelResolvedImage] = [:]
+        await withTaskGroup(of: NovelResolvedImage.self) { group in
+            for reference in references {
+                group.addTask {
+                    await NovelResourceService.loadImage(
+                        reference: reference,
+                        comicId: comicId
+                    )
+                }
+            }
+            for await image in group {
+                imagesBySource[image.reference.source] = image
+            }
+        }
+        guard !Task.isCancelled else { return [] }
+
+        let resolved = blocks.map { block -> NovelResolvedBlock in
+            switch block {
+            case let .text(text):
+                return .text(text)
+            case let .image(reference):
+                return .image(imagesBySource[reference.source] ?? NovelResolvedImage(
+                    reference: reference,
+                    data: nil,
+                    pixelWidth: 0,
+                    pixelHeight: 0
+                ))
+            }
+        }
+        let paginationTask = Task.detached(priority: priority) {
+            PaginationService.paginateNovel(
+                blocks: resolved,
+                title: title,
+                fontSize: fontSize,
+                maxWidth: size.width,
+                maxHeight: size.height
+            )
+        }
+        return await withTaskCancellationHandler {
+            await paginationTask.value
+        } onCancel: {
+            paginationTask.cancel()
+        }
     }
 
     // MARK: - 在线与离线数据源

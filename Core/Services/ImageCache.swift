@@ -6,6 +6,7 @@ final class ImageCache {
     static let shared = ImageCache()
 
     private let memory = NSCache<NSString, UIImage>()
+    private let dataMemory = NSCache<NSString, NSData>()
     private let diskDir: URL
     private let fileManager = FileManager.default
     private let diskQueue = DispatchQueue(
@@ -18,6 +19,8 @@ final class ImageCache {
     private init() {
         memory.countLimit = 200
         memory.totalCostLimit = 100 * 1024 * 1024 // 100MB
+        dataMemory.countLimit = 80
+        dataMemory.totalCostLimit = 80 * 1024 * 1024
 
         let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         diskDir = caches.appendingPathComponent("ImageCache", isDirectory: true)
@@ -56,6 +59,30 @@ final class ImageCache {
         return image
     }
 
+    /// 读取原始图片数据，供需要保留透明度和原始尺寸的 EPUB 插图使用。
+    func data(forKey key: String) async -> Data? {
+        let nsKey = key as NSString
+        if let cached = dataMemory.object(forKey: nsKey) {
+            return cached as Data
+        }
+        let fileURL = diskPath(for: key)
+        let loadGeneration = currentGeneration()
+        let data: Data? = await withCheckedContinuation { continuation in
+            diskQueue.async {
+                continuation.resume(returning: try? Data(contentsOf: fileURL))
+            }
+        }
+        guard loadGeneration == currentGeneration() else { return nil }
+        if let data {
+            dataMemory.setObject(
+                data as NSData,
+                forKey: nsKey,
+                cost: data.count
+            )
+        }
+        return data
+    }
+
     func set(_ image: UIImage, forKey key: String) {
         let nsKey = key as NSString
         let writeGeneration = currentGeneration()
@@ -72,9 +99,25 @@ final class ImageCache {
         }
     }
 
+    /// 保存原始图片数据；常规缩略图仍可继续使用 JPEG 压缩路径。
+    func setData(_ data: Data, forKey key: String) {
+        let nsKey = key as NSString
+        let writeGeneration = currentGeneration()
+        dataMemory.setObject(data as NSData, forKey: nsKey, cost: data.count)
+        if let image = UIImage(data: data) {
+            memory.setObject(image, forKey: nsKey)
+        }
+        let fileURL = diskPath(for: key)
+        diskQueue.async {
+            guard writeGeneration == self.currentGeneration() else { return }
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
     func clear() async {
         advanceGeneration()
         memory.removeAllObjects()
+        dataMemory.removeAllObjects()
         await withCheckedContinuation { continuation in
             diskQueue.async {
                 try? self.fileManager.removeItem(at: self.diskDir)
