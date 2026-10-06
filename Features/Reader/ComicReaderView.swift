@@ -104,6 +104,7 @@ struct ComicReaderView: View {
             await viewModel.load(comicId: comicId, initialPage: initialPage, groupContext: groupContext)
         }
         .onDisappear {
+            ReaderCacheManager.shared.purgeCachedImages()
             Task {
                 await viewModel.saveProgressAndWait()
                 await viewModel.endSessionAndWait()
@@ -453,17 +454,83 @@ final class ReaderCacheManager {
     static let shared = ReaderCacheManager()
     let imageCache = NSCache<NSString, UIImage>()
     let upscaledCache = NSCache<NSString, UIImage>()
-    private var sourceImageTasks: [String: (id: UUID, task: Task<UIImage?, Never>)] = [:]
+    private let imageBudget = 80 * 1024 * 1024
+    private let upscaledBudget = 128 * 1024 * 1024
+    private var sourceImageTasks: [String: (id: UUID, task: Task<UIImage?, Never>, forDisplay: Bool)] = [:]
+    private var cacheGeneration = 0
+    private var memoryWarningObserver: NSObjectProtocol?
 
-    func loadSourceImage(comicId: String, page: Int, imageURL: URL) async -> UIImage? {
+    private init() {
+        imageCache.countLimit = 12
+        imageCache.totalCostLimit = imageBudget
+        upscaledCache.countLimit = 4
+        upscaledCache.totalCostLimit = upscaledBudget
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.clear()
+            }
+        }
+    }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
+    }
+
+    @discardableResult
+    func storeImage(_ image: UIImage, forKey key: NSString) -> Bool {
+        let cost = Self.decodedCost(of: image)
+        guard cost <= imageBudget else { return false }
+        imageCache.setObject(image, forKey: key, cost: cost)
+        return true
+    }
+
+    @discardableResult
+    func storeUpscaledImage(_ image: UIImage, forKey key: NSString) -> Bool {
+        let cost = Self.decodedCost(of: image)
+        guard cost <= upscaledBudget else { return false }
+        upscaledCache.setObject(image, forKey: key, cost: cost)
+        return true
+    }
+
+    private static func decodedCost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            let (cost, overflow) = cgImage.bytesPerRow.multipliedReportingOverflow(
+                by: cgImage.height
+            )
+            return overflow ? Int.max : max(1, cost)
+        }
+        let cost = Double(image.size.width * image.scale)
+            * Double(image.size.height * image.scale) * 4
+        guard cost.isFinite, cost < Double(Int.max) else { return Int.max }
+        return max(1, Int(cost))
+    }
+
+    func loadSourceImage(
+        comicId: String,
+        page: Int,
+        imageURL: URL,
+        forDisplay: Bool = true
+    ) async -> UIImage? {
         let key = "\(comicId)_page_\(page)"
         if let cached = imageCache.object(forKey: key as NSString) {
             return cached
         }
-        if let existing = sourceImageTasks[key] {
-            return await existing.task.value
+        if var existing = sourceImageTasks[key] {
+            if forDisplay {
+                existing.forDisplay = true
+                sourceImageTasks[key] = existing
+            }
+            let image = await existing.task.value
+            return existing.task.isCancelled ? nil : image
         }
 
+        let generation = cacheGeneration
         let taskID = UUID()
         let task = Task<UIImage?, Never> {
             if let image = await loadOfflinePageImage(comicId: comicId, page: page) {
@@ -478,21 +545,30 @@ final class ReaderCacheManager {
             }
             return await decodePageImage(data)
         }
-        sourceImageTasks[key] = (taskID, task)
+        sourceImageTasks[key] = (taskID, task, forDisplay)
 
         let image = await task.value
+        guard !task.isCancelled else { return nil }
         if sourceImageTasks[key]?.id == taskID {
             sourceImageTasks.removeValue(forKey: key)
-            if let image {
-                imageCache.setObject(image, forKey: key as NSString)
+            if let image, generation == cacheGeneration {
+                storeImage(image, forKey: key as NSString)
             }
         }
         return image
     }
 
     func clear() {
-        sourceImageTasks.values.forEach { $0.task.cancel() }
-        sourceImageTasks.removeAll()
+        for key in Array(sourceImageTasks.keys) {
+            guard let load = sourceImageTasks[key], !load.forDisplay else { continue }
+            load.task.cancel()
+            sourceImageTasks.removeValue(forKey: key)
+        }
+        purgeCachedImages()
+    }
+
+    func purgeCachedImages() {
+        cacheGeneration &+= 1
         imageCache.removeAllObjects()
         upscaledCache.removeAllObjects()
     }
@@ -577,6 +653,14 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
             uiViewController.reloadPages()
         }
     }
+
+    static func dismantleUIViewController(_ uiViewController: UnifiedComicPagerImpl, coordinator: Void) {
+        uiViewController.cancelBackgroundWork()
+        uiViewController.onPageChange = nil
+        uiViewController.onToggleOverlay = nil
+        uiViewController.onReachEnd = nil
+        uiViewController.onSwipeToPrev = nil
+    }
 }
 
 // MARK: - UIPageViewController 统一实现
@@ -602,6 +686,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     private var pendingUpscaleImages: [Int: UIImage] = [:]
     private var unavailableUpscaleIndices: Set<Int> = []
     private var activeUpscaleIndex: Int?
+    private var hasReceivedMemoryWarning = false
     
     init(
         comicId: String,
@@ -644,6 +729,26 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         
         // Initial Load
         reloadPages()
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        hasReceivedMemoryWarning = true
+        cancelBackgroundWork()
+        ReaderCacheManager.shared.clear()
+    }
+
+    func cancelBackgroundWork() {
+        preloadingTasks.values.forEach { $0.cancel() }
+        upscalingTasks.values.forEach { $0.cancel() }
+        preloadingTasks.removeAll()
+        upscalingTasks.removeAll()
+        preloadingTaskIDs.removeAll()
+        upscalingTaskIDs.removeAll()
+        upscaleTargetIndices.removeAll()
+        pendingUpscaleImages.removeAll()
+        unavailableUpscaleIndices.removeAll()
+        activeUpscaleIndex = nil
     }
     
     func goToPage(_ page: Int) {
@@ -876,7 +981,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         )
         vc.onImageLoaded = { [weak self] image in
             guard let self else { return }
-            ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: index))
+            ReaderCacheManager.shared.storeImage(image, forKey: self.cacheKey(for: index))
             self.startUpscaleIfNeeded(for: index, image: image)
         }
         if let cachedImage = cached, upscaled == nil {
@@ -895,14 +1000,14 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     }
     
     private func preloadPages(around currentIndex: Int) {
-        let preloadRange = isDoublePageMode ? (currentIndex-4...currentIndex+5) : (currentIndex-2...currentIndex+2)
-        let upscaleRange = isDoublePageMode ? (currentIndex-2...currentIndex+3) : (currentIndex-1...currentIndex+3)
+        let visibleRange = currentIndex...(currentIndex + (isDoublePageMode ? 1 : 0))
+        let preloadRange = hasReceivedMemoryWarning
+            ? visibleRange
+            : (isDoublePageMode ? (currentIndex-2...currentIndex+3) : (currentIndex-1...currentIndex+1))
         let preloadIndices = Set(
             preloadRange.filter { (0..<totalPages).contains($0) }
         )
-        let upscaleIndices = Set(
-            upscaleRange.filter { (0..<totalPages).contains($0) }
-        )
+        let upscaleIndices: Set<Int> = upscaleMode == .off ? [] : preloadIndices
         let requestedIndices = preloadIndices.union(upscaleIndices)
         upscaleTargetIndices = upscaleIndices
 
@@ -956,7 +1061,8 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
                         image = await ReaderCacheManager.shared.loadSourceImage(
                             comicId: comicId,
                             page: i,
-                            imageURL: url
+                            imageURL: url,
+                            forDisplay: false
                         )
                     } else {
                         image = nil
@@ -965,7 +1071,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
                         if let image {
-                            ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: i))
+                            ReaderCacheManager.shared.storeImage(image, forKey: self.cacheKey(for: i))
                             self.startUpscaleIfNeeded(for: i, image: image)
                         } else if self.upscaleTargetIndices.contains(i) {
                             self.unavailableUpscaleIndices.insert(i)
@@ -1089,9 +1195,12 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
                 )
                 
                 if !Task.isCancelled {
-                    ReaderCacheManager.shared.upscaledCache.setObject(result, forKey: key)
+                    let cached = ReaderCacheManager.shared.storeUpscaledImage(result, forKey: key)
                     succeeded = true
-                    self.checkAndShowUpscaledImage(for: index)
+                    self.showUpscaledImage(result, for: index)
+                    if !cached {
+                        self.unavailableUpscaleIndices.insert(index)
+                    }
                 }
             } catch is CancellationError {
                 // 翻页或切换模式时取消属于正常控制流。
@@ -1140,11 +1249,13 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
 
     private func checkAndShowUpscaledImage(for index: Int) {
         guard let upscaled = ReaderCacheManager.shared.upscaledCache.object(forKey: upscaledCacheKey(for: index)) else { return }
-        guard let viewControllers = self.viewControllers else { return }
-        
-        for vc in viewControllers {
+        showUpscaledImage(upscaled, for: index)
+    }
+
+    private func showUpscaledImage(_ image: UIImage, for index: Int) {
+        for vc in viewControllers ?? [] {
             if let zvc = vc as? ZoomablePageVC, zvc.pageIndex == index {
-                zvc.updateImage(upscaled)
+                zvc.updateImage(image)
             }
         }
     }

@@ -1273,6 +1273,51 @@ final class APIClient {
         return data
     }
 
+    /// 下载到临时文件；调用方负责移动文件，并在不再使用时删除。
+    func authenticatedDownload(from url: URL, timeout: TimeInterval = 60) async throws -> URL {
+        let absoluteURL = url.absoluteString
+        let knownBase = currentServerBaseURL(for: url)
+        let suffix = knownBase.map { String(absoluteURL.dropFirst($0.count)) }
+        let initialURL = serverURL
+
+        func request(for baseURL: String) -> URLRequest {
+            let targetURL = suffix.flatMap { URL(string: "\(baseURL)\($0)") } ?? url
+            var request = authenticatedRequest(url: targetURL, timeout: timeout)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            return request
+        }
+
+        let result: (URL, URLResponse)
+        do {
+            result = try await session.download(for: request(for: initialURL))
+        } catch {
+            guard knownBase != nil,
+                  shouldFailover(for: error),
+                  let alternateURL = await alternateRoute(afterFailureAt: initialURL) else {
+                throw error
+            }
+            try Task.checkCancellation()
+            result = try await session.download(for: request(for: alternateURL))
+        }
+
+        let (fileURL, response) = result
+        do {
+            try Task.checkCancellation()
+            var errorData = Data()
+            if let http = response as? HTTPURLResponse,
+               !(200..<300).contains(http.statusCode) {
+                let file = try FileHandle(forReadingFrom: fileURL)
+                defer { try? file.close() }
+                errorData = try file.read(upToCount: 64 * 1024) ?? Data()
+            }
+            try validate(response: response, data: errorData)
+            return fileURL
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
+        }
+    }
+
     /// 供后台下载在连接失败后恢复线路；已由其他请求完成切换时也视为恢复成功。
     func recoverRoute(after error: Error, failedResourceURL: URL?) async -> Bool {
         guard shouldFailover(for: error),
