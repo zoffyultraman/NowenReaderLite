@@ -3,6 +3,12 @@ import UIKit
 
 import SwiftData
 
+enum ComicPageDisplayMode: String, Hashable {
+    case fit
+    case fill
+    case stretch
+}
+
 // MARK: - 漫画阅读器（SwiftUI 入口）
 
 struct ComicReaderView: View {
@@ -13,6 +19,7 @@ struct ComicReaderView: View {
     @State private var viewModel = ComicReaderViewModel()
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
     @AppStorage("isRTL") private var isRTL: Bool = true
+    @AppStorage("comicPageDisplayMode") private var pageDisplayMode: ComicPageDisplayMode = .fit
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
@@ -55,6 +62,7 @@ struct ComicReaderView: View {
                         currentPage: $viewModel.currentPage,
                         isDoublePageMode: isDoublePage,
                         isRTL: isRTL,
+                        pageDisplayMode: pageDisplayMode,
                         upscaleMode: upscaleMode,
                         onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
                         onPageChange: { page in viewModel.onPageChanged(page) },
@@ -87,6 +95,11 @@ struct ComicReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .readerStatusBarHidden(!showOverlay)
         .task {
+            let defaults = UserDefaults.standard
+            if let previousFill = defaults.object(forKey: "comicFillScreen") as? Bool {
+                pageDisplayMode = previousFill ? .stretch : .fit
+                defaults.removeObject(forKey: "comicFillScreen")
+            }
             viewModel.setModelContext(modelContext)
             await viewModel.load(comicId: comicId, initialPage: initialPage, groupContext: groupContext)
         }
@@ -214,6 +227,7 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     let imageURL: URL
     let pageIndex: Int
     let comicId: String
+    private let pageDisplayMode: ComicPageDisplayMode
     private let cachedImage: UIImage?
     var onImageLoaded: ((UIImage) -> Void)?
     private let scrollView = UIScrollView()
@@ -223,10 +237,17 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     private var fittedBoundsSize = CGSize.zero
     private var hasFittedImage = false
 
-    init(imageURL: URL, pageIndex: Int, comicId: String, cachedImage: UIImage? = nil) {
+    init(
+        imageURL: URL,
+        pageIndex: Int,
+        comicId: String,
+        pageDisplayMode: ComicPageDisplayMode,
+        cachedImage: UIImage? = nil
+    ) {
         self.imageURL = imageURL
         self.pageIndex = pageIndex
         self.comicId = comicId
+        self.pageDisplayMode = pageDisplayMode
         self.cachedImage = cachedImage
         super.init(nibName: nil, bundle: nil)
     }
@@ -250,10 +271,11 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
         scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.clipsToBounds = true
         view.addSubview(scrollView)
 
         // ImageView
-        imageView.contentMode = .scaleAspectFit
+        imageView.contentMode = pageDisplayMode == .stretch ? .scaleToFill : .scaleAspectFit
         imageView.frame = scrollView.bounds
         scrollView.addSubview(imageView)
 
@@ -320,6 +342,18 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     private func fitImage(preservingViewport: Bool = false) {
         let previousZoomScale = scrollView.zoomScale
         let previousContentOffset = scrollView.contentOffset
+        let previousContentSize = scrollView.contentSize
+        var viewportAnchor = CGPoint(x: 0.5, y: 0.5)
+        if preservingViewport,
+           previousContentSize.width > 0,
+           previousContentSize.height > 0 {
+            viewportAnchor = CGPoint(
+                x: (previousContentOffset.x + fittedBoundsSize.width / 2)
+                    / previousContentSize.width,
+                y: (previousContentOffset.y + fittedBoundsSize.height / 2)
+                    / previousContentSize.height
+            )
+        }
         scrollView.frame = view.bounds
         scrollView.zoomScale = 1.0
         guard let image = imageView.image else {
@@ -328,11 +362,18 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
         }
         let viewSize = scrollView.bounds.size
         let imageSize = image.size
-        let scale = min(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
-        let w = imageSize.width * scale
-        let h = imageSize.height * scale
-        imageView.frame = CGRect(x: 0, y: 0, width: w, height: h)
-        scrollView.contentSize = CGSize(width: w, height: h)
+        guard viewSize.width > 0, viewSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else { return }
+        let widthScale = viewSize.width / imageSize.width
+        let heightScale = viewSize.height / imageSize.height
+        let scale = pageDisplayMode == .fill
+            ? max(widthScale, heightScale)
+            : min(widthScale, heightScale)
+        let contentSize = pageDisplayMode == .stretch
+            ? viewSize
+            : CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        imageView.frame = CGRect(origin: .zero, size: contentSize)
+        scrollView.contentSize = contentSize
         updateInset()
         fittedBoundsSize = scrollView.bounds.size
 
@@ -343,11 +384,14 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
             )
             scrollView.setZoomScale(zoomScale, animated: false)
             updateInset()
-            scrollView.setContentOffset(
-                clampedContentOffset(previousContentOffset),
-                animated: false
-            )
         }
+        scrollView.setContentOffset(
+            clampedContentOffset(CGPoint(
+                x: viewportAnchor.x * scrollView.contentSize.width - viewSize.width / 2,
+                y: viewportAnchor.y * scrollView.contentSize.height - viewSize.height / 2
+            )),
+            animated: false
+        )
         hasFittedImage = true
     }
 
@@ -478,6 +522,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
     @Binding var currentPage: Int
     let isDoublePageMode: Bool
     let isRTL: Bool
+    let pageDisplayMode: ComicPageDisplayMode
     let upscaleMode: UpscaleMode
     let onToggleOverlay: () -> Void
     let onPageChange: (Int) -> Void
@@ -491,6 +536,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
             initialPage: currentPage,
             isDoublePageMode: isDoublePageMode,
             isRTL: isRTL,
+            pageDisplayMode: pageDisplayMode,
             upscaleMode: upscaleMode
         )
         vc.onToggleOverlay = onToggleOverlay
@@ -518,6 +564,10 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
             uiViewController.isRTL = isRTL
             needsReload = true
         }
+        if uiViewController.pageDisplayMode != pageDisplayMode {
+            uiViewController.pageDisplayMode = pageDisplayMode
+            needsReload = true
+        }
         if uiViewController.upscaleMode != upscaleMode {
             uiViewController.upscaleMode = upscaleMode
             uiViewController.onUpscaleModeChanged()
@@ -535,6 +585,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     let totalPages: Int
     var isDoublePageMode: Bool
     var isRTL: Bool
+    var pageDisplayMode: ComicPageDisplayMode
     var upscaleMode: UpscaleMode
     
     var onToggleOverlay: (() -> Void)?
@@ -552,12 +603,21 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     private var unavailableUpscaleIndices: Set<Int> = []
     private var activeUpscaleIndex: Int?
     
-    init(comicId: String, totalPages: Int, initialPage: Int, isDoublePageMode: Bool, isRTL: Bool, upscaleMode: UpscaleMode) {
+    init(
+        comicId: String,
+        totalPages: Int,
+        initialPage: Int,
+        isDoublePageMode: Bool,
+        isRTL: Bool,
+        pageDisplayMode: ComicPageDisplayMode,
+        upscaleMode: UpscaleMode
+    ) {
         self.comicId = comicId
         self.totalPages = totalPages
         self.basePageIndex = initialPage
         self.isDoublePageMode = isDoublePageMode
         self.isRTL = isRTL
+        self.pageDisplayMode = pageDisplayMode
         self.upscaleMode = upscaleMode
         
         let spineLoc: UIPageViewController.SpineLocation = isDoublePageMode ? .mid : (isRTL ? .max : .min)
@@ -807,7 +867,13 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         
         let cached = ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: index))
         let upscaled = ReaderCacheManager.shared.upscaledCache.object(forKey: upscaledCacheKey(for: index))
-        let vc = ZoomablePageVC(imageURL: url, pageIndex: index, comicId: comicId, cachedImage: upscaled ?? cached)
+        let vc = ZoomablePageVC(
+            imageURL: url,
+            pageIndex: index,
+            comicId: comicId,
+            pageDisplayMode: pageDisplayMode,
+            cachedImage: upscaled ?? cached
+        )
         vc.onImageLoaded = { [weak self] image in
             guard let self else { return }
             ReaderCacheManager.shared.imageCache.setObject(image, forKey: self.cacheKey(for: index))
@@ -1127,11 +1193,32 @@ import SwiftUI
 struct ReaderSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("isRTL") private var isRTL: Bool = true
+    @AppStorage("comicPageDisplayMode") private var pageDisplayMode: ComicPageDisplayMode = .fit
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
     
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("页面显示", selection: $pageDisplayMode) {
+                        Text("完整显示").tag(ComicPageDisplayMode.fit)
+                        Text("等比填充").tag(ComicPageDisplayMode.fill)
+                        Text("拉伸铺满").tag(ComicPageDisplayMode.stretch)
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("页面显示")
+                } footer: {
+                    switch pageDisplayMode {
+                    case .fit:
+                        Text("保持原比例，完整显示页面。")
+                    case .fill:
+                        Text("保持原比例铺满屏幕，页面边缘可能被裁切。")
+                    case .stretch:
+                        Text("完整铺满屏幕，画面比例会随屏幕调整。")
+                    }
+                }
+
                 Section("阅读设置") {
                     Toggle("从右向左阅读 (RTL)", isOn: $isRTL)
                     
