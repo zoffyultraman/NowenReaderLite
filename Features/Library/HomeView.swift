@@ -668,8 +668,7 @@ private struct LibraryContentView: View {
     }
 
     private var gridColumns: [GridItem] {
-        let count = sizeClass == .regular ? 5 : 3
-        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
+        [GridItem(.adaptive(minimum: sizeClass == .regular ? 160 : 105), spacing: 12)]
     }
 
     var body: some View {
@@ -758,44 +757,46 @@ private struct LibraryShelfGridView: View {
     let loadMore: () async -> Void
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(entries) { entry in
-                switch entry {
-                case .group(let group):
-                    NavigationLink(value: groupRoute(group.id, contentType: contentType)) {
-                        GroupCardView(group: group, serverURL: serverURL)
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                case .comic(let comic):
-                    NavigationLink(value: comic.id) {
-                        if comic.isSeriesShelfItem {
-                            SeriesShelfCardView(comic: comic, serverURL: serverURL)
-                        } else {
-                            ComicCardView(
-                                id: comic.id,
-                                title: comic.title,
-                                isFavorite: comic.isFavorite,
-                                isNovel: comic.isNovel,
-                                progress: comic.progress,
-                                serverURL: serverURL,
-                                readingStatus: comic.readingStatus,
-                                rating: comic.rating
-                            )
+        VStack(spacing: 0) {
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(entries) { entry in
+                    switch entry {
+                    case .group(let group):
+                        NavigationLink(value: groupRoute(group.id, contentType: contentType)) {
+                            GroupCardView(group: group, serverURL: serverURL)
                         }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                    case .comic(let comic):
+                        NavigationLink(value: comic.id) {
+                            if comic.isSeriesShelfItem {
+                                SeriesShelfCardView(comic: comic, serverURL: serverURL)
+                            } else {
+                                ComicCardView(
+                                    id: comic.id,
+                                    title: comic.title,
+                                    isFavorite: comic.isFavorite,
+                                    isNovel: comic.isNovel,
+                                    progress: comic.progress,
+                                    serverURL: serverURL,
+                                    readingStatus: comic.readingStatus,
+                                    rating: comic.rating
+                                )
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
                 }
-            }
 
-            if !isLoading {
-                Color.clear.task { await loadMore() }
+                if !isLoading {
+                    Color.clear.task { await loadMore() }
+                }
             }
 
             if isLoading {
                 ProgressView()
-                    .gridCellColumns(columns.count)
+                    .frame(maxWidth: .infinity)
                     .padding()
             }
         }

@@ -47,12 +47,13 @@ struct ComicReaderView: View {
                 }
             } else {
                 GeometryReader { geometry in
-                    let isLandscape = geometry.size.width > geometry.size.height
+                    let isDoublePage = geometry.size.width >= 520
+                        && geometry.size.width > geometry.size.height
                     UnifiedComicPager(
                         comicId: viewModel.currentComicId,
                         totalPages: viewModel.totalPages,
                         currentPage: $viewModel.currentPage,
-                        isDoublePageMode: isLandscape,
+                        isDoublePageMode: isDoublePage,
                         isRTL: isRTL,
                         upscaleMode: upscaleMode,
                         onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
@@ -72,7 +73,7 @@ struct ComicReaderView: View {
                             }
                         }
                     )
-                    .id("\(viewModel.currentComicId)_\(isLandscape ? "double" : "single")")
+                    .id("\(viewModel.currentComicId)_\(isDoublePage ? "double" : "single")")
                     .ignoresSafeArea()
                 }
             }
@@ -138,6 +139,7 @@ struct ReaderOverlayView: View {
     @Binding var isRTL: Bool
     let onDismiss: () -> Void
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showSettings = false
 
     var body: some View {
@@ -173,14 +175,17 @@ struct ReaderOverlayView: View {
                 Text(positionLabel)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
 
                 Spacer()
 
                 Toggle(isOn: $isRTL) {
-                    Text("从右向左翻页")
+                    Text(horizontalSizeClass == .compact ? "右→左" : "从右向左翻页")
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.white)
                 }
+                .accessibilityLabel("从右向左翻页")
                 .toggleStyle(.switch)
                 .tint(.accentColor)
                 .fixedSize()

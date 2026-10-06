@@ -349,7 +349,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2650;
+				LastUpgradeCheck = 2710;
 			};
 			buildConfigurationList = 8ACFCFC27610B6D3B089443B /* Build configuration list for PBXProject "NowenReaderLite" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -445,9 +445,8 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.1.9;
+				CURRENT_PROJECT_VERSION = 1.2.0;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_NS_ASSERTIONS = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = NowenReaderLite;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
@@ -455,9 +454,10 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.1.9;
+				MARKETING_VERSION = 1.2.0;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -490,6 +490,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -511,7 +512,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1.9;
+				MARKETING_VERSION = 1.2.0;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -547,6 +548,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -567,7 +569,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1.9;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -586,9 +588,8 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.1.9;
+				CURRENT_PROJECT_VERSION = 1.2.0;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 4CRX9GM329;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = NowenReaderLite;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
@@ -596,9 +597,10 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.1.9;
+				MARKETING_VERSION = 1.2.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";

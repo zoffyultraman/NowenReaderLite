@@ -17,6 +17,7 @@ struct NovelReaderView: View {
     @State private var currentPage = 0
     private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
     @State private var restoredChapter = -1
+    @State private var repaginationAnchor: (comicId: String, chapter: Int, progress: Double)?
 
     var body: some View {
         GeometryReader { geometry in
@@ -103,12 +104,13 @@ struct NovelReaderView: View {
                 }
             }
             .onChange(of: paginationSize) { _, newSize in
+                captureRepaginationAnchor()
                 Task {
                     await viewModel.updatePaginationSize(newSize, fontSize: fontSize)
                 }
             }
             .onChange(of: viewModel.paginationGeneration) { _, _ in
-                restorePosition()
+                restorePositionAfterPagination()
             }
             .onChange(of: fontSize) { _, newValue in
                 UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelFontSize)
@@ -153,6 +155,34 @@ struct NovelReaderView: View {
     }
 
     // MARK: - 恢复阅读位置
+
+    private func captureRepaginationAnchor() {
+        guard repaginationAnchor == nil, !viewModel.pages.isEmpty else { return }
+        let offset = viewModel.chapterPageOffsets[viewModel.currentChapter] ?? 0
+        let pageCount = viewModel.currentChapterPageCount()
+        let page = min(max(currentPage - offset, 0), pageCount - 1)
+        repaginationAnchor = (
+            comicId: viewModel.currentComicId,
+            chapter: viewModel.currentChapter,
+            progress: Double(page) / Double(max(pageCount - 1, 1))
+        )
+    }
+
+    private func restorePositionAfterPagination() {
+        defer { repaginationAnchor = nil }
+        guard let anchor = repaginationAnchor,
+              anchor.comicId == viewModel.currentComicId,
+              anchor.chapter == viewModel.currentChapter,
+              !viewModel.pages.isEmpty else {
+            restorePosition()
+            return
+        }
+
+        let offset = viewModel.chapterPageOffsets[anchor.chapter] ?? 0
+        let pageCount = viewModel.currentChapterPageCount()
+        currentPage = offset + Int((anchor.progress * Double(pageCount - 1)).rounded())
+        restoredChapter = anchor.chapter
+    }
 
     private func restorePosition() {
         let count = viewModel.pages.count
@@ -209,6 +239,7 @@ struct NovelReaderView: View {
                     + viewModel.currentChapterPageCount() - 1,
             hasPrevChapter: viewModel.currentChapter > 0 || viewModel.groupContext?.previousVolumeId != nil,
             onFontSizeCommit: {
+                captureRepaginationAnchor()
                 Task { await viewModel.repaginate(fontSize: fontSize) }
             },
             onPrevChapter: {

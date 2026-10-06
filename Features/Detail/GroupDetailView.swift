@@ -559,7 +559,10 @@ struct SeriesDetailView: View {
                         }
 
                         if isGrid {
-                            let cols = Array(repeating: GridItem(.flexible(), spacing: 12), count: sizeClass == .regular ? 5 : 3)
+                            let cols = [GridItem(
+                                .adaptive(minimum: sizeClass == .regular ? 160 : 105),
+                                spacing: 12
+                            )]
                             LazyVGrid(columns: cols, spacing: 16) {
                                 ForEach(viewModel.visibleItems) { item in
                                     NavigationLink {
