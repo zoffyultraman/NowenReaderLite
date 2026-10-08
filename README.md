@@ -180,6 +180,7 @@ NowenReaderLite/
 | 书架 | `GET /api/comics`（分页/排序/筛选/excludeGrouped/libraryId） |
 | 详情 | `GET /api/comics/:id` |
 | 漫画 | `GET /api/comics/:id/pages` · `GET /api/comics/:id/page/:index` |
+| 阅读预热 | `POST /api/comics/:id/warmup` · `POST /api/comics/:id/warmup-done`（独立会话、30 秒续期） |
 | 小说 | `GET /api/comics/:id/chapter/:index` |
 | PDF | `GET /api/comics/:id/pdf` |
 | 缩略图 | `GET /api/comics/:id/thumbnail` |
@@ -197,6 +198,12 @@ NowenReaderLite/
 | 健康检查 | `GET /api/health` |
 
 </details>
+
+漫画当前页加载完成后，客户端按每 4 页一段预热后续最多 8 页；小说和 PDF 只续期阅读会话，不执行图片预热。进入后台或退出阅读器时释放会话，恢复前台时生成新的会话 ID。离线时不请求预热接口。遇到缺少接口或仍使用累计阅读锁的旧服务端时自动停用预热，不影响正常阅读和进度上报。
+
+合集与目录作品详情支持标签、分类展示；下载合集时同步保存这些字段供离线查看。旧版响应和旧离线记录缺少字段时仍可加载。
+
+API 兼容性与阅读会话回归检查可在 macOS 命令行工具环境运行：`sh Scripts/test-api-compatibility.sh`。完整 iOS 构建和界面验证仍需 Xcode。
 
 ## 设计规范
 

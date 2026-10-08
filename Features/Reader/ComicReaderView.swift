@@ -66,6 +66,7 @@ struct ComicReaderView: View {
                         upscaleMode: upscaleMode,
                         onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
                         onPageChange: { page in viewModel.onPageChanged(page) },
+                        onPageLoaded: { id, page in viewModel.onPageLoaded(comicId: id, page: page) },
                         onReachEnd: {
                             guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
                             Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
@@ -101,9 +102,15 @@ struct ComicReaderView: View {
                 defaults.removeObject(forKey: "comicFillScreen")
             }
             viewModel.setModelContext(modelContext)
+            if scenePhase == .active {
+                viewModel.resumeActivity()
+            } else {
+                viewModel.pauseActivity()
+            }
             await viewModel.load(comicId: comicId, initialPage: initialPage, groupContext: groupContext)
         }
         .onDisappear {
+            viewModel.pauseActivity()
             ReaderCacheManager.shared.purgeCachedImages()
             Task {
                 await viewModel.saveProgressAndWait()
@@ -602,6 +609,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
     let upscaleMode: UpscaleMode
     let onToggleOverlay: () -> Void
     let onPageChange: (Int) -> Void
+    let onPageLoaded: (String, Int) -> Void
     var onReachEnd: (() -> Void)?
     var onSwipeToPrev: (() -> Void)?
 
@@ -620,6 +628,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
             self.currentPage = page
             self.onPageChange(page)
         }
+        vc.onPageLoaded = { page in self.onPageLoaded(self.comicId, page) }
         vc.onReachEnd = onReachEnd
         vc.onSwipeToPrev = onSwipeToPrev
         return vc
@@ -657,6 +666,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
     static func dismantleUIViewController(_ uiViewController: UnifiedComicPagerImpl, coordinator: Void) {
         uiViewController.cancelBackgroundWork()
         uiViewController.onPageChange = nil
+        uiViewController.onPageLoaded = nil
         uiViewController.onToggleOverlay = nil
         uiViewController.onReachEnd = nil
         uiViewController.onSwipeToPrev = nil
@@ -674,6 +684,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     
     var onToggleOverlay: (() -> Void)?
     var onPageChange: ((Int) -> Void)?
+    var onPageLoaded: ((Int) -> Void)?
     var onReachEnd: (() -> Void)?
     var onSwipeToPrev: (() -> Void)?
     
@@ -897,6 +908,9 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     
     private func notifyPageChange() {
         onPageChange?(basePageIndex)
+        if ReaderCacheManager.shared.imageCache.object(forKey: cacheKey(for: basePageIndex)) != nil {
+            onPageLoaded?(basePageIndex)
+        }
     }
     
     // MARK: - DataSource
@@ -982,6 +996,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         vc.onImageLoaded = { [weak self] image in
             guard let self else { return }
             ReaderCacheManager.shared.storeImage(image, forKey: self.cacheKey(for: index))
+            if index == self.basePageIndex { self.onPageLoaded?(index) }
             self.startUpscaleIfNeeded(for: index, image: image)
         }
         if let cachedImage = cached, upscaled == nil {

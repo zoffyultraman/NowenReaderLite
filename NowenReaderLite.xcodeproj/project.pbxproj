@@ -48,6 +48,7 @@
 		EAC5D9A804E4AC932916EE39 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B37C34C647049726BF3DEED /* SettingsView.swift */; };
 		EE3344556677889900BB02 /* FormatUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3344556677889900BB01 /* FormatUtils.swift */; };
 		EE4000000000000000000002 /* NovelContentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE4000000000000000000001 /* NovelContentService.swift */; };
+		EE5000000000000000000002 /* ReaderWarmupSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE5000000000000000000001 /* ReaderWarmupSession.swift */; };
 		F5A74BBAAACB8D0184EF7BE4 /* anime4k-4x-a-hq.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE3 /* anime4k-4x-a-hq.mlpackage */; };
 		F5A74BBAAACB8D0184EF7BE6 /* ImageUpscaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE5 /* ImageUpscaler.swift */; };
 		F5A74BBAAACB8D0184EF7BEA /* RealESRGAN_x4plus_Anime.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = F5A74BBAAACB8D0184EF7BE9 /* RealESRGAN_x4plus_Anime.mlpackage */; };
@@ -56,6 +57,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		EE5000000000000000000001 /* ReaderWarmupSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWarmupSession.swift; sourceTree = "<group>"; };
 		0371F5659545954E0A349421 /* NowenReaderLite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NowenReaderLite.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = SOURCE_ROOT; };
 		17774F0F1EEC7CA81030666F /* RootRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootRouter.swift; sourceTree = "<group>"; };
@@ -305,6 +307,7 @@
 				CC000000000000000000000B /* ImageCache.swift */,
 				CC000000000000000000000D /* PaginationService.swift */,
 				EE4000000000000000000001 /* NovelContentService.swift */,
+				EE5000000000000000000001 /* ReaderWarmupSession.swift */,
 				CC000000000000000000000F /* ChapterCache.swift */,
 				DD1000000000000000000001 /* OfflineFileManager.swift */,
 				DD1000000000000000000003 /* DownloadManager.swift */,
@@ -423,6 +426,7 @@
 				CC000000000000000000000A /* ImageCache.swift in Sources */,
 				CC000000000000000000000C /* PaginationService.swift in Sources */,
 				EE4000000000000000000002 /* NovelContentService.swift in Sources */,
+				EE5000000000000000000002 /* ReaderWarmupSession.swift in Sources */,
 				CC000000000000000000000E /* ChapterCache.swift in Sources */,
 				CC0000000000000000000010 /* ComicReaderViewModel.swift in Sources */,
 				DD1000000000000000000002 /* OfflineFileManager.swift in Sources */,

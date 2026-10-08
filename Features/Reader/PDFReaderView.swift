@@ -61,6 +61,7 @@ struct PDFReaderView: View {
         .toolbar(.hidden, for: .tabBar)
         .readerStatusBarHidden(true)
         .onDisappear {
+            activityTracker?.setActive(false)
             Task { await finishActivity() }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -89,7 +90,7 @@ struct PDFReaderView: View {
         guard totalPages > 0 else { return }
         if activityTracker?.comicId != comicId {
             activityTracker = ReadingActivityTracker(comicId: comicId)
-            activityTracker?.start(page: page, totalPages: totalPages)
+            activityTracker?.start(page: page, totalPages: totalPages, isActive: scenePhase == .active)
         } else {
             activityTracker?.updatePage(page: page, totalPages: totalPages)
         }

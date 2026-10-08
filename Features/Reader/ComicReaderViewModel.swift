@@ -17,6 +17,7 @@ final class ComicReaderViewModel {
     }
 
     private var activityTracker: ReadingActivityTracker?
+    private var isReaderActive = true
     private let api = APIClient.shared
     private var modelContext: ModelContext?
 
@@ -91,6 +92,11 @@ final class ComicReaderViewModel {
         saveProgress()
     }
 
+    func onPageLoaded(comicId: String, page: Int) {
+        guard comicId == currentComicId, page == currentPage else { return }
+        activityTracker?.pageDidLoad(page)
+    }
+
     func onSliderChanged(_ page: Int) {
         currentPage = page
     }
@@ -144,17 +150,24 @@ final class ComicReaderViewModel {
     }
 
     func pauseActivity() {
+        isReaderActive = false
         activityTracker?.setActive(false)
     }
 
     func resumeActivity() {
+        isReaderActive = true
         activityTracker?.setActive(true)
     }
 
     private func startActivity() {
         guard totalPages > 0, !currentComicId.isEmpty else { return }
         activityTracker = ReadingActivityTracker(comicId: currentComicId)
-        activityTracker?.start(page: currentPage, totalPages: totalPages)
+        activityTracker?.start(
+            page: currentPage,
+            totalPages: totalPages,
+            preheatPages: true,
+            isActive: isReaderActive
+        )
     }
 
     private func flushActivity(totalPages: Int, finalize: Bool) async {
@@ -187,18 +200,33 @@ final class ReadingActivityTracker {
     private var isFlushing = false
     private var pendingFlushRequested = false
     private var pendingFinalizeRequested = false
+    private let warmupSession = ReaderWarmupSession(client: APIClient.shared)
 
     init(comicId: String) {
         self.comicId = comicId
         self.clientSessionId = "ios-\(UUID().uuidString)"
     }
 
-    func start(page: Int, totalPages: Int, trackProgress: Bool = true) {
+    func start(
+        page: Int,
+        totalPages: Int,
+        trackProgress: Bool = true,
+        preheatPages: Bool = false,
+        isActive: Bool = true
+    ) {
         guard !isStarted, totalPages > 0 else { return }
         isStarted = true
         self.page = page
         self.totalPages = totalPages
         self.trackProgress = trackProgress
+        self.isActive = isActive
+        warmupSession.start(
+            comicId: comicId,
+            page: page,
+            totalPages: totalPages,
+            preheatPages: preheatPages,
+            isActive: isActive
+        )
 
         activeTimer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -225,6 +253,8 @@ final class ReadingActivityTracker {
         if totalPages > 0 { self.totalPages = totalPages }
         self.trackProgress = trackProgress
 
+        warmupSession.updatePage(page, totalPages: self.totalPages)
+
         pageFlushTask?.cancel()
         pageFlushTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 600_000_000)
@@ -236,12 +266,19 @@ final class ReadingActivityTracker {
     func setActive(_ active: Bool) {
         guard isStarted, !isFinalized else { return }
         isActive = active
+        warmupSession.setActive(active)
         if !active {
             Task { try? await flush(finalize: false) }
         }
     }
 
+    func pageDidLoad(_ page: Int) {
+        guard isStarted, !isFinalized else { return }
+        warmupSession.pageDidLoad(page)
+    }
+
     func flush(finalize: Bool) async throws {
+        if finalize { warmupSession.stop() }
         guard isStarted, !isFinalized, totalPages > 0 else { return }
         guard finalize || activeSeconds > 0 else { return }
 
@@ -324,6 +361,7 @@ final class ReadingActivityTracker {
 
     private func finish() {
         isFinalized = true
+        warmupSession.stop()
         cancelTimers()
     }
 

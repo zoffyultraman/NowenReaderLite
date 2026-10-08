@@ -85,12 +85,18 @@ struct NovelReaderView: View {
                 // 从 UserDefaults 恢复字号设置（避免在 @State 初始化时产生副作用）
                 fontSize = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
                 viewModel.setPaginationSize(paginationSize)
+                if scenePhase == .active {
+                    viewModel.resumeActivity()
+                } else {
+                    viewModel.pauseActivity()
+                }
                 // 以本地记录为准，没有记录则用 initialChapter
                 let savedChapter = recordManager.load(comicId: viewModel.currentComicId.isEmpty ? comicId : viewModel.currentComicId)?.chapter ?? initialChapter
                 await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize, groupContext: groupContext)
                 restorePosition()
             }
             .onDisappear {
+                viewModel.pauseActivity()
                 saveRecord()
                 Task { await viewModel.finishActivity() }
             }
@@ -1023,6 +1029,7 @@ final class NovelReaderViewModel {
     private let api = APIClient.shared
     private let cache = ChapterCache()
     private var activityTracker: ReadingActivityTracker?
+    private var isReaderActive = true
     @ObservationIgnored private var cacheObserver: Any?
     @ObservationIgnored private var paginationTask: Task<Void, Never>?
     @ObservationIgnored private var appendPaginationTask: Task<Void, Never>?
@@ -1236,10 +1243,12 @@ final class NovelReaderViewModel {
     }
 
     func pauseActivity() {
+        isReaderActive = false
         activityTracker?.setActive(false)
     }
 
     func resumeActivity() {
+        isReaderActive = true
         activityTracker?.setActive(true)
     }
 
@@ -1248,7 +1257,11 @@ final class NovelReaderViewModel {
         let safeChapter = min(max(currentChapter, 0), max(totalChapters - 1, 0))
         if activityTracker?.comicId != currentComicId {
             activityTracker = ReadingActivityTracker(comicId: currentComicId)
-            activityTracker?.start(page: safeChapter, totalPages: totalChapters)
+            activityTracker?.start(
+                page: safeChapter,
+                totalPages: totalChapters,
+                isActive: isReaderActive
+            )
         } else {
             activityTracker?.updatePage(page: safeChapter, totalPages: totalChapters)
         }

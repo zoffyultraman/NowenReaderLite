@@ -554,5 +554,7 @@ struct OfflineGroupMeta: Codable, Identifiable, Sendable {
     let description: String?
     let comicCount: Int?
     let sortOrder: Int?
+    let tagItems: [TagItem]?
+    let categories: [CategoryItem]?
     var comicIds: [String]     // 合集内的漫画 ID 列表
 }

@@ -39,6 +39,8 @@ struct GroupDetailResponse: Codable, Sendable {
     let author: String?
     let description: String?
     let comicCount: Int?
+    let tagItems: [TagItem]?
+    let categories: [CategoryItem]?
     let seriesList: [GroupSeriesItem]
     let comics: [GroupComicItem]
     let sortedSeriesList: [GroupSeriesItem]
@@ -46,7 +48,7 @@ struct GroupDetailResponse: Codable, Sendable {
     let readingUnits: [GroupComicItem]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, coverUrl, author, description, comicCount, seriesList, comics
+        case id, name, coverUrl, author, description, comicCount, tagItems, categories, seriesList, comics
     }
 
     init(
@@ -56,6 +58,8 @@ struct GroupDetailResponse: Codable, Sendable {
         author: String?,
         description: String?,
         comicCount: Int?,
+        tagItems: [TagItem]? = nil,
+        categories: [CategoryItem]? = nil,
         seriesList: [GroupSeriesItem] = [],
         comics: [GroupComicItem]
     ) {
@@ -65,6 +69,8 @@ struct GroupDetailResponse: Codable, Sendable {
         self.author = author
         self.description = description
         self.comicCount = comicCount
+        self.tagItems = tagItems
+        self.categories = categories
         self.seriesList = seriesList
         self.comics = comics
         sortedSeriesList = Self.sortSeries(seriesList)
@@ -83,6 +89,8 @@ struct GroupDetailResponse: Codable, Sendable {
         author = try container.decodeIfPresent(String.self, forKey: .author)
         description = try container.decodeIfPresent(String.self, forKey: .description)
         comicCount = try container.decodeIfPresent(Int.self, forKey: .comicCount)
+        tagItems = try container.decodeIfPresent([TagItem].self, forKey: .tagItems)
+        categories = try container.decodeIfPresent([CategoryItem].self, forKey: .categories)
         seriesList = try container.decodeIfPresent([GroupSeriesItem].self, forKey: .seriesList) ?? []
         comics = try container.decodeIfPresent([GroupComicItem].self, forKey: .comics) ?? []
         sortedSeriesList = Self.sortSeries(seriesList)
@@ -246,6 +254,7 @@ struct SeriesSummary: Codable, Identifiable, Hashable, Sendable {
     let externalRatingMax: Double?
     let externalRatingSource: String?
     let tags: [TagItem]?
+    let categories: [CategoryItem]?
     let itemCount: Int
     let sectionCount: Int
     let completedItemCount: Int

@@ -231,6 +231,7 @@ final class DownloadManager {
                 id: detail.id, name: detail.name, coverUrl: detail.coverUrl,
                 author: detail.author, description: detail.description,
                 comicCount: detail.readingUnits.count, sortOrder: nil,
+                tagItems: detail.tagItems, categories: detail.categories,
                 comicIds: detail.readingUnits.map { $0.id }
             )
             await Task.detached(priority: .utility) {
@@ -249,6 +250,8 @@ final class DownloadManager {
                 description: group.description,
                 comicCount: group.readingUnits.count,
                 sortOrder: nil,
+                tagItems: group.tagItems,
+                categories: group.categories,
                 comicIds: group.readingUnits.map { $0.id }
             )
             Task.detached(priority: .utility) {

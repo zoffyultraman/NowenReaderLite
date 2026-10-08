@@ -78,6 +78,9 @@ struct GroupDetailView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
 
+                        WorkMetadataSection(tags: detail.tagItems, categories: detail.categories)
+                            .padding(.horizontal, 20)
+
                         WorkDescriptionSection(text: detail.description)
                     }
 
@@ -461,6 +464,8 @@ final class GroupDetailViewModel {
                     author: local.author,
                     description: local.description,
                     comicCount: comics.count,
+                    tagItems: local.tagItems,
+                    categories: local.categories,
                     seriesList: [],
                     comics: comics
                 ))
@@ -745,7 +750,54 @@ struct SeriesHeaderView: View {
                 }
             }
 
+            WorkMetadataSection(tags: series.tags, categories: series.categories)
+
             WorkDescriptionSection(text: series.description, horizontalPadding: 0)
+        }
+    }
+}
+
+struct WorkMetadataSection: View {
+    let tags: [TagItem]?
+    let categories: [CategoryItem]?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let categories, !categories.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("分类", systemImage: "folder")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    FlowLayout(spacing: 8) {
+                        ForEach(categories, id: \.id) { category in
+                            Text(category.name)
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.accentColor.opacity(0.1), in: Capsule())
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
+            }
+
+            if let tags, !tags.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("标签", systemImage: "tag")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    FlowLayout(spacing: 8) {
+                        ForEach(tags, id: \.name) { tag in
+                            Text(tag.name)
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color(.secondarySystemBackground), in: Capsule())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
         }
     }
 }

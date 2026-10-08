@@ -7,7 +7,7 @@ import Network
 
 @MainActor
 @Observable
-final class APIClient {
+final class APIClient: ReaderWarmupClient {
     static let shared = APIClient()
 
     /// 服务器身份始终使用主线路；serverURL 是当前实际发出请求的线路。
@@ -1142,6 +1142,33 @@ final class APIClient {
     }
 
     // MARK: - Pages & Content
+
+    var readerServerIdentity: String { primaryServerURL }
+
+    var readerSessionIdentity: String? {
+        guard isLoggedIn, let userId = currentUser?.id else { return nil }
+        return "\(primaryServerURL)|\(userId)"
+    }
+
+    var isReaderWarmupAvailable: Bool {
+        isNetworkReachable && !isOfflineMode && readerSessionIdentity != nil
+    }
+
+    func warmupReaderPages(comicId: String, body: ReaderWarmupBody) async throws -> ReaderWarmupResponse {
+        do {
+            // 能力探测可能命中使用累计锁的旧服务端，不自动重试 POST。
+            return try await post("/api/comics/\(comicId)/warmup", body: body)
+        } catch APIError.serverError(let code, _) where code == 404 || code == 405 {
+            throw ReaderWarmupError.unsupportedEndpoint
+        }
+    }
+
+    func endReaderWarmup(comicId: String, sessionId: String) async throws {
+        let _: EmptyResponse = try await post(
+            "/api/comics/\(comicId)/warmup-done",
+            body: ReaderWarmupEndBody(sessionId: sessionId)
+        )
+    }
 
     func fetchPages(comicId: String) async throws -> PageList {
         try await get(
