@@ -37,10 +37,10 @@ struct ComicReaderView: View {
                 VStack(spacing: 16) {
                     Image(systemName: "photo")
                         .font(.system(size: 40))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.white.opacity(0.5))
                     Text("无法加载页面")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.75))
 
                     Button { dismiss() } label: {
                         Text("返回")
@@ -66,7 +66,9 @@ struct ComicReaderView: View {
                         upscaleMode: upscaleMode,
                         onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
                         onPageChange: { page in viewModel.onPageChanged(page) },
-                        onPageLoaded: { id, page in viewModel.onPageLoaded(comicId: id, page: page) },
+                        onPageLoaded: { id, page in
+                            viewModel.onPageLoaded(comicId: id, page: page)
+                        },
                         onReachEnd: {
                             guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
                             Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
@@ -241,6 +243,7 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
     private let scrollView = UIScrollView()
     private let imageView = UIImageView()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
+    private let retryButton = UIButton(type: .system)
     private var imageLoadTask: Task<Void, Never>?
     private var fittedBoundsSize = CGSize.zero
     private var hasFittedImage = false
@@ -299,6 +302,15 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
         activityIndicator.startAnimating()
         view.addSubview(activityIndicator)
 
+        retryButton.setTitle("页面加载失败，点击重试", for: .normal)
+        retryButton.setTitleColor(.white, for: .normal)
+        retryButton.frame = CGRect(x: 0, y: 0, width: 260, height: 48)
+        retryButton.center = view.center
+        retryButton.autoresizingMask = [.flexibleTopMargin, .flexibleBottomMargin, .flexibleLeftMargin, .flexibleRightMargin]
+        retryButton.addTarget(self, action: #selector(retryImage), for: .touchUpInside)
+        retryButton.isHidden = true
+        view.addSubview(retryButton)
+
         loadImage()
     }
 
@@ -308,19 +320,32 @@ class ZoomablePageVC: UIViewController, UIScrollViewDelegate {
             activityIndicator.stopAnimating()
             imageView.image = cached
             fitImage()
+            onImageLoaded?(cached)
             return
         }
 
         imageLoadTask?.cancel()
         imageLoadTask = Task { [weak self] in
             guard let self else { return }
-            guard let image = await ReaderCacheManager.shared.loadSourceImage(
+            let image = await ReaderCacheManager.shared.loadSourceImage(
                 comicId: comicId,
                 page: pageIndex,
                 imageURL: imageURL
-            ), !Task.isCancelled else { return }
+            )
+            guard !Task.isCancelled else { return }
+            guard let image else {
+                activityIndicator.stopAnimating()
+                retryButton.isHidden = false
+                return
+            }
             display(image)
         }
+    }
+
+    @objc private func retryImage() {
+        retryButton.isHidden = true
+        activityIndicator.startAnimating()
+        loadImage()
     }
 
     private func display(_ image: UIImage) {
@@ -628,7 +653,9 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
             self.currentPage = page
             self.onPageChange(page)
         }
-        vc.onPageLoaded = { page in self.onPageLoaded(self.comicId, page) }
+        vc.onPageLoaded = { page in
+            Task { @MainActor in self.onPageLoaded(self.comicId, page) }
+        }
         vc.onReachEnd = onReachEnd
         vc.onSwipeToPrev = onSwipeToPrev
         return vc
@@ -674,7 +701,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
 }
 
 // MARK: - UIPageViewController 统一实现
-class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
     let comicId: String
     let totalPages: Int
     var isDoublePageMode: Bool
@@ -736,10 +763,20 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         self.view.backgroundColor = .black
         
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tapGesture.delegate = self
         self.view.addGestureRecognizer(tapGesture)
         
         // Initial Load
         reloadPages()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var touchedView = touch.view
+        while let view = touchedView {
+            if view is UIControl { return false }
+            touchedView = view.superview
+        }
+        return true
     }
 
     override func didReceiveMemoryWarning() {

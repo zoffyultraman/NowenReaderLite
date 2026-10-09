@@ -144,6 +144,7 @@ struct ComicCardView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .bookCoverSource(id: "comic-\(id)")
         .accessibilityValue(
             ReadingStatus.progressLabel(progress: progress, status: readingStatus)
         )
@@ -170,6 +171,7 @@ struct ComicListRowView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 75)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .bookCoverSource(id: "comic-\(id)")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)

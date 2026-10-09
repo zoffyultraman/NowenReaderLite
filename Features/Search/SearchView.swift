@@ -62,6 +62,7 @@ struct SearchView: View {
         .navigationBarTitleDisplayMode(.large)
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
+                .bookCoverDestination(id: "comic-\(comicId)")
         }
         .onChange(of: api.selectedLibraryId) { _, _ in
             viewModel.query = ""
@@ -83,6 +84,7 @@ struct SearchResultRow: View {
             AuthenticatedImage(serverURL: serverURL, comicId: id, thumbnail: true)
                 .frame(width: 50, height: 70)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .bookCoverSource(id: "comic-\(id)")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)

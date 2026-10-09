@@ -9,12 +9,16 @@ struct MainTabView: View {
     @Environment(APIClient.self) private var api
     @State private var selectedTab = 0
     @State private var pendingProgressSyncTask: Task<Void, Never>?
+    @Namespace private var homeCoverNamespace
+    @Namespace private var favoritesCoverNamespace
+    @Namespace private var downloadsCoverNamespace
 
     var body: some View {
         TabView(selection: $selectedTab) {
             NavigationStack {
                 HomeView()
             }
+            .environment(\.bookCoverNamespace, homeCoverNamespace)
             .tabItem {
                 Label("书架", systemImage: "books.vertical.fill")
             }
@@ -23,6 +27,7 @@ struct MainTabView: View {
             NavigationStack {
                 FavoritesView()
             }
+            .environment(\.bookCoverNamespace, favoritesCoverNamespace)
             .tabItem {
                 Label("收藏", systemImage: "heart.fill")
             }
@@ -39,6 +44,7 @@ struct MainTabView: View {
             NavigationStack {
                 DownloadListView()
             }
+            .environment(\.bookCoverNamespace, downloadsCoverNamespace)
             .tabItem {
                 Label("下载", systemImage: "arrow.down.circle.fill")
             }

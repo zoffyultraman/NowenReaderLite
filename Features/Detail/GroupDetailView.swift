@@ -284,6 +284,7 @@ struct GroupComicRail: View {
                             comicId: comic.id,
                             groupContext: contextProvider(comic)
                         )
+                        .bookCoverDestination(id: "comic-\(comic.id)")
                     } label: {
                         VolumeCardView(comic: comic, serverURL: serverURL)
                             .frame(width: cardWidth, height: cardHeight, alignment: .top)
@@ -312,6 +313,7 @@ struct VolumeCardView: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 112, height: 150)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .bookCoverSource(id: "comic-\(comic.id)")
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
                             .stroke(.gray.opacity(0.15), lineWidth: 0.5)
@@ -357,6 +359,7 @@ struct VolumeListRowView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 80)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .bookCoverSource(id: "comic-\(comic.id)")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(comic.title)
@@ -575,6 +578,7 @@ struct SeriesDetailView: View {
                                             comicId: item.comic.id,
                                             groupContext: viewModel.readingContext(for: item)
                                         )
+                                        .bookCoverDestination(id: "comic-\(item.comic.id)")
                                     } label: {
                                         SeriesUnitCardView(item: item, serverURL: api.serverURL)
                                     }
@@ -592,6 +596,7 @@ struct SeriesDetailView: View {
                                                 comicId: item.comic.id,
                                                 groupContext: viewModel.readingContext(for: item)
                                             )
+                                            .bookCoverDestination(id: "comic-\(item.comic.id)")
                                         } label: {
                                             SeriesUnitListRowView(item: item, serverURL: api.serverURL)
                                                 .padding(.horizontal, 20)
@@ -677,6 +682,7 @@ struct SeriesHeaderView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 110, height: 155)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .bookCoverSource(id: "series-reader-\(series.id)")
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text(series.title)
@@ -726,6 +732,7 @@ struct SeriesHeaderView: View {
             if let continueItem {
                 NavigationLink {
                     continueItem.comic.readerView(groupContext: contextProvider(continueItem))
+                        .bookCoverDestination(id: "series-reader-\(series.id)")
                 } label: {
                     let hasStarted = continueItem.comic.lastReadPage > 0 || continueItem.comic.readingStatus == "reading"
                     Label(hasStarted ? "继续阅读" : "开始阅读", systemImage: "play.fill")
@@ -881,6 +888,7 @@ struct SeriesUnitCardView: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(height: 180)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .bookCoverSource(id: "comic-\(item.comic.id)")
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
                             .stroke(.gray.opacity(0.15), lineWidth: 0.5)
@@ -933,6 +941,7 @@ struct SeriesUnitListRowView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: 56, height: 80)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .bookCoverSource(id: "comic-\(item.comic.id)")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)

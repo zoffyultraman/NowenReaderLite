@@ -65,8 +65,10 @@ struct HomeView: View {
                 GroupDetailView(groupId: route.id, contentType: route.contentType)
             } else if let seriesId = Comic.seriesId(from: value) {
                 SeriesDetailView(seriesId: seriesId)
+                    .bookCoverDestination(id: "comic-\(value)")
             } else {
                 ComicDetailView(comicId: value)
+                    .bookCoverDestination(id: "comic-\(value)")
             }
         }
         .task(id: HomeRefreshID(
@@ -472,6 +474,7 @@ struct ContinueReadingSection: View {
                             ForEach(items) { comic in
                                 NavigationLink {
                                     comic.readerView()
+                                        .bookCoverDestination(id: "continue-\(comic.id)")
                                 } label: {
                                     ContinueReadingCard(
                                         id: comic.id,
@@ -572,6 +575,7 @@ struct ContinueReadingCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                         .padding(7)
                 }
+                .bookCoverSource(id: "continue-\(id)")
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
@@ -1056,6 +1060,7 @@ struct SeriesShelfCardView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(comic.title)
+        .bookCoverSource(id: "comic-\(comic.id)")
         .accessibilityValue("\(comic.pageCount) 项，进度 \(comic.seriesProgress)%")
     }
 }
@@ -1090,6 +1095,7 @@ struct SeriesShelfListRowView: View {
             .aspectRatio(contentMode: .fill)
             .frame(width: 56, height: 75)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .bookCoverSource(id: "comic-\(comic.id)")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(comic.title)

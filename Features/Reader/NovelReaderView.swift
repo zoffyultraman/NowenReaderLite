@@ -18,6 +18,7 @@ struct NovelReaderView: View {
     private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
     @State private var restoredChapter = -1
     @State private var repaginationAnchor: (comicId: String, chapter: Int, progress: Double)?
+    @State private var loadAttempt = 0
 
     var body: some View {
         GeometryReader { geometry in
@@ -79,9 +80,18 @@ struct NovelReaderView: View {
                         }
                     )
                     .ignoresSafeArea()
+                } else {
+                    VStack(spacing: 16) {
+                        Text("无法加载正文")
+                            .font(.headline)
+                        Button("重试") { loadAttempt += 1 }
+                            .buttonStyle(.bordered)
+                        Button("返回") { dismiss() }
+                    }
+                    .foregroundStyle(viewModel.darkMode ? Color.white : Color.primary)
                 }
             }
-            .task {
+            .task(id: loadAttempt) {
                 // 从 UserDefaults 恢复字号设置（避免在 @State 初始化时产生副作用）
                 fontSize = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
                 viewModel.setPaginationSize(paginationSize)
@@ -93,6 +103,7 @@ struct NovelReaderView: View {
                 // 以本地记录为准，没有记录则用 initialChapter
                 let savedChapter = recordManager.load(comicId: viewModel.currentComicId.isEmpty ? comicId : viewModel.currentComicId)?.chapter ?? initialChapter
                 await viewModel.load(comicId: comicId, chapter: savedChapter, fontSize: fontSize, groupContext: groupContext)
+                guard !Task.isCancelled else { return }
                 restorePosition()
             }
             .onDisappear {
@@ -126,6 +137,7 @@ struct NovelReaderView: View {
                     .frame(width: max(88, geometry.size.width * 0.4))
                     .contentShape(Rectangle())
                     .onTapGesture { showOverlay.toggle() }
+                    .allowsHitTesting(!viewModel.isLoading && !viewModel.pages.isEmpty)
             }
             .overlay(alignment: .top) {
                 topOverlay
@@ -1009,7 +1021,7 @@ extension Notification.Name {
 @Observable
 final class NovelReaderViewModel {
     var chapterContent: ChapterContent?
-    var isLoading = false
+    var isLoading = true
     var currentChapter = 0
     var totalChapters: Int = 0
     var darkMode = false
@@ -1088,6 +1100,7 @@ final class NovelReaderViewModel {
         chapterTitles = cache.chapterTitles
         chapterEntries = cache.chapterEntries
         await repaginate(fontSize: fontSize)
+        guard !Task.isCancelled else { return false }
         updateActivityProgress()
         isLoading = false
         return true
@@ -1114,6 +1127,7 @@ final class NovelReaderViewModel {
             cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
             return
         }
+        guard !Task.isCancelled else { return }
 
         self.currentChapter = chapter
         isLoading = true
@@ -1122,6 +1136,7 @@ final class NovelReaderViewModel {
                 comicId: comicId,
                 index: chapter
             )
+            guard !Task.isCancelled else { return }
             if let content = chapterContent {
                 cache.put(content, for: chapter)
             }
@@ -1137,9 +1152,12 @@ final class NovelReaderViewModel {
                 }
             }
             cache.evict(keeping: chapter)
+            guard !Task.isCancelled else { return }
             await repaginate(fontSize: fontSize)
+            guard !Task.isCancelled else { return }
             updateActivityProgress()
         } catch {
+            guard !Task.isCancelled else { return }
             AppLogger.error("加载章节失败: \(error)")
         }
         isLoading = false
@@ -1308,7 +1326,11 @@ final class NovelReaderViewModel {
             self.paginationGeneration += 1
         }
         paginationTask = task
-        await task.value
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     func relativePageInChapter(_ absolutePage: Int) -> Int {

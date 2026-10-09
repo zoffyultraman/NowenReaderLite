@@ -35,14 +35,18 @@ final class ComicReaderViewModel {
         self.currentPage = initialPage
         do {
             let pages = try await api.fetchPages(comicId: comicId)
+            guard !Task.isCancelled else { return }
             totalPages = pages.totalPages
+            currentPage = min(max(initialPage, 0), max(totalPages - 1, 0))
             isLoading = false
             startActivity()
         } catch {
+            guard !Task.isCancelled else { return }
             AppLogger.log("fetchPages 失败: \(error.localizedDescription)")
             // 离线 fallback：从本地元数据读取页数
             if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
                 totalPages = meta.pageCount
+                currentPage = min(max(initialPage, 0), totalPages - 1)
                 AppLogger.log("离线 fallback 成功: \(comicId), \(meta.pageCount) 页")
                 startActivity()
             } else {

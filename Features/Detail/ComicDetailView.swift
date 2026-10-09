@@ -178,6 +178,7 @@ struct ComicCoverInfoSection: View {
                 .frame(width: 130, height: 190)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+                .bookCoverSource(id: "reader-\(comicId)")
 
             VStack(alignment: .leading, spacing: 10) {
                 Text(title)
@@ -270,6 +271,7 @@ struct ComicActionButtonsSection: View {
             // 阅读按钮
             NavigationLink {
                 comic.readerView(groupContext: groupContext)
+                    .bookCoverDestination(id: "reader-\(comic.id)")
             } label: {
                 Label(
                     comic.lastReadPage > 0 ? "继续阅读" : "开始阅读",

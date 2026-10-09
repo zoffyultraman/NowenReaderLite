@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EE6000000000000000000002 /* BookOpeningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE6000000000000000000001 /* BookOpeningView.swift */; };
 		0228C26BE452D04A047B2BEC /* ComicDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 800BA4DE21472DAEE9BD72A5 /* ComicDetailView.swift */; };
 		27452073BF7E16FFDA22C3D7 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD448C133F7E79A1106AC69D /* LoginView.swift */; };
 		2B782AD22E6F268347228108 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3A15C46BF0124D64A8C3C5F /* SearchView.swift */; };
@@ -57,6 +58,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		EE6000000000000000000001 /* BookOpeningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookOpeningView.swift; sourceTree = "<group>"; };
 		EE5000000000000000000001 /* ReaderWarmupSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWarmupSession.swift; sourceTree = "<group>"; };
 		0371F5659545954E0A349421 /* NowenReaderLite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NowenReaderLite.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = SOURCE_ROOT; };
@@ -233,6 +235,7 @@
 		AABB00020000000000000005 /* Reader */ = {
 			isa = PBXGroup;
 			children = (
+				EE6000000000000000000001 /* BookOpeningView.swift */,
 				91346E6AC3EF13E05ABD82E0 /* ComicReaderView.swift */,
 				CC0000000000000000000011 /* ComicReaderViewModel.swift */,
 				57BAE200908585CFAEF2F29F /* NovelReaderView.swift */,
@@ -405,6 +408,7 @@
 				4312C00E3E754FF97B189E71 /* LibraryView.swift in Sources */,
 				FF112233445566778899AABB /* HomeView.swift in Sources */,
 				DA7EA316D1A45103D7500886 /* ComicReaderView.swift in Sources */,
+				EE6000000000000000000002 /* BookOpeningView.swift in Sources */,
 				95882555E3015F53A499BA35 /* NovelReaderView.swift in Sources */,
 				A8CB77540EE3B2CA7781AAEE /* PDFReaderView.swift in Sources */,
 				2B782AD22E6F268347228108 /* SearchView.swift in Sources */,

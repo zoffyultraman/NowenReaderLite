@@ -57,6 +57,7 @@ struct FavoritesMainContent: View {
         .navigationBarTitleDisplayMode(.large)
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
+                .bookCoverDestination(id: "comic-\(comicId)")
         }
         .task(id: api.selectedLibraryId) {
             await viewModel.loadFavorites()
