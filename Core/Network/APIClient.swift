@@ -17,10 +17,16 @@ final class APIClient: ReaderWarmupClient {
     private(set) var serverURL: String
     private(set) var routeVerification: ServerRouteVerification
     private(set) var routeVerificationMessage: String?
+    private(set) var routeLatencies: [String: ServerRouteLatency] = [:]
+    private(set) var routeLatenciesMeasuredAt: Date?
+    private(set) var isMeasuringRouteLatencies = false
     private(set) var hasConfiguredAPIKey: Bool
     @ObservationIgnored private var apiKey: String?
     @ObservationIgnored private var cookiePreferredRoutes: Set<String>
     @ObservationIgnored private var routeIdentityCache: ServerRouteIdentityCache
+    @ObservationIgnored private var routeSelectionTask: Task<ServerRouteSelection, Never>?
+    @ObservationIgnored private var routeSelectionID = UUID()
+    @ObservationIgnored private var lastRouteSwitch: ContinuousClock.Instant?
     var isLoggedIn: Bool = false
     var currentUser: AuthUser?
     /// 断网离线模式：有历史登录记录但服务器不可达
@@ -155,6 +161,7 @@ final class APIClient: ReaderWarmupClient {
                     }
                 } else {
                     // 无网络，立即进入离线模式
+                    self.markRoutesUnavailable()
                     self.isNetworkReachable = false
                     self.networkRecovered = false
                     if self.hasLocalAuthentication {
@@ -204,6 +211,9 @@ final class APIClient: ReaderWarmupClient {
         case .backup: targetURL = normalizedBackup ?? primary
         }
 
+        cancelRouteSelection()
+        routeLatencies = [:]
+        routeLatenciesMeasuredAt = nil
         primaryServerURL = primary
         backupServerURL = normalizedBackup
         routeMode = effectiveMode
@@ -222,6 +232,7 @@ final class APIClient: ReaderWarmupClient {
         UserDefaults.standard.set(normalizedBackup, forKey: UserDefaultsKey.backupServerURL)
         UserDefaults.standard.set(effectiveMode.rawValue, forKey: UserDefaultsKey.serverRouteMode)
         activateRoute(targetURL, copyAuthentication: isSameProfile)
+        lastRouteSwitch = nil
     }
 
     func matchesServerProfile(_ primaryURL: String) -> Bool {
@@ -350,45 +361,7 @@ final class APIClient: ReaderWarmupClient {
 
     func testConnection(_ url: String) async -> Bool {
         guard let trimmed = Self.normalizedServerURL(url) else { return false }
-        return await withTaskGroup(of: Bool.self) { group in
-            // /api/health HEAD
-            if let healthURL = URL(string: "\(trimmed)/api/health") {
-                group.addTask {
-                    var request = URLRequest(url: healthURL)
-                    request.httpMethod = "HEAD"
-                    request.timeoutInterval = 2
-                    guard let (_, response) = try? await URLSession.shared.data(for: request),
-                          let statusCode = (response as? HTTPURLResponse)?.statusCode else {
-                        return false
-                    }
-                    return (200..<300).contains(statusCode)
-                }
-            }
-            // /api/auth/me GET
-            if let authURL = URL(string: "\(trimmed)/api/auth/me") {
-                group.addTask {
-                    var request = URLRequest(url: authURL)
-                    request.httpMethod = "GET"
-                    request.timeoutInterval = 2
-                    request.setValue("application/json", forHTTPHeaderField: "Accept")
-                    guard let (_, response) = try? await URLSession.shared.data(for: request),
-                          let http = response as? HTTPURLResponse,
-                          (200..<300).contains(http.statusCode)
-                            || http.statusCode == 401
-                            || http.statusCode == 403 else {
-                        return false
-                    }
-                    return true
-                }
-            }
-            for await result in group {
-                if result {
-                    group.cancelAll()
-                    return true
-                }
-            }
-            return false
-        }
+        return await ServerRouteProbe.measure(trimmed).milliseconds != nil
     }
 
     /// 使用同一份现有凭据比较两条线路返回的用户与书库身份。
@@ -716,36 +689,71 @@ final class APIClient: ReaderWarmupClient {
         }
     }
 
-    /// 自动模式并发探测可达性，身份一致时优先使用可达的内网线路。
+    /// 自动模式并发测速，身份一致时选择明显更快的线路；手动模式只更新测速结果。
     @discardableResult
     func selectReachableRoute() async -> Bool {
         let primaryURL = primaryServerURL
         let backupURL = backupServerURL
         let mode = routeMode
-        let selectedURL: String?
-        switch routeMode {
-        case .primary:
-            selectedURL = await testConnection(primaryURL) ? primaryURL : nil
-        case .backup:
-            if let backupURL {
-                selectedURL = await testConnection(backupURL) ? backupURL : nil
-            } else {
-                selectedURL = nil
+        let selectionID: UUID
+        let task: Task<ServerRouteSelection, Never>
+        if let pendingTask = routeSelectionTask {
+            selectionID = routeSelectionID
+            task = pendingTask
+        } else {
+            selectionID = UUID()
+            routeSelectionID = selectionID
+            let currentURL = serverURL
+            let verification = routeVerification
+            let allowsLatencySwitch = lastRouteSwitch.map {
+                $0.duration(to: .now) >= ServerRouteSelector.reevaluationInterval
+            } ?? true
+            task = Task { @MainActor [self] in
+                switch mode {
+                case .automatic:
+                    return await ServerRouteSelector.selectAutomaticRoute(
+                        primaryURL: primaryURL, backupURL: backupURL, currentURL: currentURL,
+                        verification: verification, allowsLatencySwitch: allowsLatencySwitch,
+                        measureLatency: { await ServerRouteProbe.measure($0) },
+                        verifyPair: {
+                            guard self.routeSelectionID == selectionID, !Task.isCancelled else {
+                                return .unverified
+                            }
+                            return await self.refreshRouteVerification()
+                        }
+                    )
+                case .primary, .backup:
+                    let latencies = await ServerRouteSelector.measureRoutes(
+                        primaryURL: primaryURL, backupURL: backupURL,
+                        measureLatency: { await ServerRouteProbe.measure($0) }
+                    )
+                    let target = mode == .primary ? primaryURL : backupURL
+                    return ServerRouteSelection(
+                        selectedURL: target.flatMap { latencies[$0]?.milliseconds == nil ? nil : $0 },
+                        latencies: latencies
+                    )
+                }
             }
-        case .automatic:
-            selectedURL = await ServerRouteSelector.selectAutomaticRoute(
-                primaryURL: primaryURL,
-                backupURL: backupURL,
-                currentURL: serverURL,
-                verification: routeVerification,
-                testConnection: { [self] in await testConnection($0) },
-                verifyPair: { [self] in await refreshRouteVerification() }
-            )
+            routeSelectionTask = task
+            isMeasuringRouteLatencies = true
         }
 
-        // 探测期间切换服务器或模式时，不应用旧配置的结果。
-        guard primaryServerURL == primaryURL, backupServerURL == backupURL, routeMode == mode else {
+        let result = await task.value
+        // 同一配置的并发请求共享测速；旧配置、断网前或故障切换前的结果不可覆盖新状态。
+        guard routeSelectionID == selectionID,
+              primaryServerURL == primaryURL, backupServerURL == backupURL, routeMode == mode else {
             return isNetworkReachable
+        }
+        routeSelectionTask = nil
+        isMeasuringRouteLatencies = false
+        routeLatencies = result.latencies
+        routeLatenciesMeasuredAt = Date()
+        // 测速期间手动验证若发现身份不一致，不能应用较早的已验证快照。
+        let selectedURL: String?
+        if mode == .automatic, routeVerification == .mismatch {
+            selectedURL = result.latencies[primaryURL]?.milliseconds == nil ? nil : primaryURL
+        } else {
+            selectedURL = result.selectedURL
         }
         if let selectedURL {
             activateRoute(selectedURL, copyAuthentication: routeVerification != .mismatch)
@@ -754,6 +762,22 @@ final class APIClient: ReaderWarmupClient {
         }
         isNetworkReachable = false
         return false
+    }
+
+    private func cancelRouteSelection() {
+        routeSelectionTask?.cancel()
+        routeSelectionTask = nil
+        routeSelectionID = UUID()
+        isMeasuringRouteLatencies = false
+    }
+
+    private func markRoutesUnavailable() {
+        cancelRouteSelection()
+        routeLatencies = Dictionary(
+            uniqueKeysWithValues: Set([primaryServerURL, backupServerURL].compactMap { $0 })
+                .filter { !$0.isEmpty }.map { ($0, .unreachable) }
+        )
+        routeLatenciesMeasuredAt = Date()
     }
 
     private func activateRoute(_ newURL: String, copyAuthentication: Bool) {
@@ -769,6 +793,7 @@ final class APIClient: ReaderWarmupClient {
             copySessionCookie(from: previousURL, to: newURL)
         }
         serverURL = newURL
+        lastRouteSwitch = .now
         UserDefaults.standard.set(
             newURL,
             forKey: UserDefaultsKey.activeServerRoute(for: primaryServerURL)
@@ -804,10 +829,18 @@ final class APIClient: ReaderWarmupClient {
             return serverURL
         }
         let alternate = failedURL == primaryServerURL ? backupServerURL : primaryServerURL
-        guard await testConnection(alternate) else { return nil }
+        let primaryURL = primaryServerURL
+        let latency = await ServerRouteProbe.measure(alternate)
+        guard latency.milliseconds != nil,
+              primaryServerURL == primaryURL, self.backupServerURL == backupServerURL,
+              routeMode == .automatic, routeVerification != .mismatch else { return nil }
         if serverURL != failedURL {
             return serverURL
         }
+        cancelRouteSelection()
+        routeLatencies[failedURL] = .unreachable
+        routeLatencies[alternate] = latency
+        routeLatenciesMeasuredAt = Date()
         activateRoute(alternate, copyAuthentication: true)
         isNetworkReachable = true
         isOfflineMode = false
@@ -844,7 +877,7 @@ final class APIClient: ReaderWarmupClient {
                 isLoggedIn = true
                 isOfflineMode = false
                 markHasLoggedInBefore()
-                await preferLocalRouteAfterAuthentication()
+                await selectFastestRouteAfterAuthentication()
                 await fetchSiteSettings()
             } else {
                 // 服务器明确返回未登录 → 清除历史记录
@@ -883,7 +916,7 @@ final class APIClient: ReaderWarmupClient {
         isLoggedIn = true
         isOfflineMode = false
         markHasLoggedInBefore()
-        await preferLocalRouteAfterAuthentication()
+        await selectFastestRouteAfterAuthentication()
         await fetchSiteSettings()
         return resp.user
     }
@@ -899,11 +932,11 @@ final class APIClient: ReaderWarmupClient {
         isLoggedIn = true
         isOfflineMode = false
         markHasLoggedInBefore()
-        await preferLocalRouteAfterAuthentication()
+        await selectFastestRouteAfterAuthentication()
         return resp.user
     }
 
-    private func preferLocalRouteAfterAuthentication() async {
+    private func selectFastestRouteAfterAuthentication() async {
         guard routeMode == .automatic,
               backupServerURL != nil,
               routeVerification != .verified else {
@@ -965,7 +998,7 @@ final class APIClient: ReaderWarmupClient {
 
     // MARK: - 连接测试
 
-    /// 测试服务器是否可达（并发检测两个端点，谁先返回用谁）
+    /// 并发检测已配置线路的可达性与 HTTP 响应延迟。
     func testServerReachable() async -> Bool {
         await selectReachableRoute()
     }
@@ -989,6 +1022,7 @@ final class APIClient: ReaderWarmupClient {
                         self.isOfflineMode = true
                     }
                 } else {
+                    self.markRoutesUnavailable()
                     self.isNetworkReachable = false
                     self.networkRecovered = false
                     if self.hasLocalAuthentication {
@@ -1003,16 +1037,25 @@ final class APIClient: ReaderWarmupClient {
     /// App 回到前台时重新评估自动线路，覆盖网络路径未触发回调的情况。
     func reevaluateAutomaticRoute() async {
         guard routeMode == .automatic, backupServerURL != nil else { return }
+        await refreshRouteLatencies()
+    }
+
+    /// 设置页可在任意线路模式下测速，只有自动模式允许根据结果改变当前线路。
+    func refreshRouteLatencies() async {
         let previousURL = serverURL
+        let wasOffline = isOfflineMode
+        let primaryURL = primaryServerURL
+        let backupURL = backupServerURL
         let reachable = await selectReachableRoute()
-        isNetworkReachable = reachable
+        guard primaryServerURL == primaryURL, backupServerURL == backupURL else { return }
         guard reachable else {
+            networkRecovered = false
             if hasLocalAuthentication { isOfflineMode = true }
             return
         }
-        if serverURL != previousURL {
+        if serverURL != previousURL || wasOffline {
             await checkAuth()
-            networkRecovered = true
+            networkRecovered = !isOfflineMode
         }
     }
 

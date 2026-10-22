@@ -10,12 +10,65 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) thr
 
 @MainActor
 private final class RouteProbe {
-    var replies: [String: CheckedContinuation<Bool, Never>] = [:]
+    var replies: [String: CheckedContinuation<ServerRouteLatency, Never>] = [:]
     var verificationCount = 0
 
-    func test(_ url: String) async -> Bool {
+    func test(_ url: String) async -> ServerRouteLatency {
         await withCheckedContinuation { replies[url] = $0 }
     }
+}
+
+private final class ProbeRequestStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var statuses: [String: Int] = [:]
+    private var recordedRequests: [URLRequest] = []
+    private var failsConnection = false
+
+    func configure(health: Int = 500, auth: Int = 500, failsConnection: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        statuses = ["/api/health": health, "/api/auth/me": auth]
+        recordedRequests = []
+        self.failsConnection = failsConnection
+    }
+
+    func response(for request: URLRequest) -> Result<Int, URLError> {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedRequests.append(request)
+        return failsConnection ? .failure(URLError(.timedOut)) : .success(statuses[request.url?.path ?? ""] ?? 404)
+    }
+
+    var requests: [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedRequests
+    }
+}
+
+private final class ProbeURLProtocol: URLProtocol, @unchecked Sendable {
+    static let store = ProbeRequestStore()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        switch Self.store.response(for: request) {
+        case .success(let status):
+            guard let url = request.url,
+                  let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data())
+            client?.urlProtocolDidFinishLoading(self)
+        case .failure(let error):
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }
 
 @main
@@ -42,7 +95,13 @@ private enum ServerRouteTests {
         try await localRouteThroughVPN()
         try await offlineAndSingleRoute()
         try await restoredIdentityOutsideLAN()
-        print("PASS: \(addressCount) address cases, 9 automatic route scenarios, fingerprint compatibility, verification diagnostics and 5 identity cache scenarios")
+        try await fasterPublicRoute()
+        try await latencyHysteresis()
+        try await switchCooldown()
+        try await measuredResultsAndCachedIdentity()
+        try await latencyProbeRequests()
+        try await cancelledSelection()
+        print("PASS: \(addressCount) address cases, 15 automatic route scenarios, HTTP latency probes, fingerprint compatibility, verification diagnostics and 5 identity cache scenarios")
     }
 
     private static func identityPersistenceAndTimeout() throws {
@@ -125,10 +184,10 @@ private enum ServerRouteTests {
         let selected = await ServerRouteSelector.selectAutomaticRoute(
             primaryURL: remote, backupURL: local, currentURL: local,
             verification: restored.status(primaryURL: remote, backupURL: local),
-            testConnection: { $0 == remote },
+            measureLatency: { $0 == remote ? .reachable(milliseconds: 100) : .unreachable },
             verifyPair: { throwVerificationFailure() }
         )
-        try expect(selected == remote, "在外网重启后应直接使用可达公网线路，不等待内网身份接口")
+        try expect(selected.selectedURL == remote, "在外网重启后应直接使用可达公网线路，不等待内网身份接口")
     }
 
     private static func fingerprintCompatibility() throws {
@@ -241,7 +300,7 @@ private enum ServerRouteTests {
             await ServerRouteSelector.selectAutomaticRoute(
                 primaryURL: remote, backupURL: local, currentURL: remote,
                 verification: .unverified,
-                testConnection: { await probe.test($0) },
+                measureLatency: { await probe.test($0) },
                 verifyPair: {
                     probe.verificationCount += 1
                     return .verified
@@ -255,15 +314,17 @@ private enum ServerRouteTests {
         let startedTogether = probe.replies.count == 2
         if !startedTogether {
             // 释放已开始的请求，避免失败时留下悬挂的 continuation。
-            for reply in probe.replies.values { reply.resume(returning: false) }
+            for reply in probe.replies.values { reply.resume(returning: .unreachable) }
             probe.replies.removeAll()
             selection.cancel()
             throw TestFailure.assertion("两条线路必须并发探测，公网请求不能等待内网超时后才开始")
         }
-        probe.replies.removeValue(forKey: remote)?.resume(returning: true)
-        probe.replies.removeValue(forKey: local)?.resume(returning: false)
+        probe.replies.removeValue(forKey: remote)?.resume(returning: .reachable(milliseconds: 100))
+        probe.replies.removeValue(forKey: local)?.resume(returning: .unreachable)
         let selected = await selection.value
-        try expect(selected == remote, "其他 Wi-Fi 下内网不可达时应使用公网")
+        try expect(selected.selectedURL == remote, "其他 Wi-Fi 下内网不可达时应使用公网")
+        try expect(selected.latencies[remote]?.milliseconds == 100, "选择结果应保留公网线路的实测延迟")
+        try expect(selected.latencies[local] == .unreachable, "选择结果应保留内网不可达状态")
         try expect(probe.verificationCount == 0, "内网不可达时不能继续等待两条线路的身份接口")
     }
 
@@ -271,7 +332,7 @@ private enum ServerRouteTests {
     private static func reachableLocalRoute() async throws {
         for (primary, backup) in [(remote, local), (local, remote)] {
             let selected = await select(primary: primary, backup: backup, reachable: [local, remote])
-            try expect(selected == local, "可达且身份一致时应使用内网，不受主备顺序影响")
+            try expect(selected == local, "内网延迟明显更低时应使用内网，不受主备顺序影响")
         }
     }
 
@@ -319,14 +380,133 @@ private enum ServerRouteTests {
         try expect(offline == nil, "两条线路均不可达时应返回离线")
         let single = await ServerRouteSelector.selectAutomaticRoute(
             primaryURL: remote, backupURL: nil, currentURL: remote, verification: .notConfigured,
-            testConnection: { $0 == remote },
+            measureLatency: { $0 == remote ? .reachable(milliseconds: 100) : .unreachable },
             verifyPair: { throwVerificationFailure() }
         )
-        try expect(single == remote, "单线路应直接探测，不验证线路对")
+        try expect(single.selectedURL == remote, "单线路应直接探测，不验证线路对")
+        try expect(single.latencies.count == 1, "单线路也应返回延迟供设置页显示")
+    }
+
+    @MainActor
+    private static func fasterPublicRoute() async throws {
+        for (primary, backup) in [(remote, local), (local, remote)] {
+            let selected = await select(
+                primary: primary, backup: backup, current: local, reachable: [local, remote],
+                milliseconds: [local: 200, remote: 30]
+            )
+            try expect(selected == remote, "公网明显更快时应选择公网，不能固定优先内网或主线路")
+        }
+        let unverified = await select(
+            current: local, reachable: [local, remote], result: .authenticationFailed,
+            milliseconds: [local: 200, remote: 30]
+        )
+        try expect(unverified == local, "身份未通过验证时，延迟更低也不能抢占当前可达线路")
+    }
+
+    @MainActor
+    private static func latencyHysteresis() async throws {
+        let cases: [(Double, Double, String)] = [
+            (100, 85, remote), (100, 81, remote), (100, 80, local),
+            (1_000, 850, remote), (1_000, 800, local),
+            (12, 1, remote), (100, 100, remote), (100, 150, remote),
+        ]
+        for (current, candidate, expected) in cases {
+            let selected = await select(
+                reachable: [local, remote], milliseconds: [remote: current, local: candidate]
+            )
+            try expect(selected == expected, "必须同时满足至少快 20 ms 和 20%，平局或小幅波动应保持当前连接")
+        }
+        let initial = await select(
+            current: "https://old.example.com", reachable: [local, remote],
+            milliseconds: [remote: 12, local: 10], allowsLatencySwitch: false
+        )
+        try expect(initial == local, "没有当前可达线路时应直接选择最低延迟，无需满足切换阈值")
+        for invalid in [Double.nan, .infinity, -1] {
+            let selected = await select(
+                reachable: [local, remote], milliseconds: [remote: 100, local: invalid]
+            )
+            try expect(selected == remote, "非有限数或负延迟不能被选为可用线路")
+        }
+    }
+
+    @MainActor
+    private static func switchCooldown() async throws {
+        let stable = await select(
+            reachable: [local, remote], milliseconds: [remote: 200, local: 10],
+            allowsLatencySwitch: false
+        )
+        try expect(stable == remote, "切换后 30 秒内应保持仍可达的当前连接")
+        let failed = await select(current: local, reachable: [remote], allowsLatencySwitch: false)
+        try expect(failed == remote, "当前线路不可达时必须绕过冷却，立即选择可用线路")
+        let mismatch = await select(
+            current: local, reachable: [local], previous: .mismatch, allowsLatencySwitch: false
+        )
+        try expect(mismatch == nil, "故障切换不能绕过已知身份不一致的限制")
+    }
+
+    @MainActor
+    private static func measuredResultsAndCachedIdentity() async throws {
+        let result = await ServerRouteSelector.selectAutomaticRoute(
+            primaryURL: remote, backupURL: local, currentURL: remote, verification: .verified,
+            measureLatency: { .reachable(milliseconds: $0 == local ? 10 : 200) },
+            verifyPair: { throwVerificationFailure() }
+        )
+        try expect(result.selectedURL == local, "已验证身份应直接参与延迟选择，无需每轮重复验证")
+        try expect(result.latencies[local]?.milliseconds == 10, "应保留备用线路延迟")
+        try expect(result.latencies[remote]?.milliseconds == 200, "应保留主线路延迟")
+        let mismatched = await ServerRouteSelector.selectAutomaticRoute(
+            primaryURL: remote, backupURL: local, currentURL: local, verification: .mismatch,
+            measureLatency: { .reachable(milliseconds: $0 == local ? 1 : 500) },
+            verifyPair: { throwVerificationFailure() }
+        )
+        try expect(mismatched.selectedURL == remote, "已知身份不一致时只能使用主线路")
+        try expect(mismatched.latencies.count == 2, "禁止互切时仍应显示两条线路的实测延迟")
+    }
+
+    private static func latencyProbeRequests() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProbeURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        for (health, auth, isReachable) in [(204, 500, true), (405, 401, true), (401, 403, true), (500, 404, false), (401, 500, false)] {
+            ProbeURLProtocol.store.configure(health: health, auth: auth)
+            let result = await ServerRouteProbe.measure(remote, session: session)
+            try expect((result.milliseconds != nil) == isReachable, "健康检查或认证端点的有效响应才能用于测速")
+            let requests = ProbeURLProtocol.store.requests
+            try expect(!requests.isEmpty, "测速应发出实际请求")
+            for request in requests {
+                try expect(request.cachePolicy == .reloadIgnoringLocalAndRemoteCacheData, "测速必须绕过本地和远端缓存")
+                try expect(request.timeoutInterval == 2, "不可达线路必须有较短超时")
+                try expect(request.httpMethod == (request.url?.path == "/api/health" ? "HEAD" : "GET"), "探测方法应兼容旧版服务端")
+            }
+        }
+        ProbeURLProtocol.store.configure(failsConnection: true)
+        let failed = await ServerRouteProbe.measure(remote, session: session)
+        try expect(failed == .unreachable, "连接超时必须显示不可达，不能生成虚假的低延迟")
+        ProbeURLProtocol.store.configure()
+        for invalid in ["", "file:///etc/hosts", "https://user:password@example.com"] {
+            let result = await ServerRouteProbe.measure(invalid, session: session)
+            try expect(result == .unreachable, "无效地址或包含凭据的地址不应参与测速")
+        }
+        try expect(ProbeURLProtocol.store.requests.isEmpty, "无效地址不能发出网络请求")
+    }
+
+    @MainActor
+    private static func cancelledSelection() async throws {
+        let task = Task {
+            await ServerRouteSelector.selectAutomaticRoute(
+                primaryURL: remote, backupURL: local, currentURL: remote, verification: .unverified,
+                measureLatency: { _ in .reachable(milliseconds: 10) },
+                verifyPair: { throwVerificationFailure() }
+            )
+        }
+        task.cancel()
+        let result = await task.value
+        try expect(result.selectedURL == nil, "取消的旧测速不能再产生切换结果或触发身份验证")
     }
 
     private static func throwVerificationFailure() -> ServerRouteVerification {
-        fatalError("单线路不应调用线路对验证")
+        fatalError("单线路、已有身份结果或已取消时不应调用线路对验证")
     }
 
     @MainActor
@@ -336,12 +516,20 @@ private enum ServerRouteTests {
         current: String = remote,
         reachable: Set<String>,
         previous: ServerRouteVerification = .unverified,
-        result: ServerRouteVerification = .verified
+        result: ServerRouteVerification = .verified,
+        milliseconds: [String: Double] = [:],
+        allowsLatencySwitch: Bool = true
     ) async -> String? {
-        await ServerRouteSelector.selectAutomaticRoute(
+        let selection = await ServerRouteSelector.selectAutomaticRoute(
             primaryURL: primary, backupURL: backup, currentURL: current, verification: previous,
-            testConnection: { reachable.contains($0) },
+            allowsLatencySwitch: allowsLatencySwitch,
+            measureLatency: {
+                reachable.contains($0)
+                    ? .reachable(milliseconds: milliseconds[$0] ?? ($0 == local ? 20 : 200))
+                    : .unreachable
+            },
             verifyPair: { result }
         )
+        return selection.selectedURL
     }
 }

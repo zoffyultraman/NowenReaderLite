@@ -1,44 +1,134 @@
 import Foundation
 import Darwin
 
+enum ServerRouteLatency: Equatable, Sendable {
+    case reachable(milliseconds: Double)
+    case unreachable
+
+    var milliseconds: Double? {
+        guard case .reachable(let value) = self, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+}
+
+struct ServerRouteSelection: Sendable {
+    let selectedURL: String?
+    let latencies: [String: ServerRouteLatency]
+}
+
+enum ServerRouteProbe {
+    /// 测量实际 HTTP 响应时间；不使用缓存，也不依赖 ICMP 或网络接口类型。
+    static func measure(_ baseURL: String, session: URLSession = .shared) async -> ServerRouteLatency {
+        guard let components = URLComponents(string: baseURL),
+              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
+              components.host?.isEmpty == false,
+              components.user == nil,
+              !Task.isCancelled else { return .unreachable }
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return await withTaskGroup(of: ServerRouteLatency.self) { group in
+            for (path, method) in [("/api/health", "HEAD"), ("/api/auth/me", "GET")] {
+                guard let url = URL(string: base + path) else { continue }
+                group.addTask {
+                    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
+                    request.httpMethod = method
+                    request.timeoutInterval = 2
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    let clock = ContinuousClock()
+                    let start = clock.now
+                    guard let (_, response) = try? await session.data(for: request),
+                          !Task.isCancelled,
+                          let http = response as? HTTPURLResponse,
+                          (200..<300).contains(http.statusCode)
+                            || (method == "GET" && [401, 403].contains(http.statusCode)) else {
+                        return .unreachable
+                    }
+                    let elapsed = start.duration(to: clock.now).components
+                    let milliseconds = Double(elapsed.seconds) * 1_000
+                        + Double(elapsed.attoseconds) / 1_000_000_000_000_000
+                    return .reachable(milliseconds: milliseconds)
+                }
+            }
+            for await result in group where result.milliseconds != nil {
+                group.cancelAll()
+                return result
+            }
+            return .unreachable
+        }
+    }
+}
+
 enum ServerRouteSelector {
-    /// 网络接口类型不能证明服务器位于当前局域网，以实际探测结果为准。
+    static let reevaluationInterval: Duration = .seconds(30)
+
     @MainActor
     static func selectAutomaticRoute(
         primaryURL: String,
         backupURL: String?,
         currentURL: String,
         verification: ServerRouteVerification,
-        testConnection: @MainActor @Sendable (String) async -> Bool,
+        allowsLatencySwitch: Bool = true,
+        measureLatency: @MainActor @Sendable (String) async -> ServerRouteLatency,
         verifyPair: @MainActor () async -> ServerRouteVerification
-    ) async -> String? {
-        guard let backupURL else {
-            return await testConnection(primaryURL) ? primaryURL : nil
+    ) async -> ServerRouteSelection {
+        let latencies = await measureRoutes(
+            primaryURL: primaryURL, backupURL: backupURL, measureLatency: measureLatency
+        )
+        guard !Task.isCancelled else {
+            return ServerRouteSelection(selectedURL: nil, latencies: latencies)
         }
-
-        async let primaryProbe = testConnection(primaryURL)
-        async let backupProbe = testConnection(backupURL)
-        let (primaryReachable, backupReachable) = await (primaryProbe, backupProbe)
-
-        // 任一线路不可达时无需等待身份接口超时，沿用已有验证结果。
-        let effectiveVerification = primaryReachable && backupReachable
+        let primaryReachable = latencies[primaryURL]?.milliseconds != nil
+        guard let backupURL else {
+            return ServerRouteSelection(
+                selectedURL: primaryReachable ? primaryURL : nil, latencies: latencies
+            )
+        }
+        let backupReachable = latencies[backupURL]?.milliseconds != nil
+        // 已确认的身份可复用；不可达时不再等待身份接口超时。
+        let needsVerification = verification != .verified && verification != .mismatch
+        let effectiveVerification = primaryReachable && backupReachable && needsVerification
             ? await verifyPair()
             : verification
+        let selectedURL: String?
         if effectiveVerification == .mismatch {
-            return primaryReachable ? primaryURL : nil
-        }
-
-        let reachableRoutes = [(primaryURL, primaryReachable), (backupURL, backupReachable)]
-            .filter { $0.1 }
-            .map { $0.0 }
-        if effectiveVerification == .verified {
-            let localRoutes = reachableRoutes.filter(isLocalURL)
-            if localRoutes.count == 1 {
-                return localRoutes[0]
+            selectedURL = primaryReachable ? primaryURL : nil
+        } else {
+            let reachable = [primaryURL, backupURL].filter { latencies[$0]?.milliseconds != nil }
+            let current = reachable.first(where: { $0 == currentURL })
+            if effectiveVerification == .verified,
+               let fastest = reachable.min(by: {
+                   (latencies[$0]?.milliseconds ?? .infinity) < (latencies[$1]?.milliseconds ?? .infinity)
+               }) {
+                if let current, let currentMS = latencies[current]?.milliseconds,
+                   let fastestMS = latencies[fastest]?.milliseconds {
+                    // 同时要求快至少 20 ms 和 20%；冷却期间仍允许不可达时故障切换。
+                    let improvement = currentMS - fastestMS
+                    selectedURL = allowsLatencySwitch && improvement >= max(20, currentMS * 0.2)
+                        ? fastest : current
+                } else {
+                    selectedURL = fastest
+                }
+            } else {
+                selectedURL = current ?? reachable.first
             }
         }
-        // 未确认身份或地址分类不明确时，保留当前可达线路，避免反复切换。
-        return reachableRoutes.first(where: { $0 == currentURL }) ?? reachableRoutes.first
+        return ServerRouteSelection(
+            selectedURL: Task.isCancelled ? nil : selectedURL, latencies: latencies
+        )
+    }
+
+    @MainActor
+    static func measureRoutes(
+        primaryURL: String,
+        backupURL: String?,
+        measureLatency: @MainActor @Sendable (String) async -> ServerRouteLatency
+    ) async -> [String: ServerRouteLatency] {
+        guard let backupURL, backupURL != primaryURL else {
+            return [primaryURL: await measureLatency(primaryURL)]
+        }
+        async let primaryProbe = measureLatency(primaryURL)
+        async let backupProbe = measureLatency(backupURL)
+        let (primary, backup) = await (primaryProbe, backupProbe)
+        return [primaryURL: primary, backupURL: backup]
     }
 
     static func isLocalURL(_ value: String) -> Bool {

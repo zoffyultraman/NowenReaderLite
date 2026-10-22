@@ -78,9 +78,18 @@ struct MainTabView: View {
                 Task { _ = try? await api.fetchAccessibleLibraries() }
             }
         }
-        .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
-            Task { await api.reevaluateAutomaticRoute() }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await api.reevaluateAutomaticRoute()
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: ServerRouteSelector.reevaluationInterval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await api.reevaluateAutomaticRoute()
+            }
         }
         .onDisappear {
             pendingProgressSyncTask?.cancel()

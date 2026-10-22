@@ -462,7 +462,7 @@ private struct ServerRouteSettingsSheet: View {
                 } header: {
                     Text("备用线路")
                 } footer: {
-                    Text("首次验证需要两条线路同时可达。验证成功后会保留结果，自动模式优先使用可达的内网线路。")
+                    Text("首次验证需要两条线路同时可达。验证成功后会保留结果，自动模式优先使用响应延迟更低的线路；可在设置页查看两条线路的延迟。")
                 }
 
                 ServerAPIKeySettingsSection(
@@ -843,7 +843,7 @@ private struct ServerRouteSettingsSheet: View {
     }
 }
 
-private struct ServerRouteVerificationStatusView: View {
+struct ServerRouteVerificationStatusView: View {
     let verification: ServerRouteVerification
 
     var body: some View {
