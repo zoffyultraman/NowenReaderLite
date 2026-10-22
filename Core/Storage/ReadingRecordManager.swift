@@ -6,6 +6,7 @@ enum UserDefaultsKey {
     static let serverURL = "server_url"
     static let backupServerURL = "backup_server_url"
     static let serverRouteMode = "server_route_mode"
+    static let serverRouteIdentities = "server_route_identities"
     static let novelFontSize = "novel_font_size"
     static let readingRecords = "reading_records"
 

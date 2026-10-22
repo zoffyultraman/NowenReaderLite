@@ -16,10 +16,11 @@ final class APIClient: ReaderWarmupClient {
     private(set) var routeMode: ServerRouteMode
     private(set) var serverURL: String
     private(set) var routeVerification: ServerRouteVerification
+    private(set) var routeVerificationMessage: String?
     private(set) var hasConfiguredAPIKey: Bool
     @ObservationIgnored private var apiKey: String?
     @ObservationIgnored private var cookiePreferredRoutes: Set<String>
-    @ObservationIgnored private var isOnLocalNetwork = false
+    @ObservationIgnored private var routeIdentityCache: ServerRouteIdentityCache
     var isLoggedIn: Bool = false
     var currentUser: AuthUser?
     /// 断网离线模式：有历史登录记录但服务器不可达
@@ -91,11 +92,17 @@ final class APIClient: ReaderWarmupClient {
             forKey: UserDefaultsKey.activeServerRoute(for: primary)
         )
         let allowedRoutes = [primary, backup].compactMap { $0 }
+        let identityCache = ServerRouteIdentityCache(
+            data: defaults.data(forKey: UserDefaultsKey.serverRouteIdentities)
+        )
 
         self.primaryServerURL = primary
         self.backupServerURL = backup
         self.routeMode = effectiveMode
-        self.routeVerification = backup == nil ? .notConfigured : .unverified
+        self.routeIdentityCache = identityCache
+        self.routeVerification = backup.map {
+            identityCache.status(primaryURL: primary, backupURL: $0)
+        } ?? .notConfigured
         let storedAPIKey = KeychainHelper.readAPIKey(for: primary)
         self.apiKey = storedAPIKey
         self.hasConfiguredAPIKey = storedAPIKey != nil
@@ -134,7 +141,6 @@ final class APIClient: ReaderWarmupClient {
             monitor.cancel()  // 只需要首次回调
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.isOnLocalNetwork = Self.pathUsesLocalNetwork(path)
                 if path.status == .satisfied {
                     // 有网络，测试服务器是否可达
                     let reachable = await self.testServerReachable()
@@ -201,7 +207,10 @@ final class APIClient: ReaderWarmupClient {
         primaryServerURL = primary
         backupServerURL = normalizedBackup
         routeMode = effectiveMode
-        routeVerification = normalizedBackup == nil ? .notConfigured : .unverified
+        routeVerification = normalizedBackup.map {
+            routeIdentityCache.status(primaryURL: primary, backupURL: $0)
+        } ?? .notConfigured
+        routeVerificationMessage = nil
         apiKey = KeychainHelper.readAPIKey(for: primary)
         hasConfiguredAPIKey = apiKey != nil
         cookiePreferredRoutes = Set(
@@ -247,7 +256,7 @@ final class APIClient: ReaderWarmupClient {
     }
 
     var activeRouteIsLocal: Bool {
-        Self.isLikelyLocalNetworkURL(serverURL)
+        ServerRouteSelector.isLocalURL(serverURL)
     }
 
     var activeAuthenticationTitle: String {
@@ -388,10 +397,20 @@ final class APIClient: ReaderWarmupClient {
         backupURL: String,
         apiKeyOverride: String? = nil
     ) async -> ServerRouteVerification {
+        await verifyServerPairReport(
+            primaryURL: primaryURL, backupURL: backupURL, apiKeyOverride: apiKeyOverride
+        ).status
+    }
+
+    func verifyServerPairReport(
+        primaryURL: String,
+        backupURL: String,
+        apiKeyOverride: String? = nil
+    ) async -> ServerRouteVerificationReport {
         guard let primary = Self.normalizedServerURL(primaryURL),
               let backup = Self.normalizedServerURL(backupURL),
               primary != backup else {
-            return .notConfigured
+            return ServerRouteVerificationReport(status: .notConfigured)
         }
 
         let credentials = routeVerificationCredentials(
@@ -400,7 +419,7 @@ final class APIClient: ReaderWarmupClient {
             apiKeyOverride: apiKeyOverride
         )
         guard !credentials.isEmpty else {
-            return .authenticationRequired
+            return ServerRouteVerificationReport(status: .authenticationRequired)
         }
 
         async let primaryFingerprint = fetchServerFingerprint(
@@ -415,11 +434,16 @@ final class APIClient: ReaderWarmupClient {
             primaryFingerprint,
             backupFingerprint
         )
+        let messages = [
+            primaryResult.failureMessage.map { String(localized: "主线路：\($0)") },
+            backupResult.failureMessage.map { String(localized: "备用线路：\($0)") },
+        ].compactMap { $0 }
 
         switch (primaryResult, backupResult) {
         case let (.success(primarySnapshot), .success(backupSnapshot)):
             guard primarySnapshot.fingerprint == backupSnapshot.fingerprint else {
-                return .mismatch
+                recordRouteIdentity(.mismatch, primaryURL: primary, backupURL: backup)
+                return ServerRouteVerificationReport(status: .mismatch)
             }
             updateRouteAuthenticationPreferences(
                 primaryURL: primary,
@@ -427,27 +451,46 @@ final class APIClient: ReaderWarmupClient {
                 primaryUsesCookie: primarySnapshot.usesCookie,
                 backupUsesCookie: backupSnapshot.usesCookie
             )
-            return .verified
+            recordRouteIdentity(.verified, primaryURL: primary, backupURL: backup)
+            return ServerRouteVerificationReport(status: .verified)
         case (.authenticationFailed, _), (_, .authenticationFailed):
-            return .authenticationFailed
+            return ServerRouteVerificationReport(status: .authenticationFailed, messages: messages)
         case (.unavailable, _), (_, .unavailable):
-            return .unavailable
+            return ServerRouteVerificationReport(status: .unavailable, messages: messages)
+        case (.unreachable, _), (_, .unreachable):
+            return routeIdentityCache.resolving(
+                ServerRouteVerificationReport(status: .deferred, messages: messages),
+                primaryURL: primary, backupURL: backup
+            )
         }
+    }
+
+    private func recordRouteIdentity(
+        _ status: ServerRouteVerification, primaryURL: String, backupURL: String
+    ) {
+        routeIdentityCache.record(status, primaryURL: primaryURL, backupURL: backupURL)
+        UserDefaults.standard.set(routeIdentityCache.data, forKey: UserDefaultsKey.serverRouteIdentities)
     }
 
     @discardableResult
     func refreshRouteVerification() async -> ServerRouteVerification {
         guard let backupServerURL else {
             routeVerification = .notConfigured
+            routeVerificationMessage = nil
             return .notConfigured
         }
+        let primaryURL = primaryServerURL
         routeVerification = .checking
-        let result = await verifyServerPair(
-            primaryURL: primaryServerURL,
+        routeVerificationMessage = nil
+        let report = await verifyServerPairReport(
+            primaryURL: primaryURL,
             backupURL: backupServerURL
         )
-        routeVerification = result
-        return result
+        if primaryServerURL == primaryURL, self.backupServerURL == backupServerURL {
+            routeVerification = report.status
+            routeVerificationMessage = report.message
+        }
+        return report.status
     }
 
     private func routeVerificationCredentials(
@@ -487,6 +530,7 @@ final class APIClient: ReaderWarmupClient {
         from baseURL: String,
         credentials: [ServerRouteCredential]
     ) async -> ServerFingerprintResult {
+        var authenticationMessage = String(localized: "现有凭据无法通过认证")
         for credential in credentials {
             let result = await fetchServerFingerprint(
                 from: baseURL,
@@ -495,13 +539,14 @@ final class APIClient: ReaderWarmupClient {
             switch result {
             case .success:
                 return result
-            case .authenticationFailed:
+            case .authenticationFailed(let message):
+                authenticationMessage = message
                 continue
-            case .unavailable:
-                return .unavailable
+            case .unavailable, .unreachable:
+                return result
             }
         }
-        return .authenticationFailed
+        return .authenticationFailed(authenticationMessage)
     }
 
     private func fetchServerFingerprint(
@@ -510,7 +555,7 @@ final class APIClient: ReaderWarmupClient {
     ) async -> ServerFingerprintResult {
         guard let authURL = URL(string: "\(baseURL)/api/auth/me"),
               let librariesURL = URL(string: "\(baseURL)/api/libraries/accessible") else {
-            return .unavailable
+            return .unavailable(String(localized: "服务器地址无效"))
         }
 
         async let authRequest = fetchVerificationData(
@@ -524,35 +569,31 @@ final class APIClient: ReaderWarmupClient {
         let (authResult, librariesResult) = await (authRequest, librariesRequest)
 
         switch (authResult, librariesResult) {
-        case (.authenticationFailed, _), (_, .authenticationFailed):
-            return .authenticationFailed
+        case (.authenticationFailed(let message), _), (_, .authenticationFailed(let message)):
+            return .authenticationFailed(message)
         case let (.success(authData), .success(librariesData)):
             do {
-                let auth = try JSONDecoder().decode(AuthMeResponse.self, from: authData)
-                guard let user = auth.user else {
+                guard let fingerprint = try ServerRouteFingerprint.decode(
+                    authData: authData, librariesData: librariesData
+                ) else {
                     AppLogger.log("线路验证认证失败: \(baseURL) 未返回登录用户")
-                    return .authenticationFailed
+                    return .authenticationFailed(String(localized: "/api/auth/me：未返回登录用户"))
                 }
-                let libraries = try JSONDecoder().decode(
-                    LibraryListResponse.self,
-                    from: librariesData
-                )
-                let librarySignatures = libraries.libraries
-                    .map { "\($0.id)|\($0.type)" }
-                    .sorted()
                 return .success(AuthenticatedServerRouteFingerprint(
-                    fingerprint: ServerRouteFingerprint(
-                        userID: user.id,
-                        librarySignatures: librarySignatures
-                    ),
+                    fingerprint: fingerprint,
                     usesCookie: credential.usesCookie
                 ))
+            } catch let error as ServerRouteResponseError {
+                AppLogger.error("线路验证响应解析失败: \(baseURL) \(error.message)")
+                return .unavailable(error.message)
             } catch {
                 AppLogger.error("线路验证响应解析失败: \(baseURL) \(error.localizedDescription)")
-                return .unavailable
+                return .unavailable(String(localized: "响应格式不兼容"))
             }
-        case (.unavailable, _), (_, .unavailable):
-            return .unavailable
+        case (.unavailable(let message), _), (_, .unavailable(let message)):
+            return .unavailable(message)
+        case (.unreachable(let message), _), (_, .unreachable(let message)):
+            return .unreachable(message)
         }
     }
 
@@ -574,7 +615,7 @@ final class APIClient: ReaderWarmupClient {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 AppLogger.log("线路验证失败: \(url.host ?? url.absoluteString) 未返回 HTTP 响应")
-                return .unavailable
+                return .unavailable("\(verificationEndpointDescription(url))：未返回 HTTP 响应")
             }
             switch http.statusCode {
             case 200..<300:
@@ -584,20 +625,27 @@ final class APIClient: ReaderWarmupClient {
                     "线路验证认证失败: \(verificationEndpointDescription(url)) "
                         + "HTTP \(http.statusCode)\(verificationErrorSummary(data))"
                 )
-                return .authenticationFailed
+                return .authenticationFailed(
+                    "\(verificationEndpointDescription(url))：\(ServerRouteDiagnostics.httpReason(http.statusCode))"
+                )
             default:
                 AppLogger.log(
                     "线路验证失败: \(verificationEndpointDescription(url)) "
                         + "HTTP \(http.statusCode)\(verificationErrorSummary(data))"
                 )
-                return .unavailable
+                return .unavailable(
+                    "\(verificationEndpointDescription(url))：\(ServerRouteDiagnostics.httpReason(http.statusCode))"
+                )
             }
         } catch {
             AppLogger.log(
                 "线路验证连接失败: \(verificationEndpointDescription(url)) "
                     + error.localizedDescription
             )
-            return .unavailable
+            let message = "\(verificationEndpointDescription(url))：\(error.localizedDescription)"
+            return ServerRouteDiagnostics.isConnectionUnavailable(error)
+                ? .unreachable(message)
+                : .unavailable(message)
         }
     }
 
@@ -668,56 +716,44 @@ final class APIClient: ReaderWarmupClient {
         }
     }
 
-    /// 按当前模式选择可用线路。自动模式优先保留当前线路，失败后再尝试另一条。
+    /// 自动模式并发探测可达性，身份一致时优先使用可达的内网线路。
     @discardableResult
     func selectReachableRoute() async -> Bool {
-        let candidates: [String]
+        let primaryURL = primaryServerURL
+        let backupURL = backupServerURL
+        let mode = routeMode
+        let selectedURL: String?
         switch routeMode {
         case .primary:
-            candidates = [primaryServerURL]
+            selectedURL = await testConnection(primaryURL) ? primaryURL : nil
         case .backup:
-            candidates = [backupServerURL].compactMap { $0 }
+            if let backupURL {
+                selectedURL = await testConnection(backupURL) ? backupURL : nil
+            } else {
+                selectedURL = nil
+            }
         case .automatic:
-            let verification = await refreshRouteVerification()
-            candidates = automaticRouteCandidates(for: verification)
+            selectedURL = await ServerRouteSelector.selectAutomaticRoute(
+                primaryURL: primaryURL,
+                backupURL: backupURL,
+                currentURL: serverURL,
+                verification: routeVerification,
+                testConnection: { [self] in await testConnection($0) },
+                verifyPair: { [self] in await refreshRouteVerification() }
+            )
         }
 
-        for candidate in candidates where !candidate.isEmpty {
-            if await testConnection(candidate) {
-                activateRoute(
-                    candidate,
-                    copyAuthentication: routeVerification != .mismatch
-                )
-                isNetworkReachable = true
-                return true
-            }
+        // 探测期间切换服务器或模式时，不应用旧配置的结果。
+        guard primaryServerURL == primaryURL, backupServerURL == backupURL, routeMode == mode else {
+            return isNetworkReachable
+        }
+        if let selectedURL {
+            activateRoute(selectedURL, copyAuthentication: routeVerification != .mismatch)
+            isNetworkReachable = true
+            return true
         }
         isNetworkReachable = false
         return false
-    }
-
-    private func automaticRouteCandidates(
-        for verification: ServerRouteVerification
-    ) -> [String] {
-        guard let backupServerURL else { return [primaryServerURL] }
-        if verification == .mismatch {
-            return [primaryServerURL]
-        }
-
-        let alternate = serverURL == primaryServerURL ? backupServerURL : primaryServerURL
-        let stickyOrder = [serverURL, alternate]
-        guard verification == .verified else { return stickyOrder }
-
-        let routes = [primaryServerURL, backupServerURL]
-        let localRoutes = routes.filter(Self.isLikelyLocalNetworkURL)
-        guard localRoutes.count == 1, let localRoute = localRoutes.first else {
-            return stickyOrder
-        }
-        let remoteRoute = routes.first { $0 != localRoute }
-        if isOnLocalNetwork {
-            return [localRoute, remoteRoute].compactMap { $0 }
-        }
-        return [remoteRoute, localRoute].compactMap { $0 }
     }
 
     private func activateRoute(_ newURL: String, copyAuthentication: Bool) {
@@ -777,37 +813,6 @@ final class APIClient: ReaderWarmupClient {
         isOfflineMode = false
         AppLogger.log("线路不可达，已自动切换到\(activeRouteTitle): \(alternate)")
         return alternate
-    }
-
-    private static func pathUsesLocalNetwork(_ path: NWPath) -> Bool {
-        path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
-    }
-
-    private static func isLikelyLocalNetworkURL(_ value: String) -> Bool {
-        guard let host = URL(string: value)?.host?.lowercased() else { return false }
-        if host == "localhost" || host.hasSuffix(".local") || !host.contains(".") {
-            return true
-        }
-
-        let ipv4Parts = host.split(separator: ".").compactMap { UInt8($0) }
-        if ipv4Parts.count == 4 {
-            let first = ipv4Parts[0]
-            let second = ipv4Parts[1]
-            return first == 10
-                || first == 127
-                || (first == 169 && second == 254)
-                || (first == 172 && (16...31).contains(second))
-                || (first == 192 && second == 168)
-        }
-
-        let ipv6 = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
-        return ipv6 == "::1"
-            || ipv6.hasPrefix("fc")
-            || ipv6.hasPrefix("fd")
-            || ipv6.hasPrefix("fe8")
-            || ipv6.hasPrefix("fe9")
-            || ipv6.hasPrefix("fea")
-            || ipv6.hasPrefix("feb")
     }
 
     private func shouldFailover(for error: Error) -> Bool {
@@ -972,7 +977,6 @@ final class APIClient: ReaderWarmupClient {
         pathMonitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.isOnLocalNetwork = Self.pathUsesLocalNetwork(path)
                 if path.status == .satisfied {
                     let reachable = await self.testServerReachable()
                     self.isNetworkReachable = reachable
@@ -1769,11 +1773,6 @@ struct SiteSettingsResponse: Decodable, Sendable {
     let siteName: String?
 }
 
-private struct ServerRouteFingerprint: Equatable, Sendable {
-    let userID: String
-    let librarySignatures: [String]
-}
-
 private struct AuthenticatedServerRouteFingerprint: Sendable {
     let fingerprint: ServerRouteFingerprint
     let usesCookie: Bool
@@ -1791,25 +1790,24 @@ private enum ServerRouteCredential: Sendable {
 
 private enum ServerFingerprintResult: Sendable {
     case success(AuthenticatedServerRouteFingerprint)
-    case authenticationFailed
-    case unavailable
+    case authenticationFailed(String)
+    case unavailable(String)
+    case unreachable(String)
+
+    var failureMessage: String? {
+        switch self {
+        case .success: return nil
+        case .authenticationFailed(let message), .unavailable(let message), .unreachable(let message):
+            return message
+        }
+    }
 }
 
 private enum VerificationDataResult: Sendable {
     case success(Data)
-    case authenticationFailed
-    case unavailable
-}
-
-enum ServerRouteVerification: Equatable, Sendable {
-    case notConfigured
-    case unverified
-    case checking
-    case verified
-    case mismatch
-    case authenticationRequired
-    case authenticationFailed
-    case unavailable
+    case authenticationFailed(String)
+    case unavailable(String)
+    case unreachable(String)
 }
 
 struct RatingBody: Encodable, Sendable {

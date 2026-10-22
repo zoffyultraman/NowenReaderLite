@@ -6,8 +6,16 @@ struct AuthenticatedImage: View {
     let url: URL?
     @State private var image: UIImage?
     @State private var isLoading = false
+    @State private var loadedURL: String?
 
     private let cache = ImageCache.shared
+
+    init(url: URL?) {
+        self.url = url
+        let cached = url.flatMap { ImageCache.shared.memoryImage(forKey: $0.absoluteString) }
+        _image = State(initialValue: cached)
+        _loadedURL = State(initialValue: cached == nil ? nil : url?.absoluteString)
+    }
 
     var body: some View {
         Group {
@@ -34,12 +42,16 @@ struct AuthenticatedImage: View {
     }
 
     private func loadImage() async {
-        image = nil
         guard let url else {
+            image = nil
+            loadedURL = nil
             isLoading = false
             return
         }
         let urlString = url.absoluteString
+        if loadedURL == urlString, image != nil { return }
+        image = nil
+        loadedURL = urlString
         let cacheKey = urlString
         isLoading = true
 

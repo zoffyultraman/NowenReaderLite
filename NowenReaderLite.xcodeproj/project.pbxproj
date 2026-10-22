@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EE8100000000000000000002 /* ServerRouteVerification.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8100000000000000000001 /* ServerRouteVerification.swift */; };
+		EE8000000000000000000002 /* ServerRouteSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE8000000000000000000001 /* ServerRouteSelector.swift */; };
+		EE7000000000000000000002 /* SearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE7000000000000000000001 /* SearchViewModel.swift */; };
 		EE6000000000000000000002 /* BookOpeningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE6000000000000000000001 /* BookOpeningView.swift */; };
 		0228C26BE452D04A047B2BEC /* ComicDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 800BA4DE21472DAEE9BD72A5 /* ComicDetailView.swift */; };
 		27452073BF7E16FFDA22C3D7 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD448C133F7E79A1106AC69D /* LoginView.swift */; };
@@ -58,6 +61,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		EE8100000000000000000001 /* ServerRouteVerification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerRouteVerification.swift; sourceTree = "<group>"; };
+		EE8000000000000000000001 /* ServerRouteSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerRouteSelector.swift; sourceTree = "<group>"; };
+		EE7000000000000000000001 /* SearchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViewModel.swift; sourceTree = "<group>"; };
 		EE6000000000000000000001 /* BookOpeningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookOpeningView.swift; sourceTree = "<group>"; };
 		EE5000000000000000000001 /* ReaderWarmupSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWarmupSession.swift; sourceTree = "<group>"; };
 		0371F5659545954E0A349421 /* NowenReaderLite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NowenReaderLite.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -178,6 +184,8 @@
 			isa = PBXGroup;
 			children = (
 				F5318C1609DE58FD7D280D14 /* APIClient.swift */,
+				EE8000000000000000000001 /* ServerRouteSelector.swift */,
+				EE8100000000000000000001 /* ServerRouteVerification.swift */,
 				77AA1122334455667700AA00 /* AuthenticatedImage.swift */,
 			);
 			path = Network;
@@ -247,6 +255,7 @@
 		AABB00020000000000000006 /* Search */ = {
 			isa = PBXGroup;
 			children = (
+				EE7000000000000000000001 /* SearchViewModel.swift */,
 				B3A15C46BF0124D64A8C3C5F /* SearchView.swift */,
 			);
 			path = Search;
@@ -393,10 +402,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EE7000000000000000000002 /* SearchViewModel.swift in Sources */,
 				E5E727D0FEC62CDB10B018E9 /* NowenReaderLiteApp.swift in Sources */,
 				858D6D397D4C7171A8503799 /* MainTabView.swift in Sources */,
 				4362EE3CF4B606F3E86E31E9 /* RootRouter.swift in Sources */,
 				62760E55A1F875DE0D4B59DA /* APIClient.swift in Sources */,
+				EE8000000000000000000002 /* ServerRouteSelector.swift in Sources */,
+				EE8100000000000000000002 /* ServerRouteVerification.swift in Sources */,
 				66AA1122334455667700AA00 /* AuthenticatedImage.swift in Sources */,
 				33625400DAB4F8A6E2BB4F33 /* SwiftDataSchema.swift in Sources */,
 				EE3344556677889900BB02 /* FormatUtils.swift in Sources */,
@@ -453,7 +465,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.2.0;
+				CURRENT_PROJECT_VERSION = 1.2.1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = NowenReaderLite;
@@ -465,7 +477,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -520,7 +532,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -577,7 +589,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.nowen.readerlite;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -596,7 +608,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1.2.0;
+				CURRENT_PROJECT_VERSION = 1.2.1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = NowenReaderLite;
@@ -608,7 +620,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";

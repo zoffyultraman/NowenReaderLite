@@ -407,6 +407,10 @@ private struct ServerRouteSettingsSheet: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var errorAllowsSaving = false
+    @State private var verificationToastMessage: String?
+    @State private var verificationTask: Task<Void, Never>?
+    @State private var verificationToastTask: Task<Void, Never>?
+    @State private var showsVerificationResultWhenReady = false
 
     init(
         primaryURL: String,
@@ -458,7 +462,7 @@ private struct ServerRouteSettingsSheet: View {
                 } header: {
                     Text("备用线路")
                 } footer: {
-                    Text("客户端会比较两条线路的登录用户与书库。验证一致后，自动模式会在局域网中优先使用内网线路。")
+                    Text("首次验证需要两条线路同时可达。验证成功后会保留结果，自动模式优先使用可达的内网线路。")
                 }
 
                 ServerAPIKeySettingsSection(
@@ -480,22 +484,25 @@ private struct ServerRouteSettingsSheet: View {
                         }
                         if api.backupServerURL != nil {
                             HStack(spacing: 12) {
-                                Text("线路验证")
-                                Spacer(minLength: 8)
-                                ServerRouteVerificationStatusView(
-                                    verification: api.routeVerification
-                                )
-                                Button {
-                                    Task {
-                                        _ = await api.refreshRouteVerification()
+                                Button(action: showVerificationDetails) {
+                                    HStack(spacing: 12) {
+                                        Text("线路验证")
+                                        Spacer(minLength: 8)
+                                        ServerRouteVerificationStatusView(
+                                            verification: api.routeVerification
+                                        )
                                     }
-                                } label: {
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("显示验证详情")
+                                Button(action: verifyRoutes) {
                                     Image(systemName: "arrow.clockwise")
                                         .frame(width: 24, height: 24)
                                 }
                                 .buttonStyle(.plain)
                                 .controlSize(.small)
-                                .disabled(api.routeVerification == .checking)
+                                .disabled(isSaving)
                                 .accessibilityLabel("重新验证线路")
                             }
                             .lineLimit(1)
@@ -529,6 +536,26 @@ private struct ServerRouteSettingsSheet: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
+            .overlay(alignment: .top) {
+                if let verificationToastMessage {
+                    Label {
+                        Text(verificationToastMessage)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "info.circle")
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: verificationToastMessage)
             .alert("无法保存连接设置", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -551,8 +578,18 @@ private struct ServerRouteSettingsSheet: View {
                     removesStoredAPIKey = false
                 }
             }
+            .onChange(of: api.routeVerification) { _, verification in
+                guard showsVerificationResultWhenReady, verification != .checking else { return }
+                showVerificationDetails()
+            }
             .onDisappear {
                 apiKey = ""
+                verificationTask?.cancel()
+                verificationTask = nil
+                verificationToastTask?.cancel()
+                verificationToastTask = nil
+                verificationToastMessage = nil
+                showsVerificationResultWhenReady = false
             }
             .task {
                 guard isCurrentServer,
@@ -562,6 +599,70 @@ private struct ServerRouteSettingsSheet: View {
                 }
                 _ = await api.refreshRouteVerification()
             }
+        }
+    }
+
+    private func verifyRoutes() {
+        guard api.routeVerification != .checking else {
+            showVerificationDetails()
+            return
+        }
+        verificationTask?.cancel()
+        presentVerificationDetails(String(localized: "正在比较两条线路返回的登录用户和书库，请稍候。"))
+        let primaryURL = api.primaryServerURL
+        let backupURL = api.backupServerURL
+        verificationTask = Task { @MainActor in
+            _ = await api.refreshRouteVerification()
+            guard !Task.isCancelled,
+                  api.primaryServerURL == primaryURL,
+                  api.backupServerURL == backupURL else {
+                return
+            }
+            showVerificationDetails()
+        }
+    }
+
+    private func showVerificationDetails() {
+        showsVerificationResultWhenReady = api.routeVerification == .checking
+        presentVerificationDetails(verificationDetailMessage)
+    }
+
+    private func presentVerificationDetails(_ message: String) {
+        verificationToastTask?.cancel()
+        verificationToastMessage = message
+        verificationToastTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            verificationToastMessage = nil
+        }
+    }
+
+    private var verificationDetailMessage: String {
+        if let message = api.routeVerificationMessage {
+            return message
+        }
+        switch api.routeVerification {
+        case .verified:
+            return String(localized: "两条线路返回的登录用户和书库一致，已确认属于同一服务器。")
+        case .mismatch:
+            return String(localized: "两条线路返回的登录用户或书库不一致，无法确认为同一服务器。")
+        case .authenticationRequired:
+            return String(localized: "请先登录服务器，再验证两条线路。")
+        case .authenticationFailed:
+            return String(localized: "当前认证信息无法同时通过两条线路验证，请检查账号或 API Key。")
+        case .unavailable:
+            return String(localized: "线路的连接或响应异常，暂时无法确认它们是否属于同一服务器。")
+        case .deferred:
+            return String(localized: "首次验证需要两条线路同时可达；当前可用线路仍可正常使用。")
+        case .notConfigured:
+            return String(localized: "请先配置不同的主线路和备用线路。")
+        case .unverified:
+            return String(localized: "尚未验证两条线路，请点击右侧刷新按钮开始验证。")
+        case .checking:
+            return String(localized: "正在比较两条线路返回的登录用户和书库，请稍候。")
         }
     }
 
@@ -615,12 +716,15 @@ private struct ServerRouteSettingsSheet: View {
         isSaving = true
         Task {
             var verification: ServerRouteVerification = .notConfigured
+            var verificationMessage: String?
             if let normalizedBackupURL {
-                verification = await api.verifyServerPair(
+                let report = await api.verifyServerPairReport(
                     primaryURL: normalizedPrimaryURL,
                     backupURL: normalizedBackupURL,
                     apiKeyOverride: routeVerificationAPIKeyOverride
                 )
+                verification = report.status
+                verificationMessage = report.message
                 if verification == .mismatch {
                     isSaving = false
                     errorAllowsSaving = false
@@ -644,7 +748,8 @@ private struct ServerRouteSettingsSheet: View {
             case .unavailable:
                 isSaving = false
                 errorAllowsSaving = true
-                errorMessage = "目前无法同时连接两条线路，因此无法确认它们是否属于同一服务器。"
+                errorMessage = verificationMessage
+                    ?? "线路的连接或响应异常，暂时无法确认它们是否属于同一服务器。"
                 return
             case .authenticationRequired:
                 isSaving = false
@@ -654,8 +759,12 @@ private struct ServerRouteSettingsSheet: View {
             case .authenticationFailed:
                 isSaving = false
                 errorAllowsSaving = true
-                errorMessage = "当前 API Key 或登录状态无法同时通过两条线路认证。请检查线路地址和认证信息。"
+                errorMessage = verificationMessage
+                    ?? "当前 API Key 或登录状态无法同时通过两条线路认证。请检查线路地址和认证信息。"
                 return
+            case .deferred:
+                // 在外网无法访问内网地址是正常情况，保存后等待线路恢复再验证。
+                break
             default:
                 break
             }
@@ -759,6 +868,9 @@ private struct ServerRouteVerificationStatusView: View {
                 .foregroundStyle(.red)
         case .unavailable:
             Text("暂时无法验证")
+                .foregroundStyle(.secondary)
+        case .deferred:
+            Text("待线路恢复后验证")
                 .foregroundStyle(.secondary)
         case .notConfigured, .unverified:
             Text("等待验证")

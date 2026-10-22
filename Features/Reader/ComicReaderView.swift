@@ -64,7 +64,8 @@ struct ComicReaderView: View {
                         isRTL: isRTL,
                         pageDisplayMode: pageDisplayMode,
                         upscaleMode: upscaleMode,
-                        onToggleOverlay: { withAnimation(.easeInOut) { showOverlay.toggle() } },
+                        isOverlayPresented: showOverlay,
+                        onToggleOverlay: { showOverlay.toggle() },
                         onPageChange: { page in viewModel.onPageChanged(page) },
                         onPageLoaded: { id, page in
                             viewModel.onPageLoaded(comicId: id, page: page)
@@ -90,13 +91,20 @@ struct ComicReaderView: View {
             }
 
             // 工具栏覆盖层
-            if showOverlay && !viewModel.isLoading {
-                overlayUI
-            }
+            ReaderOverlayView(
+                isPresented: showOverlay || viewModel.isLoading || viewModel.totalPages <= 0,
+                currentPage: viewModel.currentPage,
+                totalPages: viewModel.totalPages,
+                hasGroupContext: viewModel.groupContext != nil,
+                volumeLabel: volumeLabel,
+                isRTL: $isRTL,
+                onSeek: { viewModel.onSliderChanged($0) },
+                onDismiss: { dismiss() }
+            )
         }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .readerStatusBarHidden(!showOverlay)
+        .readerStatusBarHidden(true)
         .task {
             let defaults = UserDefaults.standard
             if let previousFill = defaults.object(forKey: "comicFillScreen") as? Bool {
@@ -131,19 +139,6 @@ struct ComicReaderView: View {
         }
     }
 
-    // 轻量覆盖层：闭包每次 body 求值时重建，但视图简单，不会引起可见问题
-    private var overlayUI: some View {
-        ReaderOverlayView(
-            currentPage: viewModel.currentPage,
-            totalPages: viewModel.totalPages,
-            sliderValue: $viewModel.sliderValue,
-            hasGroupContext: viewModel.groupContext != nil,
-            volumeLabel: volumeLabel,
-            isRTL: $isRTL,
-            onDismiss: { dismiss() }
-        )
-    }
-
     private var volumeLabel: String {
         guard let ctx = viewModel.groupContext else { return "" }
         return "卷 \(ctx.currentIndex + 1)/\(ctx.volumeIds.count)"
@@ -154,28 +149,21 @@ struct ComicReaderView: View {
 // 轻量视图：onDismiss 闭包每次 body 求值时重建，但视图简单，不会引起可见问题
 
 struct ReaderOverlayView: View {
+    let isPresented: Bool
     let currentPage: Int
     let totalPages: Int
-    @Binding var sliderValue: Double
     let hasGroupContext: Bool
     let volumeLabel: String
     @Binding var isRTL: Bool
+    let onSeek: (Int) -> Void
     let onDismiss: () -> Void
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showSettings = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Top Toolbar
+        ReaderChrome(isPresented: isPresented) {
             HStack {
-                Button(action: onDismiss) {
-                    Image(systemName: "chevron.left")
-                        .font(.title3.weight(.medium))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("返回")
+                ReaderBackButton(action: onDismiss)
 
                 Spacer()
 
@@ -186,14 +174,37 @@ struct ReaderOverlayView: View {
                         .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("阅读设置")
+                .disabled(totalPages <= 0)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.72))
+        } footer: {
+            if totalPages > 0 {
+                ComicReaderProgressControls(
+                    currentPage: currentPage, totalPages: totalPages,
+                    volumeLabel: hasGroupContext ? volumeLabel : "",
+                    isRTL: $isRTL, onSeek: onSeek
+                )
+            }
+        }
+        .foregroundStyle(.white)
+        .environment(\.colorScheme, .dark)
+        .sheet(isPresented: $showSettings) {
+            ReaderSettingsView()
+        }
+    }
+}
 
-            Spacer()
+private struct ComicReaderProgressControls: View {
+    let currentPage: Int
+    let totalPages: Int
+    let volumeLabel: String
+    @Binding var isRTL: Bool
+    let onSeek: (Int) -> Void
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var draftPage: Double = 0
+    @State private var isSeeking = false
 
-            // Bottom Toolbar
+    var body: some View {
+        VStack(spacing: 8) {
             HStack {
                 Text(positionLabel)
                     .font(.callout.weight(.medium))
@@ -213,20 +224,42 @@ struct ReaderOverlayView: View {
                 .tint(.accentColor)
                 .fixedSize()
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-            .background(.black.opacity(0.72))
+            Slider(
+                value: $draftPage,
+                in: 0...Double(max(totalPages - 1, 1)),
+                step: 1,
+                onEditingChanged: { editing in
+                    isSeeking = editing
+                    if !editing { commitSeek() }
+                }
+            )
+            .disabled(totalPages < 2)
+            .environment(\.layoutDirection, isRTL ? .rightToLeft : .leftToRight)
+            .accessibilityLabel("阅读进度")
+            .accessibilityValue("第 \(Int(draftPage) + 1) 页，共 \(totalPages) 页")
         }
-        .transition(.opacity)
-        .sheet(isPresented: $showSettings) {
-            ReaderSettingsView()
+        .onAppear { draftPage = Double(currentPage) }
+        .onChange(of: currentPage) { _, page in
+            if !isSeeking { draftPage = Double(page) }
+        }
+        .onChange(of: totalPages) { _, _ in
+            isSeeking = false
+            draftPage = Double(min(max(currentPage, 0), max(totalPages - 1, 0)))
+        }
+        .onChange(of: draftPage) { _, _ in
+            // VoiceOver 调整滑块不会经过触摸拖动的开始/结束回调。
+            if !isSeeking { commitSeek() }
         }
     }
 
+    private func commitSeek() {
+        let page = min(max(Int(draftPage), 0), max(totalPages - 1, 0))
+        if page != currentPage { onSeek(page) }
+    }
+
     private var positionLabel: String {
-        let page = "页 \(currentPage + 1)/\(totalPages)"
-        guard hasGroupContext, !volumeLabel.isEmpty else { return page }
+        let page = "页 \(Int(draftPage) + 1)/\(totalPages)"
+        guard !volumeLabel.isEmpty else { return page }
         return "\(volumeLabel) · \(page)"
     }
 }
@@ -632,6 +665,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
     let isRTL: Bool
     let pageDisplayMode: ComicPageDisplayMode
     let upscaleMode: UpscaleMode
+    let isOverlayPresented: Bool
     let onToggleOverlay: () -> Void
     let onPageChange: (Int) -> Void
     let onPageLoaded: (String, Int) -> Void
@@ -649,6 +683,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
             upscaleMode: upscaleMode
         )
         vc.onToggleOverlay = onToggleOverlay
+        vc.isOverlayPresented = isOverlayPresented
         vc.onPageChange = { page in
             self.currentPage = page
             self.onPageChange(page)
@@ -662,6 +697,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UnifiedComicPagerImpl, context: Context) {
+        uiViewController.isOverlayPresented = isOverlayPresented
         if uiViewController.basePageIndex != currentPage {
             uiViewController.goToPage(currentPage)
         }
@@ -702,6 +738,7 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
 
 // MARK: - UIPageViewController 统一实现
 class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
+    var isOverlayPresented = false
     let comicId: String
     let totalPages: Int
     var isDoublePageMode: Bool
@@ -854,6 +891,10 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     
     // MARK: - Touch Handling
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        if isOverlayPresented {
+            onToggleOverlay?()
+            return
+        }
         let location = gesture.location(in: view)
         let width = view.bounds.width
         

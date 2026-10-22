@@ -10,12 +10,6 @@ final class ComicReaderViewModel {
     var currentComicId: String
     var groupContext: ReadingGroupContext?
 
-    /// 供 Slider 使用的 Double 绑定（KeyPath binding 代替闭包 binding）
-    var sliderValue: Double {
-        get { Double(currentPage) }
-        set { onSliderChanged(Int(newValue)) }
-    }
-
     private var activityTracker: ReadingActivityTracker?
     private var isReaderActive = true
     private let api = APIClient.shared
@@ -102,7 +96,11 @@ final class ComicReaderViewModel {
     }
 
     func onSliderChanged(_ page: Int) {
-        currentPage = page
+        guard totalPages > 0 else { return }
+        let target = min(max(page, 0), totalPages - 1)
+        guard target != currentPage else { return }
+        currentPage = target
+        saveProgress()
     }
 
     func saveProgress() {

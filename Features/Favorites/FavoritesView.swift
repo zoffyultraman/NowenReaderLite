@@ -39,7 +39,7 @@ struct FavoritesMainContent: View {
                         GridItem(.flexible(), spacing: 12),
                     ], spacing: 16) {
                         ForEach(viewModel.comics) { comic in
-                            NavigationLink(value: comic.id) {
+                            NavigationLink(value: ComicDetailRoute(comic: comic)) {
                                 ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
                             }
                             .buttonStyle(.plain)
@@ -55,6 +55,7 @@ struct FavoritesMainContent: View {
         }
         .navigationTitle("收藏")
         .navigationBarTitleDisplayMode(.large)
+        .comicDetailNavigation()
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
                 .bookCoverDestination(id: "comic-\(comicId)")

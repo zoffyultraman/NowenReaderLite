@@ -10,6 +10,7 @@ struct HomeView: View {
     @State private var searchVM = SearchViewModel()
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
+    @Environment(\.bookCoverNamespace) private var coverNamespace
     @FocusState private var isSearchFocused: Bool
     @State private var isSearchPresented = false
 
@@ -21,7 +22,17 @@ struct HomeView: View {
 
     var body: some View {
         @Bindable var searchVM = searchVM
-        Group {
+        ZStack {
+            HomeMainContent(
+                continueReadingVM: continueReadingVM,
+                searchVM: searchVM,
+                isSearchFocused: $isSearchFocused
+            )
+            .opacity(isSearching ? 0 : 1)
+            .allowsHitTesting(!isSearching)
+            .accessibilityHidden(isSearching)
+            .environment(\.bookCoverNamespace, isSearching ? nil : coverNamespace)
+
             if isSearching {
                 HomeSearchResults(
                     searchVM: searchVM,
@@ -31,12 +42,6 @@ struct HomeView: View {
                         isSearchFocused = false
                         isSearchPresented = false
                     }
-                )
-            } else {
-                HomeMainContent(
-                    continueReadingVM: continueReadingVM,
-                    searchVM: searchVM,
-                    isSearchFocused: $isSearchFocused
                 )
             }
         }
@@ -71,6 +76,7 @@ struct HomeView: View {
                     .bookCoverDestination(id: "comic-\(value)")
             }
         }
+        .comicDetailNavigation()
         .task(id: HomeRefreshID(
             selectedLibraryId: api.selectedLibraryId,
             isOffline: api.isOfflineMode,
@@ -281,6 +287,11 @@ struct HomeSearchResults: View {
                     ProgressView()
                     Spacer()
                 }
+            } else if let error = searchVM.errorMessage {
+                SearchErrorView(message: error) {
+                    searchVM.search(immediately: true)
+                }
+                .listRowBackground(Color.clear)
             } else if searchVM.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 ContentUnavailableView("搜索漫画或小说", systemImage: "magnifyingglass")
                     .listRowBackground(Color.clear)
@@ -298,7 +309,7 @@ struct HomeSearchResults: View {
                 .listRowBackground(Color.clear)
             } else {
                 ForEach(searchVM.results) { comic in
-                    NavigationLink(value: comic.id) {
+                    NavigationLink(value: ComicDetailRoute(comic: comic)) {
                         SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: api.serverURL)
                     }
                     .buttonStyle(.plain)
@@ -772,7 +783,7 @@ private struct LibraryShelfGridView: View {
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
                     case .comic(let comic):
-                        NavigationLink(value: comic.id) {
+                        NavigationLink(value: ComicDetailRoute(comic: comic)) {
                             if comic.isSeriesShelfItem {
                                 SeriesShelfCardView(comic: comic, serverURL: serverURL)
                             } else {
@@ -829,7 +840,7 @@ private struct LibraryShelfListView: View {
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
                     case .comic(let comic):
-                        NavigationLink(value: comic.id) {
+                        NavigationLink(value: ComicDetailRoute(comic: comic)) {
                             if comic.isSeriesShelfItem {
                                 SeriesShelfListRowView(comic: comic, serverURL: serverURL)
                                     .padding(.horizontal, 16)

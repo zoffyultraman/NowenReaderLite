@@ -29,6 +29,10 @@ final class ImageCache {
 
     // MARK: - Public
 
+    func memoryImage(forKey key: String) -> UIImage? {
+        memory.object(forKey: key as NSString)
+    }
+
     func image(forKey key: String) async -> UIImage? {
         let nsKey = key as NSString
 

@@ -204,7 +204,7 @@ NowenReaderLite/
 
 合集与目录作品详情支持标签、分类展示；下载合集时同步保存这些字段供离线查看。旧版响应和旧离线记录缺少字段时仍可加载。
 
-API 兼容性与阅读会话回归检查可在 macOS 命令行工具环境运行：`sh Scripts/test-api-compatibility.sh`。完整 iOS 构建和界面验证仍需 Xcode。
+API 兼容性、阅读会话与服务器线路回归检查分别位于 `Tests/APICompatibilityTests.swift` 和 `Tests/ServerRouteTests.swift`，可在 macOS 命令行工具环境下编译运行。完整 iOS 构建和界面验证仍需 Xcode。
 
 ## 设计规范
 

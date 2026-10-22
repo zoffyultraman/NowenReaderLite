@@ -282,7 +282,8 @@ struct GroupComicRail: View {
                     NavigationLink {
                         ComicDetailView(
                             comicId: comic.id,
-                            groupContext: contextProvider(comic)
+                            groupContext: contextProvider(comic),
+                            initialPreview: ComicDetailPreview(comic: comic)
                         )
                         .bookCoverDestination(id: "comic-\(comic.id)")
                     } label: {
@@ -576,7 +577,8 @@ struct SeriesDetailView: View {
                                     NavigationLink {
                                         ComicDetailView(
                                             comicId: item.comic.id,
-                                            groupContext: viewModel.readingContext(for: item)
+                                            groupContext: viewModel.readingContext(for: item),
+                                            initialPreview: ComicDetailPreview(comic: item.comic)
                                         )
                                         .bookCoverDestination(id: "comic-\(item.comic.id)")
                                     } label: {
@@ -594,7 +596,8 @@ struct SeriesDetailView: View {
                                         NavigationLink {
                                             ComicDetailView(
                                                 comicId: item.comic.id,
-                                                groupContext: viewModel.readingContext(for: item)
+                                                groupContext: viewModel.readingContext(for: item),
+                                                initialPreview: ComicDetailPreview(comic: item.comic)
                                             )
                                             .bookCoverDestination(id: "comic-\(item.comic.id)")
                                         } label: {

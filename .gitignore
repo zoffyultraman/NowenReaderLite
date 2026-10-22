@@ -36,3 +36,6 @@ Pods/
 
 # Project
 CHANGES.md
+
+# Local shell scripts
+*.sh

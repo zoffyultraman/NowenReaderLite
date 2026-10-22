@@ -70,7 +70,93 @@ private enum APICompatibilityTests {
         try await identityChange()
         try await retryPrefetch()
         try await uncertainProbe()
-        print("PASS: 13 API compatibility and reader lifecycle scenarios")
+        try await searchFailureAndRetry()
+        try await searchCancellation()
+        try await offlineAndDebouncedSearch()
+        print("PASS: 16 API compatibility, reader lifecycle and search scenarios")
+    }
+
+    @MainActor
+    private static func searchFailureAndRetry() async throws {
+        var shouldFail = true
+        let model = SearchViewModel(isSearchAvailable: { true }) { _ in
+            if shouldFail { throw URLError(.timedOut) }
+            return []
+        }
+        model.query = "作品"
+        model.search(immediately: true)
+        try expect(model.isLoading && model.errorMessage == nil, "请求开始时应显示处理中")
+        try await eventually("搜索失败应结束加载", { !model.isLoading })
+        try expect(model.errorMessage != nil, "网络失败不能伪装成无结果")
+
+        shouldFail = false
+        model.search(immediately: true)
+        try expect(model.errorMessage == nil, "重试应清除旧错误")
+        try await eventually("重试成功应结束加载", { !model.isLoading })
+        try expect(model.results.isEmpty && model.errorMessage == nil, "成功的空结果应与失败区分")
+    }
+
+    @MainActor
+    private static func searchCancellation() async throws {
+        var replies: [String: CheckedContinuation<[Comic], Error>] = [:]
+        var completed: Set<String> = []
+        let model = SearchViewModel(isSearchAvailable: { true }) { query in
+            defer { completed.insert(query) }
+            return try await withCheckedThrowingContinuation { replies[query] = $0 }
+        }
+        model.query = "旧查询"
+        model.search(immediately: true)
+        try await eventually("旧查询应已发出", { replies["旧查询"] != nil })
+        model.query = "新查询"
+        model.search(immediately: true)
+        try await eventually("新查询应已发出", { replies["新查询"] != nil })
+
+        replies.removeValue(forKey: "旧查询")?.resume(throwing: URLError(.timedOut))
+        try await eventually("旧查询应已返回", { completed.contains("旧查询") })
+        await Task.yield()
+        try expect(model.isLoading && model.errorMessage == nil, "旧请求的错误不能中断新查询")
+
+        let comic = try JSONDecoder().decode(Comic.self, from: Data(
+            #"{"id":"result","title":"新结果","pageCount":1,"lastReadPage":0,"isFavorite":false}"#.utf8
+        ))
+        replies.removeValue(forKey: "新查询")?.resume(returning: [comic])
+        try await eventually("新结果应展示", { !model.isLoading })
+        try expect(model.results == [comic], "应保留最新查询结果")
+
+        model.query = "取消查询"
+        model.search(immediately: true)
+        try await eventually("取消前查询应已发出", { replies["取消查询"] != nil })
+        model.clear()
+        replies.removeValue(forKey: "取消查询")?.resume(returning: [comic])
+        try await eventually("取消后的请求应已返回", { completed.contains("取消查询") })
+        await Task.yield()
+        try expect(model.results.isEmpty && !model.isLoading && model.errorMessage == nil,
+                   "退出搜索后，迟到响应不能恢复结果或错误")
+    }
+
+    @MainActor
+    private static func offlineAndDebouncedSearch() async throws {
+        var isAvailable = false
+        var requestCount = 0
+        let model = SearchViewModel(isSearchAvailable: { isAvailable }) { _ in
+            requestCount += 1
+            return []
+        }
+        model.query = "作品"
+        model.search(immediately: true)
+        try expect(model.errorMessage != nil && !model.isLoading && requestCount == 0,
+                   "离线搜索应立即解释原因，且不发请求")
+
+        isAvailable = true
+        model.search()
+        try expect(model.isLoading && model.errorMessage == nil, "防抖期间应保持处理中状态")
+        model.clear()
+        try await Task.sleep(nanoseconds: 350_000_000)
+        try expect(requestCount == 0, "清除搜索应取消尚未发出的防抖请求")
+        model.query = " \n "
+        model.search(immediately: true)
+        try expect(!model.isLoading && model.errorMessage == nil && requestCount == 0,
+                   "空白查询应保持空状态")
     }
 
     @MainActor

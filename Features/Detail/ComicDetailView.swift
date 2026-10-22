@@ -1,37 +1,127 @@
 import SwiftUI
 import SwiftData
 
+struct ComicDetailPreview: Hashable {
+    let id: String
+    let title: String
+    var author: String? = nil
+    var publisher: String? = nil
+    var year: Int? = nil
+    var language: String? = nil
+    var pageCount: Int = 0
+    var isNovel: Bool = false
+    var fileSize: Int64? = nil
+    var rating: Double? = nil
+}
+
+extension ComicDetailPreview {
+    init(comic: GroupComicItem) {
+        self.init(
+            id: comic.id, title: comic.title, pageCount: comic.pageCount,
+            isNovel: comic.type?.lowercased() == "novel", fileSize: comic.fileSize
+        )
+    }
+
+    init(comic: Comic) {
+        self.init(
+            id: comic.id, title: comic.title, author: comic.author,
+            publisher: comic.publisher, year: comic.year, language: comic.language,
+            pageCount: comic.pageCount, isNovel: comic.isNovel,
+            fileSize: comic.fileSize, rating: comic.rating
+        )
+    }
+}
+
+struct ComicDetailRoute: Hashable {
+    let preview: ComicDetailPreview
+
+    init(comic: Comic) {
+        preview = ComicDetailPreview(comic: comic)
+    }
+}
+
+extension View {
+    func comicDetailNavigation() -> some View {
+        navigationDestination(for: ComicDetailRoute.self) { route in
+            if let seriesId = Comic.seriesId(from: route.preview.id) {
+                SeriesDetailView(seriesId: seriesId)
+                    .bookCoverDestination(id: "comic-\(route.preview.id)")
+            } else {
+                ComicDetailView(comicId: route.preview.id, initialPreview: route.preview)
+                    .bookCoverDestination(id: "comic-\(route.preview.id)")
+            }
+        }
+    }
+}
+
 struct ComicDetailView: View {
     let comicId: String
     var groupContext: ReadingGroupContext? = nil
+    var initialPreview: ComicDetailPreview? = nil
     @State private var viewModel = DetailViewModel()
     @Environment(\.modelContext) private var modelContext
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         ScrollView {
-            if let comic = viewModel.comic {
-                ComicDetailContent(
-                    comic: comic,
-                    groupContext: groupContext,
-                    viewModel: viewModel
-                )
-            } else if viewModel.isLoading {
-                ProgressView()
-                    .padding(.top, 100)
-            } else if let error = viewModel.errorMessage {
-                ErrorStateView(message: error) {
-                    Task { await viewModel.load(id: comicId) }
+            VStack(alignment: .leading, spacing: 20) {
+                if let preview = viewModel.comic.map(ComicDetailPreview.init(comic:)) ?? initialPreview {
+                    ComicDetailHeader(preview: preview)
+                }
+
+                if let comic = viewModel.comic {
+                    ComicDetailContent(
+                        comic: comic,
+                        groupContext: groupContext,
+                        viewModel: viewModel
+                    )
+                } else if let error = viewModel.errorMessage {
+                    ContentUnavailableView {
+                        Label("详情加载失败", systemImage: "wifi.exclamationmark")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("重试") {
+                            Task { await viewModel.load(id: comicId) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    ProgressView("正在加载详情…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
                 }
             }
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .alert("操作未完成", isPresented: $viewModel.isActionErrorPresented) {
+            Button("重试") {
+                Task { await viewModel.retryFailedAction() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(viewModel.actionErrorMessage ?? "请稍后重试。")
+        }
         .task {
             viewModel.setModelContext(modelContext)
             DownloadManager.shared.setModelContext(modelContext)
             await viewModel.load(id: comicId)
         }
+    }
+}
+
+private struct ComicDetailHeader: View {
+    let preview: ComicDetailPreview
+
+    var body: some View {
+        ComicCoverInfoSection(
+            comicId: preview.id, title: preview.title, author: preview.author,
+            publisher: preview.publisher, year: preview.year, language: preview.language,
+            pageCount: preview.pageCount, isNovel: preview.isNovel,
+            fileSize: preview.fileSize, rating: preview.rating
+        )
     }
 }
 
@@ -44,19 +134,6 @@ struct ComicDetailContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            ComicCoverInfoSection(
-                comicId: comic.id,
-                title: comic.title,
-                author: comic.author,
-                publisher: comic.publisher,
-                year: comic.year,
-                language: comic.language,
-                pageCount: comic.pageCount,
-                isNovel: comic.isNovel,
-                fileSize: comic.fileSize,
-                rating: comic.rating
-            )
-
             ComicActionButtonsSection(
                 comic: comic,
                 groupContext: groupContext,
@@ -72,10 +149,12 @@ struct ComicDetailContent: View {
 
             ReadingStatusSection(
                 currentStatus: comic.readingStatus,
+                isUpdating: viewModel.isUpdatingReadingStatus,
                 onSelect: { status in
                     Task { await viewModel.updateReadingStatus(status) }
                 }
             )
+            .disabled(viewModel.isPerformingAction)
 
             ComicTagsSection(tags: comic.tags)
 
@@ -253,10 +332,17 @@ struct ComicActionButtonsSection: View {
             Button {
                 Task { await viewModel.toggleFavorite() }
             } label: {
-                Label(
-                    comic.isFavorite ? "已收藏" : "收藏",
-                    systemImage: comic.isFavorite ? "heart.fill" : "heart"
-                )
+                HStack(spacing: 6) {
+                    if viewModel.isUpdatingFavorite {
+                        ProgressView().controlSize(.small)
+                        Text("处理中")
+                    } else {
+                        Label(
+                            comic.isFavorite ? "已收藏" : "收藏",
+                            systemImage: comic.isFavorite ? "heart.fill" : "heart"
+                        )
+                    }
+                }
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
@@ -264,6 +350,8 @@ struct ComicActionButtonsSection: View {
                 .foregroundStyle(comic.isFavorite ? .red : .primary)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
+            .disabled(viewModel.isPerformingAction)
+            .sensoryFeedback(.success, trigger: comic.isFavorite)
 
             // 下载按钮
             DownloadButton(comic: comic)
@@ -485,6 +573,7 @@ struct ComicProgressSection: View {
 
 struct ReadingStatusSection: View {
     let currentStatus: String?
+    var isUpdating = false
     let onSelect: (String?) -> Void
 
     private static let statuses: [(key: String, icon: String)] = [
@@ -496,9 +585,15 @@ struct ReadingStatusSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("阅读状态")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("阅读状态")
+                if isUpdating {
+                    ProgressView().controlSize(.mini)
+                    Text("更新中…")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
@@ -617,6 +712,18 @@ final class DetailViewModel {
     var comic: Comic?
     var isLoading = false
     var errorMessage: String?
+    var isUpdatingFavorite = false
+    var isUpdatingReadingStatus = false
+    var isActionErrorPresented = false
+    var actionErrorMessage: String?
+
+    var isPerformingAction: Bool { isUpdatingFavorite || isUpdatingReadingStatus }
+
+    private enum FailedAction {
+        case favorite
+        case readingStatus(String?)
+    }
+    private var failedAction: FailedAction?
 
     private let api = APIClient.shared
     private var modelContext: ModelContext?
@@ -632,6 +739,10 @@ final class DetailViewModel {
         do {
             comic = try await api.fetchComic(id: id)
         } catch {
+            guard !Task.isCancelled else {
+                isLoading = false
+                return
+            }
             // 离线 fallback：从本地已下载数据构造 Comic
             if let meta = OfflineFileManager.shared.loadMeta(comicId: id) {
                 let cached = cachedComic(id: id)
@@ -695,20 +806,28 @@ final class DetailViewModel {
     }
 
     func toggleFavorite() async {
-        guard let comic else { return }
+        guard let comic, !isPerformingAction else { return }
+        isUpdatingFavorite = true
+        defer { isUpdatingFavorite = false }
         do {
             let resp = try await api.toggleFavorite(comicId: comic.id)
             let newFav = resp["isFavorite"] ?? !(comic.isFavorite)
             self.comic = comic.withFavorite(newFav)
             // 同步到本地缓存
             syncFavoriteToCache(comicId: comic.id, isFavorite: newFav)
+            failedAction = nil
         } catch {
             AppLogger.error("收藏失败: \(error)")
+            failedAction = .favorite
+            actionErrorMessage = "收藏未能更新，请检查连接后重试。"
+            isActionErrorPresented = true
         }
     }
 
     func updateReadingStatus(_ status: String?) async {
-        guard let comic else { return }
+        guard let comic, !isPerformingAction else { return }
+        isUpdatingReadingStatus = true
+        defer { isUpdatingReadingStatus = false }
         let shouldClearFinishedProgress = comic.readingStatus == "finished" && status == nil
         let shouldMarkFinished = status == "finished" && comic.pageCount > 0
         let finishedAt = shouldMarkFinished ? Date() : nil
@@ -732,8 +851,20 @@ final class DetailViewModel {
             }
             self.comic = updatedComic
             syncReadingStatusToCache(comicId: comic.id, status: status)
+            failedAction = nil
         } catch {
             AppLogger.error("更新阅读状态失败: \(error)")
+            failedAction = .readingStatus(status)
+            actionErrorMessage = "阅读状态未能更新，请检查连接后重试。"
+            isActionErrorPresented = true
+        }
+    }
+
+    func retryFailedAction() async {
+        switch failedAction {
+        case .favorite: await toggleFavorite()
+        case .readingStatus(let status): await updateReadingStatus(status)
+        case nil: break
         }
     }
 

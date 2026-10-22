@@ -179,7 +179,13 @@ struct CompletedDownloadRow: View {
 
     var body: some View {
         NavigationLink {
-            ComicDetailView(comicId: task.comicId)
+            ComicDetailView(
+                comicId: task.comicId,
+                initialPreview: ComicDetailPreview(
+                    id: task.comicId, title: task.title,
+                    pageCount: task.totalPages, isNovel: task.isNovel
+                )
+            )
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {

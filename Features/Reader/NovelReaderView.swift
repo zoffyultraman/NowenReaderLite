@@ -45,6 +45,7 @@ struct NovelReaderView: View {
                         paginationGeneration: viewModel.paginationGeneration,
                         initialPage: currentPage,
                         isPageInteractionEnabled: !showOverlay,
+                        onToggleOverlay: { showOverlay.toggle() },
                         onPageChanged: { page in
                             currentPage = page
                             // 尝试追加下一章（无缝翻页）
@@ -137,17 +138,17 @@ struct NovelReaderView: View {
                     .frame(width: max(88, geometry.size.width * 0.4))
                     .contentShape(Rectangle())
                     .onTapGesture { showOverlay.toggle() }
-                    .allowsHitTesting(!viewModel.isLoading && !viewModel.pages.isEmpty)
+                    .allowsHitTesting(showOverlay && !viewModel.isLoading && !viewModel.pages.isEmpty)
             }
-            .overlay(alignment: .top) {
-                topOverlay
-                    .opacity(showOverlay ? 1 : 0)
-                    .allowsHitTesting(showOverlay)
-            }
-            .overlay(alignment: .bottom) {
-                bottomOverlay
-                    .opacity(showOverlay ? 1 : 0)
-                    .allowsHitTesting(showOverlay)
+            .overlay {
+                ReaderChrome(
+                    isPresented: showOverlay || viewModel.isLoading || viewModel.pages.isEmpty
+                ) {
+                    topOverlay
+                } footer: {
+                    if !viewModel.pages.isEmpty { bottomOverlay }
+                }
+                .environment(\.colorScheme, viewModel.darkMode ? .dark : .light)
             }
             .sheet(isPresented: $showChapterList) {
                 ChapterListView(
@@ -165,7 +166,6 @@ struct NovelReaderView: View {
                 )
             }
         }
-        .ignoresSafeArea(.container, edges: .bottom)
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         .toolbarBackground(.hidden, for: .tabBar)
@@ -289,12 +289,7 @@ struct NovelTopOverlay: View {
 
     var body: some View {
         HStack {
-            Button(action: onDismiss) {
-                Image(systemName: "chevron.left")
-                    .font(.title3.weight(.medium))
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.plain)
+            ReaderBackButton(action: onDismiss)
 
             Spacer()
 
@@ -314,14 +309,9 @@ struct NovelTopOverlay: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(darkMode ? "切换到浅色阅读" : "切换到深色阅读")
         }
         .foregroundStyle(darkMode ? Color.white : Color.primary)
-        .shadow(
-            color: darkMode ? Color.black.opacity(0.8) : Color.white.opacity(0.95),
-            radius: 2
-        )
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
     }
 }
 
@@ -352,13 +342,14 @@ struct NovelBottomOverlay: View {
                     }
                 )
                     .tint(Color.accentColor)
+                    .accessibilityLabel("正文字号")
+                    .accessibilityValue("\(Int(fontSize))")
                 Text("A").font(.title3.weight(.bold))
                 Text("\(Int(fontSize))")
                     .font(.caption.monospacedDigit())
                     .opacity(0.72)
                     .frame(width: 28)
             }
-            .padding(.horizontal, 24)
 
             HStack {
                 Button(action: onPrevChapter) {
@@ -388,15 +379,8 @@ struct NovelBottomOverlay: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 24)
         }
         .foregroundStyle(controlForeground)
-        .shadow(
-            color: darkMode ? Color.black.opacity(0.8) : Color.white.opacity(0.95),
-            radius: 2
-        )
-        .padding(.vertical, 16)
-        .padding(.bottom, 8)
     }
 
     private var controlForeground: Color {
@@ -638,6 +622,7 @@ struct NovelPager: UIViewControllerRepresentable {
     let paginationGeneration: Int
     let initialPage: Int
     let isPageInteractionEnabled: Bool
+    let onToggleOverlay: () -> Void
     let onPageChanged: (Int) -> Void
     let onReachEnd: () -> Void
     let onSwipeToPrev: () -> Void
@@ -657,6 +642,12 @@ struct NovelPager: UIViewControllerRepresentable {
         pvc.isDoubleSided = false
         pvc.view.isUserInteractionEnabled = isPageInteractionEnabled
         pvc.view.backgroundColor = pageBackgroundColor
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.handleOverlayTap)
+        )
+        tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
+        pvc.view.addGestureRecognizer(tap)
         return pvc
     }
 
@@ -724,7 +715,7 @@ struct NovelPager: UIViewControllerRepresentable {
         darkMode ? UIColor(white: 0.1, alpha: 1) : .systemBackground
     }
 
-    class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
         var parent: NovelPager
         var cachedVCs: [NovelTextPageVC] = []
         var currentIndex: Int = 0
@@ -738,6 +729,24 @@ struct NovelPager: UIViewControllerRepresentable {
 
         init(_ parent: NovelPager) {
             self.parent = parent
+        }
+
+        @objc func handleOverlayTap() {
+            parent.onToggleOverlay()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let view = gestureRecognizer.view else { return false }
+            let point = touch.location(in: view)
+            guard point.x >= view.bounds.width * 0.3,
+                  point.x <= view.bounds.width * 0.7 else { return false }
+            var touchedView = touch.view
+            while let target = touchedView {
+                // 插图保留自己的放大手势；工具栏由 SwiftUI 接收操作。
+                if target is UIControl || target is UIImageView { return false }
+                touchedView = target.superview
+            }
+            return true
         }
 
         func rebuildCache(

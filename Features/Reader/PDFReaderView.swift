@@ -13,6 +13,7 @@ struct PDFReaderView: View {
     @State private var currentPage = 0
     @State private var totalPages = 0
     @State private var activityTracker: ReadingActivityTracker?
+    @State private var showOverlay = false
 
     var body: some View {
         ZStack {
@@ -27,12 +28,14 @@ struct PDFReaderView: View {
                 loadError: $loadError,
                 onDocumentLoaded: { pages in
                     totalPages = pages
-                    startOrUpdateActivity(page: min(max(initialPage, 0), max(pages - 1, 0)), totalPages: pages)
+                    currentPage = min(max(initialPage, 0), max(pages - 1, 0))
+                    startOrUpdateActivity(page: currentPage, totalPages: pages)
                 },
                 onPageChanged: { page in
                     currentPage = page
                     startOrUpdateActivity(page: page, totalPages: totalPages)
-                }
+                },
+                onToggleOverlay: { showOverlay.toggle() }
             )
             .ignoresSafeArea()
 
@@ -56,6 +59,25 @@ struct PDFReaderView: View {
                     .buttonStyle(.bordered)
                 }
             }
+
+            ReaderChrome(isPresented: showOverlay || isLoading || loadError) {
+                HStack {
+                    ReaderBackButton { dismiss() }
+                    Spacer()
+                    Text("PDF").font(.callout.weight(.medium))
+                    Spacer()
+                    Color.clear.frame(width: 44, height: 44)
+                        .accessibilityHidden(true)
+                }
+            } footer: {
+                if totalPages > 0, !loadError {
+                    Text("页 \(currentPage + 1)/\(totalPages)")
+                        .font(.callout.monospacedDigit())
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .foregroundStyle(.white)
+            .environment(\.colorScheme, .dark)
         }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
@@ -70,18 +92,6 @@ struct PDFReaderView: View {
             } else if newPhase == .background || newPhase == .inactive {
                 activityTracker?.setActive(false)
                 Task { await flushActivity() }
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.title3.weight(.medium))
-                    .foregroundStyle(.white)
-                    .padding(10)
-                    .background(.ultraThinMaterial.opacity(0.4), in: Circle())
-                    .padding(8)
             }
         }
     }
@@ -116,6 +126,30 @@ struct PDFReaderView: View {
     }
 }
 
+private final class ReaderPDFView: PDFView {
+    var overlayTap: UITapGestureRecognizer?
+    private var observedDoubleTaps: Set<ObjectIdentifier> = []
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let overlayTap else { return }
+        // PDFKit 会在正文加载后添加缩放手势，让中间单击等待双击判定。
+        configureDoubleTaps(in: self, overlayTap: overlayTap)
+    }
+
+    private func configureDoubleTaps(in view: UIView, overlayTap: UITapGestureRecognizer) {
+        for case let tap as UITapGestureRecognizer in view.gestureRecognizers ?? []
+            where tap.numberOfTapsRequired > 1 {
+            if observedDoubleTaps.insert(ObjectIdentifier(tap)).inserted {
+                overlayTap.require(toFail: tap)
+            }
+        }
+        for subview in view.subviews {
+            configureDoubleTaps(in: subview, overlayTap: overlayTap)
+        }
+    }
+}
+
 // MARK: - PDFKit 桥接
 
 struct PDFKitView: UIViewRepresentable {
@@ -127,17 +161,19 @@ struct PDFKitView: UIViewRepresentable {
     @Binding var loadError: Bool
     let onDocumentLoaded: (Int) -> Void
     let onPageChanged: (Int) -> Void
+    let onToggleOverlay: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onDocumentLoaded: onDocumentLoaded,
             onPageChanged: onPageChanged,
-            onLoadFailed: { loadError = true }
+            onLoadFailed: { loadError = true },
+            onToggleOverlay: onToggleOverlay
         )
     }
 
     @MainActor
-    class Coordinator {
+    class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private struct ReadingPosition {
             let pageIndex: Int
             let zoomRatio: CGFloat
@@ -158,15 +194,48 @@ struct PDFKitView: UIViewRepresentable {
         var onDocumentLoaded: (Int) -> Void
         var onPageChanged: (Int) -> Void
         var onLoadFailed: () -> Void
+        var onToggleOverlay: () -> Void
 
         init(
             onDocumentLoaded: @escaping (Int) -> Void,
             onPageChanged: @escaping (Int) -> Void,
-            onLoadFailed: @escaping () -> Void
+            onLoadFailed: @escaping () -> Void,
+            onToggleOverlay: @escaping () -> Void
         ) {
             self.onDocumentLoaded = onDocumentLoaded
             self.onPageChanged = onPageChanged
             self.onLoadFailed = onLoadFailed
+            self.onToggleOverlay = onToggleOverlay
+            super.init()
+        }
+
+        @objc func handleOverlayTap() {
+            onToggleOverlay()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let pdfView = gestureRecognizer.view as? PDFView,
+                  pdfView.document != nil else { return false }
+            let point = touch.location(in: pdfView)
+            guard point.x >= pdfView.bounds.width * 0.3,
+                  point.x <= pdfView.bounds.width * 0.7 else { return false }
+            var touchedView = touch.view
+            while let view = touchedView {
+                if view is UIControl { return false }
+                touchedView = view.superview
+            }
+            if let page = pdfView.page(for: point, nearest: false),
+               page.annotation(at: pdfView.convert(point, to: page)) != nil {
+                return false
+            }
+            return true
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            otherGestureRecognizer is UITapGestureRecognizer
         }
 
         deinit {
@@ -325,12 +394,19 @@ struct PDFKitView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> PDFView {
-        let pdfView = PDFView()
+        let pdfView = ReaderPDFView()
         pdfView.autoScales = true
         pdfView.displayMode = .singlePage
         pdfView.displayDirection = .horizontal
         pdfView.backgroundColor = .black
         pdfView.usePageViewController(true, withViewOptions: nil)
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.handleOverlayTap)
+        )
+        tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
+        pdfView.overlayTap = tap
+        pdfView.addGestureRecognizer(tap)
         context.coordinator.observePageChanges(in: pdfView)
         context.coordinator.observeMemoryWarnings(in: pdfView)
         return pdfView
@@ -340,6 +416,7 @@ struct PDFKitView: UIViewRepresentable {
         context.coordinator.onDocumentLoaded = onDocumentLoaded
         context.coordinator.onPageChanged = onPageChanged
         context.coordinator.onLoadFailed = { loadError = true }
+        context.coordinator.onToggleOverlay = onToggleOverlay
         // 只在 reloadID 或 url 变化时重新加载
         let coordinator = context.coordinator
         coordinator.setActive(isActive, in: uiView)

@@ -36,6 +36,12 @@ struct SearchView: View {
                 Spacer()
                 ProgressView()
                 Spacer()
+            } else if let error = viewModel.errorMessage {
+                Spacer()
+                SearchErrorView(message: error) {
+                    viewModel.search(immediately: true)
+                }
+                Spacer()
             } else if viewModel.results.isEmpty && !viewModel.query.isEmpty {
                 Spacer()
                 VStack(spacing: 8) {
@@ -49,7 +55,7 @@ struct SearchView: View {
                 Spacer()
             } else {
                 List(viewModel.results) { comic in
-                    NavigationLink(value: comic.id) {
+                    NavigationLink(value: ComicDetailRoute(comic: comic)) {
                         SearchResultRow(id: comic.id, title: comic.title, author: comic.author, isNovel: comic.isNovel, isFavorite: comic.isFavorite, serverURL: api.serverURL)
                     }
                     .buttonStyle(.plain)
@@ -60,13 +66,32 @@ struct SearchView: View {
         }
         .navigationTitle("搜索")
         .navigationBarTitleDisplayMode(.large)
+        .comicDetailNavigation()
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
                 .bookCoverDestination(id: "comic-\(comicId)")
         }
         .onChange(of: api.selectedLibraryId) { _, _ in
-            viewModel.query = ""
-            viewModel.results = []
+            viewModel.clear()
+        }
+        .onChange(of: viewModel.query) { _, _ in
+            viewModel.search()
+        }
+    }
+}
+
+struct SearchErrorView: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("搜索暂时不可用", systemImage: "wifi.exclamationmark")
+        } description: {
+            Text(message)
+        } actions: {
+            Button("重试", action: retry)
+                .buttonStyle(.bordered)
         }
     }
 }
@@ -115,55 +140,15 @@ struct SearchResultRow: View {
     }
 }
 
-// MARK: - ViewModel
-
-@MainActor
-@Observable
-final class SearchViewModel {
-    var query = ""
-    var results: [Comic] = []
-    var isLoading = false
-
-    private let api = APIClient.shared
-    private var searchTask: Task<Void, Never>?
-
-    func search(immediately: Bool = false) {
-        searchTask?.cancel()
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else {
-            results = []
-            isLoading = false
-            return
-        }
-
-        searchTask = Task {
-            if !immediately {
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
+extension SearchViewModel {
+    convenience init() {
+        self.init(
+            isSearchAvailable: {
+                !APIClient.shared.isOfflineMode && APIClient.shared.isNetworkReachable
+            },
+            fetchComics: { query in
+                try await APIClient.shared.fetchComics(page: 1, pageSize: 50, search: query).comics
             }
-            isLoading = true
-
-            do {
-                let resp = try await api.fetchComics(page: 1, pageSize: 50, search: q)
-                if !Task.isCancelled {
-                    results = resp.comics
-                }
-            } catch {
-                if !Task.isCancelled {
-                    AppLogger.error("搜索失败: \(error)")
-                }
-            }
-            if !Task.isCancelled {
-                isLoading = false
-            }
-        }
-    }
-
-    func clear() {
-        searchTask?.cancel()
-        searchTask = nil
-        query = ""
-        results = []
-        isLoading = false
+        )
     }
 }
