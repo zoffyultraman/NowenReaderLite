@@ -462,7 +462,7 @@ private struct ServerRouteSettingsSheet: View {
                 } header: {
                     Text("备用线路")
                 } footer: {
-                    Text("首次验证需要两条线路同时可达。验证成功后会保留结果，自动模式优先使用响应延迟更低的线路；可在设置页查看两条线路的延迟。")
+                    Text("首次验证需要两条线路同时可达。验证成功后会保留结果，自动模式优先使用响应延迟更低的线路。")
                 }
 
                 ServerAPIKeySettingsSection(
@@ -472,46 +472,12 @@ private struct ServerRouteSettingsSheet: View {
                     removesStoredAPIKey: $removesStoredAPIKey
                 )
 
-                if isCurrentServer {
-                    Section("当前连接") {
-                        LabeledContent("正在使用") {
-                            HStack(spacing: 5) {
-                                if api.activeRouteIsLocal {
-                                    Image(systemName: "wifi")
-                                }
-                                Text(api.activeRouteTitle)
-                            }
-                        }
-                        if api.backupServerURL != nil {
-                            HStack(spacing: 12) {
-                                Button(action: showVerificationDetails) {
-                                    HStack(spacing: 12) {
-                                        Text("线路验证")
-                                        Spacer(minLength: 8)
-                                        ServerRouteVerificationStatusView(
-                                            verification: api.routeVerification
-                                        )
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityHint("显示验证详情")
-                                Button(action: verifyRoutes) {
-                                    Image(systemName: "arrow.clockwise")
-                                        .frame(width: 24, height: 24)
-                                }
-                                .buttonStyle(.plain)
-                                .controlSize(.small)
-                                .disabled(isSaving)
-                                .accessibilityLabel("重新验证线路")
-                            }
-                            .lineLimit(1)
-                            .fixedSize(horizontal: false, vertical: true)
-                        }
-                        LabeledContent("认证方式") {
-                            Text(api.activeAuthenticationTitle)
-                        }
-                    }
+                if isCurrentServer, api.matchesServerProfile(initialPrimaryURL) {
+                    ServerConnectionStatusSection(
+                        isSaving: isSaving,
+                        onShowVerificationDetails: showVerificationDetails,
+                        onVerifyRoutes: verifyRoutes
+                    )
                 }
             }
             .navigationTitle("连接设置")
@@ -592,7 +558,10 @@ private struct ServerRouteSettingsSheet: View {
                 showsVerificationResultWhenReady = false
             }
             .task {
-                guard isCurrentServer,
+                guard isCurrentServer, api.matchesServerProfile(initialPrimaryURL) else { return }
+                await api.refreshRouteLatencies()
+                guard !Task.isCancelled,
+                      api.matchesServerProfile(initialPrimaryURL),
                       api.backupServerURL != nil,
                       api.routeVerification != .checking else {
                     return
@@ -843,7 +812,153 @@ private struct ServerRouteSettingsSheet: View {
     }
 }
 
-struct ServerRouteVerificationStatusView: View {
+private struct ServerConnectionStatusSection: View {
+    @Environment(APIClient.self) private var api
+    let isSaving: Bool
+    let onShowVerificationDetails: () -> Void
+    let onVerifyRoutes: () -> Void
+
+    var body: some View {
+        Section {
+            ServerRouteLatencyRow(
+                title: "主线路", url: api.primaryServerURL,
+                isActive: api.serverURL == api.primaryServerURL,
+                latency: api.routeLatencies[api.primaryServerURL],
+                isMeasuring: api.isMeasuringRouteLatencies
+            )
+            if let backupURL = api.backupServerURL {
+                ServerRouteLatencyRow(
+                    title: "备用线路", url: backupURL,
+                    isActive: api.serverURL == backupURL,
+                    latency: api.routeLatencies[backupURL],
+                    isMeasuring: api.isMeasuringRouteLatencies
+                )
+                HStack(spacing: 12) {
+                    Button(action: onShowVerificationDetails) {
+                        ServerRouteInfoRow(title: "线路验证") {
+                            ServerRouteVerificationStatusView(verification: api.routeVerification)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("显示验证详情")
+                    Button(action: onVerifyRoutes) {
+                        Image(systemName: "arrow.clockwise")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
+                    .disabled(isSaving)
+                    .accessibilityLabel("重新验证线路")
+                }
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            }
+
+            ServerRouteInfoRow(title: "认证方式") {
+                Text(api.activeAuthenticationTitle)
+            }
+            if let measuredAt = api.routeLatenciesMeasuredAt {
+                ServerRouteInfoRow(title: "最近检测") {
+                    Text(measuredAt, format: .dateTime.hour().minute().second())
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Button {
+                Task { await api.refreshRouteLatencies() }
+            } label: {
+                HStack {
+                    Label("重新测速", systemImage: "arrow.clockwise")
+                    Spacer()
+                    if api.isMeasuringRouteLatencies {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .labelStyle(.titleAndIcon)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .disabled(isSaving || api.isMeasuringRouteLatencies)
+            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+        } header: {
+            Text("当前连接")
+        } footer: {
+            Text("自动模式在前台每 30 秒检测一次，延迟接近时保持当前连接。手动模式只测速。响应延迟不代表下载速度。")
+        }
+    }
+}
+
+private struct ServerRouteInfoRow<Content: View>: View {
+    let title: LocalizedStringKey
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(title)
+            Spacer(minLength: 8)
+            content()
+                .foregroundStyle(.secondary)
+                .labelStyle(.titleAndIcon)
+                .multilineTextAlignment(.trailing)
+        }
+        // 行高跟随内容，避免自动标签样式撑高表单行。
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+    }
+}
+
+private struct ServerRouteLatencyRow: View {
+    let title: LocalizedStringKey
+    let url: String
+    let isActive: Bool
+    let latency: ServerRouteLatency?
+    let isMeasuring: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(title)
+                    if ServerRouteSelector.isLocalURL(url) {
+                        Text("内网").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if isActive {
+                        Label("使用中", systemImage: "checkmark.circle.fill")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                    }
+                }
+                Text(url)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            if let milliseconds = latency?.milliseconds {
+                Text("\(max(1, Int(milliseconds.rounded(.up)))) ms")
+                    .monospacedDigit()
+                    .accessibilityLabel("响应延迟 \(max(1, Int(milliseconds.rounded(.up)))) 毫秒")
+            } else if isMeasuring {
+                Text("测速中…").foregroundStyle(.secondary)
+            } else if latency == .unreachable {
+                Text("不可达").foregroundStyle(.orange)
+            } else {
+                Text("未测速").foregroundStyle(.secondary)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ServerRouteVerificationStatusView: View {
     let verification: ServerRouteVerification
 
     var body: some View {
