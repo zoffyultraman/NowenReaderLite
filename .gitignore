@@ -36,6 +36,7 @@ Pods/
 
 # Project
 CHANGES.md
+/design-qa.md
 
 # Local shell scripts
 *.sh
