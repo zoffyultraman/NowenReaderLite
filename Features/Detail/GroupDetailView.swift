@@ -6,6 +6,7 @@ struct GroupDetailView: View {
     let contentType: String?
     @State private var viewModel = GroupDetailViewModel()
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
     @Environment(APIClient.self) private var api
     @State private var showDownloadAllAlert = false
     @State private var showDownloadResult = false
@@ -18,7 +19,6 @@ struct GroupDetailView: View {
     }
 
     var body: some View {
-        @Bindable var viewModel = viewModel
         Group {
             if viewModel.isLoading {
                 ProgressView()
@@ -79,36 +79,37 @@ struct GroupDetailView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
 
-                        WorkMetadataSection(tags: detail.tagItems, categories: detail.categories)
+                        WorkMetadataSection(
+                            tags: detail.tagItems,
+                            categories: detail.categories,
+                            onSelectTag: { tagName in
+                                api.activateTagFilter(tagName)
+                            }
+                        )
                             .padding(.horizontal, 20)
 
-                        WorkDescriptionSection(text: detail.description)
-
-                        if !readingUnits.isEmpty && !api.isOfflineMode {
-                            GroupEditionsAndLocationSection(
-                                readingUnits: readingUnits,
-                                selectedUnitId: viewModel.selectedUnitId,
-                                selectedComic: viewModel.selectedUnitComic,
-                                isLoadingUnit: viewModel.isLoadingSelectedUnit,
-                                isSwitchingEdition: viewModel.isSwitchingEdition,
-                                exportingComicId: viewModel.exportingComicId,
-                                onSelectUnit: { unitId in
-                                    Task { await viewModel.selectUnit(comicId: unitId) }
-                                },
-                                onSwitchEdition: { targetId in
-                                    Task { await viewModel.switchEdition(to: targetId) }
-                                },
-                                onExportOriginalFile: { comicId, downloadPath, preferredFilename in
-                                    Task {
-                                        await viewModel.exportOriginalFile(
-                                            comicId: comicId,
-                                            downloadPath: downloadPath,
-                                            preferredFilename: preferredFilename
-                                        )
-                                    }
-                                }
-                            )
+                        WorkActionBarSection(
+                            isFavorite: viewModel.isFavorite,
+                            isUpdatingFavorite: viewModel.isUpdatingFavorite,
+                            isOfflineMode: api.isOfflineMode,
+                            unitIds: readingUnits.map(\.id),
+                            hasReadingProgress: viewModel.hasReadingProgress,
+                            hasContinueTarget: viewModel.continueUnit != nil,
+                            onToggleFavorite: {
+                                Task { await viewModel.toggleFavorite(context: modelContext) }
+                            },
+                            onTapCache: {
+                                showDownloadAllAlert = true
+                            }
+                        ) {
+                            if let unit = viewModel.continueUnit {
+                                unit.readerView(groupContext: viewModel.readingContext(for: unit.id))
+                                    .bookCoverDestination(id: "group-reader-\(groupId)")
+                            }
                         }
+                        .padding(.horizontal, 20)
+
+                        WorkDescriptionSection(text: detail.description)
                     }
 
                     VStack(alignment: .leading, spacing: 20) {
@@ -171,15 +172,28 @@ struct GroupDetailView: View {
                 }
             }
         }
+        .onChange(of: api.tagFilterNavigationRevision) { _, _ in
+            dismiss()
+        }
         .task {
             DownloadManager.shared.setModelContext(modelContext)
             await viewModel.load(groupId: groupId, contentType: contentType, context: modelContext)
         }
-        .alert("下载全部卷", isPresented: $showDownloadAllAlert) {
+        .onAppear {
+            guard viewModel.detail != nil else { return }
+            Task {
+                await viewModel.refreshSilently(
+                    groupId: groupId,
+                    contentType: contentType,
+                    context: modelContext
+                )
+            }
+        }
+        .alert("离线缓存全部卷", isPresented: $showDownloadAllAlert) {
             Button("取消", role: .cancel) {}
-            Button("下载") {
+            Button("开始缓存") {
                 guard let detail = viewModel.detail else { return }
-                let result = DownloadManager.shared.downloadAll(comics: detail.readingUnits, groupDetail: detail)
+                let result = viewModel.downloadAllVolumes(detail: detail, context: modelContext)
                 downloadQueued = result.queued
                 downloadSkipped = result.skipped
                 showDownloadResult = true
@@ -189,125 +203,16 @@ struct GroupDetailView: View {
                 let units = detail.readingUnits
                 let totalPages = units.reduce(0) { $0 + $1.pageCount }
                 let alreadyDownloaded = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
-                Text("共 \(units.count) 个阅读单元、\(totalPages) 页。已下载 \(alreadyDownloaded) 个，其余将加入下载队列。")
+                Text("共 \(units.count) 个阅读单元、\(totalPages) 页。已缓存 \(alreadyDownloaded) 个，其余将加入离线队列。")
             }
         }
-        .alert("下载结果", isPresented: $showDownloadResult) {
+        .alert("离线缓存结果", isPresented: $showDownloadResult) {
             Button("确定") {}
         } message: {
-            Text("已加入 \(downloadQueued) 卷到下载队列，跳过 \(downloadSkipped) 卷（已下载或空间不足）。")
-        }
-        .alert("操作未完成", isPresented: $viewModel.isActionErrorPresented) {
-            Button("确定", role: .cancel) {}
-        } message: {
-            Text(viewModel.actionErrorMessage ?? "请稍后重试。")
-        }
-        .sheet(item: $viewModel.exportedFileItem) { item in
-            OriginalFileShareSheet(fileURL: item.url)
+            Text("已加入 \(downloadQueued) 卷到缓存队列，跳过 \(downloadSkipped) 卷（已缓存或空间不足）。")
         }
     }
 
-}
-
-struct GroupEditionsAndLocationSection: View {
-    let readingUnits: [GroupComicItem]
-    let selectedUnitId: String?
-    let selectedComic: Comic?
-    let isLoadingUnit: Bool
-    let isSwitchingEdition: Bool
-    let exportingComicId: String?
-    let onSelectUnit: (String) -> Void
-    let onSwitchEdition: (String) -> Void
-    let onExportOriginalFile: (String, String?, String?) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if readingUnits.count > 1 {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("版本与文件位置", systemImage: "square.stack.3d.up")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 20)
-
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            ForEach(readingUnits) { unit in
-                                let isSelected = unit.id == selectedUnitId
-                                Button {
-                                    onSelectUnit(unit.id)
-                                } label: {
-                                    HStack(spacing: 5) {
-                                        Text(unit.title)
-                                            .lineLimit(1)
-                                        if !unit.formatBadge.isEmpty {
-                                            Text(unit.formatBadge)
-                                                .font(.caption2.weight(.bold))
-                                                .opacity(0.85)
-                                        }
-                                    }
-                                    .font(.caption.weight(isSelected ? .semibold : .regular))
-                                    .foregroundStyle(isSelected ? .white : .primary)
-                                    .padding(.horizontal, 11)
-                                    .padding(.vertical, 6)
-                                    .background(isSelected ? Color.accentColor : Color(.systemGray6))
-                                    .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                    }
-                    .scrollIndicators(.hidden)
-                }
-            }
-
-            if isLoadingUnit && selectedComic == nil {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("正在加载版本与文件位置…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 20)
-            } else if let comic = selectedComic {
-                ComicEditionsSection(
-                    activeComicId: comic.id,
-                    editions: comic.resolvedEditions,
-                    isNovelLibrary: comic.isNovel,
-                    isSwitchingEdition: isSwitchingEdition,
-                    exportingComicId: exportingComicId,
-                    onSelectEdition: onSwitchEdition,
-                    onExportEdition: { edition in
-                        onExportOriginalFile(
-                            edition.comicId,
-                            edition.downloadUrl,
-                            edition.fileLocation?.filename
-                        )
-                    }
-                )
-
-                ComicFileLocationSection(
-                    comicId: comic.id,
-                    filename: comic.filename,
-                    relativePath: comic.relativePath,
-                    formatBadge: comic.formatBadge,
-                    fileLocation: comic.fileLocation,
-                    canDownload: comic.canDownloadOriginalFile,
-                    isImageFolder: comic.isImageFolder,
-                    isExporting: exportingComicId == comic.id,
-                    onExportOriginalFile: {
-                        onExportOriginalFile(
-                            comic.id,
-                            nil,
-                            comic.fileLocation?.filename ?? comic.filename
-                        )
-                    }
-                )
-            }
-        }
-        .padding(.top, 4)
-    }
 }
 
 struct GroupSeriesSectionView: View {
@@ -561,17 +466,24 @@ final class GroupDetailViewModel {
     var detail: GroupDetailResponse?
     var isLoading = false
     var errorMessage: String?
-    var selectedUnitId: String?
-    var selectedUnitComic: Comic?
-    var isLoadingSelectedUnit = false
-    var isSwitchingEdition = false
-    var exportingComicId: String?
-    var exportedFileItem: ExportedOriginalFileItem?
-    var actionErrorMessage: String?
-    var isActionErrorPresented = false
+    var isFavorite = false
+    var isUpdatingFavorite = false
     private var readingUnitIds: [String] = []
     private var readingUnitIndexById: [String: Int] = [:]
-    private var unitLoadVersion = 0
+
+    var continueUnit: GroupComicItem? {
+        let units = detail?.readingUnits ?? []
+        if let inProgress = units.first(where: { hasStarted($0) && !isFinished($0) }) {
+            return inProgress
+        }
+        return units.first(where: { !isFinished($0) }) ?? units.first
+    }
+
+    var hasReadingProgress: Bool {
+        (detail?.readingUnits ?? []).contains {
+            hasStarted($0) || $0.readingStatus == "finished"
+        }
+    }
 
     func load(groupId: Int, contentType: String? = nil, context: ModelContext? = nil) async {
         guard !isLoading else { return }
@@ -580,152 +492,205 @@ final class GroupDetailViewModel {
 
         // 离线：从本地加载合集
         if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
-            let offlineSnapshot = await Task.detached(priority: .utility) {
-                OfflineGroupDetailLoadSnapshot(
-                    group: OfflineFileManager.shared.loadGroupDetail(groupId: groupId),
-                    completedMetas: OfflineFileManager.shared.completedDownloads()
-                )
-            }.value
-            guard !Task.isCancelled else {
-                isLoading = false
-                return
-            }
-            if let local = offlineSnapshot.group {
-                var comics: [GroupComicItem] = []
-                let localComicIds = Set(local.comicIds)
-                // 尝试从 SwiftData 缓存获取更完整的信息
-                var cachedMap: [String: CachedComic] = [:]
-                if let context {
-                    let allCached = try? context.fetch(FetchDescriptor<CachedComic>())
-                    if let allCached {
-                        for c in allCached where localComicIds.contains(c.id) {
-                            cachedMap[c.id] = c
-                        }
-                    }
-                }
-                let iso8601Formatter = ISO8601DateFormatter()
-                for (index, comicId) in local.comicIds.enumerated() {
-                    guard let meta = offlineSnapshot.completedMetas[comicId] else {
-                        continue
-                    }
-                    let cached = cachedMap[comicId]
-                    if let contentType, let cachedType = cached?.type, cachedType != contentType {
-                        continue
-                    }
-                    let resolvedType = cached?.type
-                        ?? (meta.isNovel == true ? "novel" : "comic")
-                    comics.append(GroupComicItem(
-                        id: comicId,
-                        filename: nil,
-                        title: cached?.title ?? meta.title,
-                        pageCount: cached?.pageCount ?? meta.pageCount,
-                        fileSize: meta.fileSize,
-                        lastReadPage: cached?.lastReadPage ?? 0,
-                        totalReadTime: nil,
-                        coverUrl: cached?.coverUrl,
-                        sortIndex: index,
-                        readingStatus: nil,
-                        lastReadAt: cached?.lastReadAt.map {
-                            iso8601Formatter.string(from: $0)
-                        },
-                        type: resolvedType
-                    ))
-                }
-                updateDetail(GroupDetailResponse(
-                    id: local.id,
-                    name: local.name,
-                    coverUrl: local.coverUrl,
-                    author: local.author,
-                    description: local.description,
-                    comicCount: comics.count,
-                    tagItems: local.tagItems,
-                    categories: local.categories,
-                    seriesList: [],
-                    comics: comics
-                ))
-            } else {
-                updateDetail(nil)
-                errorMessage = "离线模式下无法加载合集"
-            }
+            await loadOfflineGroup(groupId: groupId, contentType: contentType, context: context)
             isLoading = false
             return
         }
 
         do {
-            let loadedDetail = try await APIClient.shared.fetchGroupDetail(id: groupId, contentType: contentType)
+            async let detailTask = APIClient.shared.fetchGroupDetail(id: groupId, contentType: contentType)
+            async let favGroupsTask: [ComicGroup]? = try? APIClient.shared.fetchGroups(
+                contentType: contentType,
+                favoritesOnly: true
+            )
+            let loadedDetail = try await detailTask
+            let favGroups = await favGroupsTask
             updateDetail(loadedDetail)
-            if let initialUnitId = selectedUnitId ?? loadedDetail.readingUnits.first?.id {
-                await selectUnit(comicId: initialUnitId)
+            if let favGroups {
+                isFavorite = favGroups.contains { $0.id == groupId }
+            } else if let context {
+                isFavorite = hasAnyFavoritedUnitInCache(unitIds: loadedDetail.readingUnits.map(\.id), context: context)
             }
         } catch {
-            updateDetail(nil)
-            errorMessage = error.localizedDescription
+            if OfflineFileManager.shared.loadGroupDetail(groupId: groupId) != nil {
+                await loadOfflineGroup(groupId: groupId, contentType: contentType, context: context)
+            } else {
+                updateDetail(nil)
+                errorMessage = error.localizedDescription
+            }
         }
         isLoading = false
     }
 
-    func selectUnit(comicId: String) async {
-        selectedUnitId = comicId
-        guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
-            selectedUnitComic = nil
-            isLoadingSelectedUnit = false
+    func refreshSilently(groupId: Int, contentType: String? = nil, context: ModelContext? = nil) async {
+        guard !isLoading else { return }
+        if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
+            await loadOfflineGroup(groupId: groupId, contentType: contentType, context: context)
             return
         }
-        unitLoadVersion += 1
-        let version = unitLoadVersion
-        isLoadingSelectedUnit = true
-        defer {
-            if version == unitLoadVersion {
-                isLoadingSelectedUnit = false
+        do {
+            async let detailTask = APIClient.shared.fetchGroupDetail(id: groupId, contentType: contentType)
+            async let favGroupsTask: [ComicGroup]? = try? APIClient.shared.fetchGroups(
+                contentType: contentType,
+                favoritesOnly: true
+            )
+            let loadedDetail = try await detailTask
+            let favGroups = await favGroupsTask
+            updateDetail(loadedDetail)
+            if let favGroups {
+                isFavorite = favGroups.contains { $0.id == groupId }
+            }
+        } catch {
+            // 静默刷新失败保持当前数据
+        }
+    }
+
+    func toggleFavorite(context: ModelContext? = nil) async {
+        guard !readingUnitIds.isEmpty, !isUpdatingFavorite else { return }
+        let targetFavorite = !isFavorite
+        isUpdatingFavorite = true
+        defer { isUpdatingFavorite = false }
+        do {
+            try await APIClient.shared.batchSetFavorite(comicIds: readingUnitIds, isFavorite: targetFavorite)
+            isFavorite = targetFavorite
+            syncFavoriteToCache(unitIds: readingUnitIds, isFavorite: targetFavorite, context: context)
+            APIClient.shared.contentMutationRevision += 1
+        } catch {
+            AppLogger.error("切换合集收藏状态失败: \(error.localizedDescription)")
+        }
+    }
+
+    func downloadAllVolumes(detail: GroupDetailResponse, context: ModelContext?) -> (queued: Int, skipped: Int) {
+        if let context {
+            cacheGroupUnits(detail.readingUnits, context: context)
+        }
+        return DownloadManager.shared.downloadAll(comics: detail.readingUnits, groupDetail: detail)
+    }
+
+    private func loadOfflineGroup(groupId: Int, contentType: String?, context: ModelContext?) async {
+        let offlineSnapshot = await Task.detached(priority: .utility) {
+            OfflineGroupDetailLoadSnapshot(
+                group: OfflineFileManager.shared.loadGroupDetail(groupId: groupId),
+                completedMetas: OfflineFileManager.shared.completedDownloads()
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+
+        if let local = offlineSnapshot.group {
+            var comics: [GroupComicItem] = []
+            let localComicIds = Set(local.comicIds)
+            var cachedMap: [String: CachedComic] = [:]
+            if let context {
+                let allCached = try? context.fetch(FetchDescriptor<CachedComic>())
+                if let allCached {
+                    for c in allCached where localComicIds.contains(c.id) {
+                        cachedMap[c.id] = c
+                    }
+                }
+            }
+            let iso8601Formatter = ISO8601DateFormatter()
+            for (index, comicId) in local.comicIds.enumerated() {
+                guard let meta = offlineSnapshot.completedMetas[comicId] else {
+                    continue
+                }
+                let cached = cachedMap[comicId]
+                if let contentType, let cachedType = cached?.type, cachedType != contentType {
+                    continue
+                }
+                let resolvedType = cached?.type
+                    ?? (meta.isNovel == true ? "novel" : "comic")
+                comics.append(GroupComicItem(
+                    id: comicId,
+                    filename: nil,
+                    title: cached?.title ?? meta.title,
+                    pageCount: cached?.pageCount ?? meta.pageCount,
+                    fileSize: meta.fileSize,
+                    lastReadPage: cached?.lastReadPage ?? 0,
+                    totalReadTime: nil,
+                    coverUrl: cached?.coverUrl,
+                    sortIndex: index,
+                    readingStatus: cached?.readingStatus,
+                    lastReadAt: cached?.lastReadAt.map {
+                        iso8601Formatter.string(from: $0)
+                    },
+                    type: resolvedType
+                ))
+            }
+            updateDetail(GroupDetailResponse(
+                id: local.id,
+                name: local.name,
+                coverUrl: local.coverUrl,
+                author: local.author,
+                description: local.description,
+                comicCount: comics.count,
+                tagItems: local.tagItems,
+                categories: local.categories,
+                seriesList: [],
+                comics: comics
+            ))
+            isFavorite = comics.contains { cachedMap[$0.id]?.isFavorite == true }
+        } else {
+            updateDetail(nil)
+            errorMessage = "离线模式下无法加载合集"
+        }
+    }
+
+    private func cacheGroupUnits(_ units: [GroupComicItem], context: ModelContext) {
+        let existing = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "缓存合集分卷前查询")
+        var byId: [String: CachedComic] = [:]
+        for item in existing { byId[item.id] = item }
+        for unit in units {
+            if let existingCached = byId[unit.id] {
+                existingCached.title = unit.title
+                existingCached.pageCount = unit.pageCount
+                existingCached.lastReadPage = max(existingCached.lastReadPage, unit.lastReadPage)
+                existingCached.readingStatus = unit.readingStatus ?? existingCached.readingStatus
+                existingCached.type = unit.type ?? existingCached.type
+                existingCached.cachedAt = Date()
+            } else {
+                let c = CachedComic()
+                c.id = unit.id
+                c.title = unit.title
+                c.coverUrl = unit.coverUrl
+                c.pageCount = unit.pageCount
+                c.lastReadPage = unit.lastReadPage
+                c.readingStatus = unit.readingStatus
+                c.type = unit.type
+                c.lastReadAt = unit.lastReadAt.flatMap { Date.fromISO8601($0) }
+                c.cachedAt = Date()
+                context.insert(c)
+                byId[unit.id] = c
             }
         }
-        do {
-            let loaded = try await APIClient.shared.fetchComic(id: comicId)
-            guard !Task.isCancelled, version == unitLoadVersion else { return }
-            selectedUnitComic = loaded
-        } catch {
-            guard !Task.isCancelled, version == unitLoadVersion else { return }
-            AppLogger.error("加载合集分卷详情失败: \(error)")
-        }
+        context.saveOrLog()
     }
 
-    func switchEdition(to targetComicId: String) async {
-        guard targetComicId != selectedUnitComic?.id, !isSwitchingEdition else { return }
-        unitLoadVersion += 1
-        let version = unitLoadVersion
-        isSwitchingEdition = true
-        defer { isSwitchingEdition = false }
-        do {
-            let loaded = try await APIClient.shared.fetchComic(id: targetComicId)
-            guard !Task.isCancelled, version == unitLoadVersion else { return }
-            selectedUnitComic = loaded
-        } catch {
-            guard !Task.isCancelled else { return }
-            actionErrorMessage = "切换格式版本失败：\(error.localizedDescription)"
-            isActionErrorPresented = true
+    private func syncFavoriteToCache(unitIds: [String], isFavorite: Bool, context: ModelContext?) {
+        guard let context else { return }
+        let targetSet = Set(unitIds)
+        let cached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "同步合集收藏状态")
+        var changed = false
+        for item in cached where targetSet.contains(item.id) {
+            item.isFavorite = isFavorite
+            changed = true
         }
+        if changed { context.saveOrLog() }
     }
 
-    func exportOriginalFile(
-        comicId: String,
-        downloadPath: String? = nil,
-        preferredFilename: String? = nil
-    ) async {
-        guard exportingComicId == nil else { return }
-        exportingComicId = comicId
-        defer { exportingComicId = nil }
-        do {
-            let fileURL = try await APIClient.shared.downloadOriginalComicFile(
-                comicId: comicId,
-                downloadPath: downloadPath,
-                preferredFilename: preferredFilename
-            )
-            exportedFileItem = ExportedOriginalFileItem(url: fileURL)
-        } catch {
-            guard !Task.isCancelled else { return }
-            actionErrorMessage = "下载原文件失败：\(error.localizedDescription)"
-            isActionErrorPresented = true
-        }
+    private func hasAnyFavoritedUnitInCache(unitIds: [String], context: ModelContext) -> Bool {
+        let targetSet = Set(unitIds)
+        let cached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "检查合集缓存收藏状态")
+        return cached.contains { targetSet.contains($0.id) && $0.isFavorite }
+    }
+
+    private func isFinished(_ unit: GroupComicItem) -> Bool {
+        if unit.readingStatus == "finished" { return true }
+        guard hasStarted(unit), unit.pageCount > 0 else { return false }
+        return unit.lastReadPage >= unit.pageCount - 1
+    }
+
+    private func hasStarted(_ unit: GroupComicItem) -> Bool {
+        unit.lastReadPage > 0 || unit.readingStatus == "reading"
     }
 
     func readingContext(for comicId: String) -> ReadingGroupContext? {
@@ -742,11 +707,139 @@ final class GroupDetailViewModel {
         where readingUnitIndexById[comicId] == nil {
             readingUnitIndexById[comicId] = index
         }
-        if let current = selectedUnitId, readingUnitIndexById[current] != nil {
-            // keep current selection
+    }
+}
+
+private struct BatchOfflineCacheButton: View {
+    let unitIds: [String]
+    let onTapCache: () -> Void
+    private let downloadManager = DownloadManager.shared
+
+    private var completedCount: Int {
+        unitIds.filter { id in
+            downloadManager.task(for: id)?.state == .completed || downloadManager.isDownloaded(comicId: id)
+        }.count
+    }
+
+    private var isDownloadingOrQueued: Bool {
+        unitIds.contains { id in
+            let state = downloadManager.task(for: id)?.state
+            return state == .downloading || state == .waiting
+        }
+    }
+
+    private var hasPaused: Bool {
+        unitIds.contains { downloadManager.task(for: $0)?.state == .paused }
+    }
+
+    private var isAllCached: Bool {
+        !unitIds.isEmpty && completedCount == unitIds.count
+    }
+
+    var body: some View {
+        if isAllCached {
+            Button {} label: {
+                Label("已缓存", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.green.opacity(0.1))
+                    .foregroundStyle(.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(true)
+        } else if isDownloadingOrQueued {
+            Button(action: onTapCache) {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("\(completedCount)/\(unitIds.count)")
+                        .font(.subheadline.weight(.medium).monospacedDigit())
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.orange.opacity(0.1))
+                .foregroundStyle(.orange)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+        } else if hasPaused || completedCount > 0 {
+            Button(action: onTapCache) {
+                Label("继续缓存", systemImage: "arrow.down.circle")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.orange.opacity(0.1))
+                    .foregroundStyle(.orange)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         } else {
-            selectedUnitId = readingUnitIds.first
-            selectedUnitComic = nil
+            Button(action: onTapCache) {
+                Label("离线缓存", systemImage: "arrow.down.circle")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color(.systemGray6))
+                    .foregroundStyle(.primary)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(unitIds.isEmpty)
+        }
+    }
+}
+
+private struct WorkActionBarSection<ContinueDestination: View>: View {
+    let isFavorite: Bool
+    let isUpdatingFavorite: Bool
+    let isOfflineMode: Bool
+    let unitIds: [String]
+    let hasReadingProgress: Bool
+    let hasContinueTarget: Bool
+    let onToggleFavorite: () -> Void
+    let onTapCache: () -> Void
+    @ViewBuilder let continueDestination: () -> ContinueDestination
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onToggleFavorite) {
+                HStack(spacing: 6) {
+                    if isUpdatingFavorite {
+                        ProgressView().controlSize(.small)
+                        Text("处理中")
+                    } else {
+                        Label(
+                            isFavorite ? "已收藏" : "收藏",
+                            systemImage: isFavorite ? "heart.fill" : "heart"
+                        )
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(isFavorite ? Color.red.opacity(0.1) : Color(.systemGray6))
+                .foregroundStyle(isFavorite ? .red : .primary)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(isUpdatingFavorite || isOfflineMode || unitIds.isEmpty)
+            .sensoryFeedback(.success, trigger: isFavorite)
+
+            BatchOfflineCacheButton(unitIds: unitIds, onTapCache: onTapCache)
+
+            if hasContinueTarget {
+                NavigationLink {
+                    continueDestination()
+                } label: {
+                    Label(
+                        hasReadingProgress ? "继续阅读" : "开始阅读",
+                        systemImage: "book.fill"
+                    )
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
         }
     }
 }
@@ -757,11 +850,22 @@ struct SeriesDetailView: View {
     let seriesId: String
     @State private var viewModel = SeriesDetailViewModel()
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
     @State private var isGrid = true
+    @State private var deletingSeries: SeriesSummary?
+    @State private var shouldDismissAfterDelete = false
+    @State private var showDownloadAllAlert = false
+    @State private var showDownloadResult = false
+    @State private var downloadQueued = 0
+    @State private var downloadSkipped = 0
+
+    private var canManageSeries: Bool {
+        viewModel.detail?.series.canManage == true && !api.isOfflineMode && api.isLoggedIn
+    }
 
     var body: some View {
-        @Bindable var viewModel = viewModel
         Group {
             if viewModel.isLoading {
                 ProgressView()
@@ -769,41 +873,30 @@ struct SeriesDetailView: View {
             } else if let detail = viewModel.detail {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                        let continueTarget = viewModel.continueItem
                         SeriesHeaderView(
                             series: detail.series,
-                            continueItem: viewModel.continueItem,
+                            continueItem: continueTarget,
+                            activeContinueEdition: continueTarget.flatMap { viewModel.activeEdition(for: $0) },
+                            isFavorite: viewModel.isFavorite,
+                            isUpdatingFavorite: viewModel.isUpdatingFavorite,
+                            isOfflineMode: api.isOfflineMode,
+                            hasReadingProgress: viewModel.hasReadingProgress,
+                            downloadableUnitIds: viewModel.downloadableUnitIds,
                             serverURL: api.serverURL,
-                            contextProvider: { viewModel.readingContext(for: $0) }
+                            contextProvider: { viewModel.readingContext(for: $0) },
+                            onToggleFavorite: {
+                                Task { await viewModel.toggleFavorite() }
+                            },
+                            onTapCache: {
+                                showDownloadAllAlert = true
+                            },
+                            onSelectTag: { tagName in
+                                api.activateTagFilter(tagName)
+                            }
                         )
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
-
-                        if !viewModel.allItems.isEmpty && !api.isOfflineMode {
-                            SeriesEditionsAndLocationSection(
-                                items: viewModel.allItems,
-                                focusedItem: viewModel.focusedItem,
-                                selectedComic: viewModel.selectedUnitComic,
-                                activeEdition: viewModel.focusedItem.flatMap { viewModel.activeEdition(for: $0) },
-                                isLoadingUnit: viewModel.isLoadingSelectedUnit,
-                                isSwitchingEdition: viewModel.isSwitchingEdition,
-                                exportingComicId: viewModel.exportingComicId,
-                                onSelectItem: { itemId in
-                                    Task { await viewModel.selectFocusItem(id: itemId) }
-                                },
-                                onSelectEdition: { itemId, editionComicId in
-                                    Task { await viewModel.switchEdition(itemId: itemId, to: editionComicId) }
-                                },
-                                onExportOriginalFile: { comicId, downloadPath, preferredFilename in
-                                    Task {
-                                        await viewModel.exportOriginalFile(
-                                            comicId: comicId,
-                                            downloadPath: downloadPath,
-                                            preferredFilename: preferredFilename
-                                        )
-                                    }
-                                }
-                            )
-                        }
 
                         if !detail.sections.isEmpty {
                             ScrollView(.horizontal) {
@@ -885,21 +978,8 @@ struct SeriesDetailView: View {
                                             SeriesItemEditionBar(
                                                 editions: editions,
                                                 activeComicId: targetComicId,
-                                                isNovelLibrary: item.comic.isNovel,
-                                                exportingComicId: viewModel.exportingComicId,
                                                 onSelectEdition: { editionComicId in
-                                                    Task {
-                                                        await viewModel.switchEdition(itemId: item.id, to: editionComicId)
-                                                    }
-                                                },
-                                                onExportEdition: { edition in
-                                                    Task {
-                                                        await viewModel.exportOriginalFile(
-                                                            comicId: edition.comicId,
-                                                            downloadPath: edition.downloadUrl,
-                                                            preferredFilename: edition.fileLocation?.filename
-                                                        )
-                                                    }
+                                                    viewModel.switchEdition(itemId: item.id, to: editionComicId)
                                                 }
                                             )
                                             .padding(.leading, 88)
@@ -931,24 +1011,80 @@ struct SeriesDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     withAnimation { isGrid.toggle() }
                 } label: {
                     Image(systemName: isGrid ? "list.bullet" : "square.grid.2x2")
                 }
+
+                if canManageSeries, let detail = viewModel.detail {
+                    Menu {
+                        Button(role: .destructive) {
+                            deletingSeries = detail.series
+                        } label: {
+                            Label("删除整部作品", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("作品管理菜单")
+                }
             }
         }
-        .alert("操作未完成", isPresented: $viewModel.isActionErrorPresented) {
-            Button("确定", role: .cancel) {}
-        } message: {
-            Text(viewModel.actionErrorMessage ?? "请稍后重试。")
+        .sheet(item: $deletingSeries, onDismiss: {
+            if shouldDismissAfterDelete {
+                dismiss()
+            }
+        }) { series in
+            DeleteContentConfirmSheet(
+                title: "删除整部作品",
+                description: "即将删除《\(series.title)》（共 \(series.itemCount) 个阅读单元）。请选择移除方式。",
+                showEditionOption: true,
+                editionCount: 0,
+                initialDeleteEditions: true,
+                onConfirm: { deleteFiles, deleteEditions in
+                    try await viewModel.deleteWholeSeries(
+                        seriesId: series.id,
+                        deleteFiles: deleteFiles,
+                        deleteEditions: deleteEditions
+                    )
+                    shouldDismissAfterDelete = true
+                }
+            )
         }
-        .sheet(item: $viewModel.exportedFileItem) { item in
-            OriginalFileShareSheet(fileURL: item.url)
+        .onChange(of: api.tagFilterNavigationRevision) { _, _ in
+            dismiss()
         }
         .task {
+            viewModel.setModelContext(modelContext)
+            DownloadManager.shared.setModelContext(modelContext)
             await viewModel.load(seriesId: seriesId)
+        }
+        .onAppear {
+            guard viewModel.detail != nil else { return }
+            Task {
+                await viewModel.refreshSilently(seriesId: seriesId)
+            }
+        }
+        .alert("离线缓存全部卷", isPresented: $showDownloadAllAlert) {
+            Button("取消", role: .cancel) {}
+            Button("开始缓存") {
+                let result = viewModel.downloadAllVolumes()
+                downloadQueued = result.queued
+                downloadSkipped = result.skipped
+                showDownloadResult = true
+            }
+        } message: {
+            let units = viewModel.downloadableUnits
+            let totalPages = units.reduce(0) { $0 + $1.pageCount }
+            let alreadyCached = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
+            Text("共 \(units.count) 个阅读单元、\(totalPages) 页。已缓存 \(alreadyCached) 个，其余将加入离线队列。")
+        }
+        .alert("离线缓存结果", isPresented: $showDownloadResult) {
+            Button("确定") {}
+        } message: {
+            Text("已加入 \(downloadQueued) 卷到缓存队列，跳过 \(downloadSkipped) 卷（已缓存或空间不足）。")
         }
     }
 }
@@ -956,8 +1092,17 @@ struct SeriesDetailView: View {
 struct SeriesHeaderView: View {
     let series: SeriesSummary
     let continueItem: SeriesItem?
+    let activeContinueEdition: ComicEditionInfo?
+    let isFavorite: Bool
+    let isUpdatingFavorite: Bool
+    let isOfflineMode: Bool
+    let hasReadingProgress: Bool
+    let downloadableUnitIds: [String]
     let serverURL: String
     let contextProvider: (SeriesItem) -> ReadingGroupContext?
+    let onToggleFavorite: () -> Void
+    let onTapCache: () -> Void
+    var onSelectTag: ((String) -> Void)? = nil
 
     private var coverImageURL: URL? {
         guard let cover = series.coverUrl, !cover.isEmpty else { return nil }
@@ -1040,17 +1185,28 @@ struct SeriesHeaderView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let continueItem {
-                NavigationLink {
-                    continueItem.comic.readerView(groupContext: contextProvider(continueItem))
+            WorkActionBarSection(
+                isFavorite: isFavorite,
+                isUpdatingFavorite: isUpdatingFavorite,
+                isOfflineMode: isOfflineMode,
+                unitIds: downloadableUnitIds,
+                hasReadingProgress: hasReadingProgress,
+                hasContinueTarget: continueItem != nil,
+                onToggleFavorite: onToggleFavorite,
+                onTapCache: onTapCache
+            ) {
+                if let continueItem {
+                    if let activeContinueEdition {
+                        activeContinueEdition.readerView(
+                            isNovelLibrary: continueItem.comic.isNovel,
+                            groupContext: contextProvider(continueItem)
+                        )
                         .bookCoverDestination(id: "series-reader-\(series.id)")
-                } label: {
-                    let hasStarted = continueItem.comic.lastReadPage > 0 || continueItem.comic.readingStatus == "reading"
-                    Label(hasStarted ? "继续阅读" : "开始阅读", systemImage: "play.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
+                    } else {
+                        continueItem.comic.readerView(groupContext: contextProvider(continueItem))
+                            .bookCoverDestination(id: "series-reader-\(series.id)")
+                    }
                 }
-                .buttonStyle(.borderedProminent)
             }
 
             if series.progress > 0 {
@@ -1068,7 +1224,11 @@ struct SeriesHeaderView: View {
                 }
             }
 
-            WorkMetadataSection(tags: series.tags, categories: series.categories)
+            WorkMetadataSection(
+                tags: series.tags,
+                categories: series.categories,
+                onSelectTag: onSelectTag
+            )
 
             WorkDescriptionSection(text: series.description, horizontalPadding: 0)
         }
@@ -1078,6 +1238,7 @@ struct SeriesHeaderView: View {
 struct WorkMetadataSection: View {
     let tags: [TagItem]?
     let categories: [CategoryItem]?
+    var onSelectTag: ((String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1106,12 +1267,27 @@ struct WorkMetadataSection: View {
                         .foregroundStyle(.secondary)
                     FlowLayout(spacing: 8) {
                         ForEach(tags, id: \.name) { tag in
-                            Text(tag.name)
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color(.secondarySystemBackground), in: Capsule())
-                                .foregroundStyle(.secondary)
+                            if let onSelectTag {
+                                Button {
+                                    onSelectTag(tag.name)
+                                } label: {
+                                    Text(tag.name)
+                                        .font(.caption.weight(.medium))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("点击跳转到书架按此标签筛选")
+                            } else {
+                                Text(tag.name)
+                                    .font(.caption)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color(.secondarySystemBackground), in: Capsule())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -1188,214 +1364,28 @@ struct SeriesFilterButton: View {
     }
 }
 
-struct SeriesEditionsAndLocationSection: View {
-    let items: [SeriesItem]
-    let focusedItem: SeriesItem?
-    let selectedComic: Comic?
-    let activeEdition: ComicEditionInfo?
-    let isLoadingUnit: Bool
-    let isSwitchingEdition: Bool
-    let exportingComicId: String?
-    let onSelectItem: (String) -> Void
-    let onSelectEdition: (String, String) -> Void
-    let onExportOriginalFile: (String, String?, String?) -> Void
-
-    private var displayedEditions: [ComicEditionInfo] {
-        if let comicEditions = selectedComic?.resolvedEditions, !comicEditions.isEmpty {
-            return comicEditions
-        }
-        return focusedItem?.resolvedEditions ?? []
-    }
-
-    private var activeComicId: String {
-        selectedComic?.id ?? activeEdition?.comicId ?? focusedItem?.comic.id ?? ""
-    }
-
-    private var displayedLocation: ComicFileLocation? {
-        selectedComic?.fileLocation ?? activeEdition?.fileLocation ?? focusedItem?.comic.fileLocation
-    }
-
-    private var canDownloadActive: Bool {
-        if let selectedComic {
-            return selectedComic.canDownloadOriginalFile
-        }
-        if let activeEdition {
-            return activeEdition.canDownloadOriginalFile
-        }
-        return focusedItem?.comic.canDownloadOriginalFile ?? false
-    }
-
-    private var activeIsImageFolder: Bool {
-        selectedComic?.isImageFolder ?? activeEdition?.isImageFolder ?? focusedItem?.comic.isImageFolder ?? false
-    }
-
-    private var activeIsNovel: Bool {
-        selectedComic?.isNovel ?? focusedItem?.comic.isNovel ?? false
-    }
-
-    private var activeFormatBadge: String {
-        selectedComic?.formatBadge ?? activeEdition?.displayFormat ?? focusedItem?.formatBadge ?? ""
-    }
-
-    private var activeFilename: String? {
-        selectedComic?.filename ?? activeEdition?.fileLocation?.filename ?? focusedItem?.comic.filename
-    }
-
-    private var activeRelativePath: String? {
-        selectedComic?.relativePath ?? activeEdition?.fileLocation?.relativePath ?? focusedItem?.comic.relativePath
-    }
-
-    var body: some View {
-        if focusedItem != nil || selectedComic != nil {
-            VStack(alignment: .leading, spacing: 12) {
-                if items.count > 1 {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("版本与文件位置", systemImage: "square.stack.3d.up")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 20)
-
-                        ScrollView(.horizontal) {
-                            HStack(spacing: 8) {
-                                ForEach(items) { item in
-                                    let isSelected = item.id == focusedItem?.id
-                                    Button {
-                                        onSelectItem(item.id)
-                                    } label: {
-                                        HStack(spacing: 5) {
-                                            Text(item.title)
-                                                .lineLimit(1)
-                                            if !item.formatBadge.isEmpty {
-                                                Text(item.formatBadge)
-                                                    .font(.caption2.weight(.bold))
-                                                    .opacity(0.85)
-                                            }
-                                        }
-                                        .font(.caption.weight(isSelected ? .semibold : .regular))
-                                        .foregroundStyle(isSelected ? .white : .primary)
-                                        .padding(.horizontal, 11)
-                                        .padding(.vertical, 6)
-                                        .background(isSelected ? Color.accentColor : Color(.systemGray6))
-                                        .clipShape(Capsule())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.horizontal, 20)
-                        }
-                        .scrollIndicators(.hidden)
-                    }
-                }
-
-                if isLoadingUnit && selectedComic == nil && displayedEditions.isEmpty {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("正在加载版本与文件位置…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 20)
-                } else {
-                    if let itemId = focusedItem?.id {
-                        ComicEditionsSection(
-                            activeComicId: activeComicId,
-                            editions: displayedEditions,
-                            isNovelLibrary: activeIsNovel,
-                            isSwitchingEdition: isSwitchingEdition,
-                            exportingComicId: exportingComicId,
-                            onSelectEdition: { targetComicId in
-                                onSelectEdition(itemId, targetComicId)
-                            },
-                            onExportEdition: { edition in
-                                onExportOriginalFile(
-                                    edition.comicId,
-                                    edition.downloadUrl,
-                                    edition.fileLocation?.filename
-                                )
-                            }
-                        )
-                    }
-
-                    if !activeComicId.isEmpty {
-                        ComicFileLocationSection(
-                            comicId: activeComicId,
-                            filename: activeFilename,
-                            relativePath: activeRelativePath,
-                            formatBadge: activeFormatBadge,
-                            fileLocation: displayedLocation,
-                            canDownload: canDownloadActive,
-                            isImageFolder: activeIsImageFolder,
-                            isExporting: exportingComicId == activeComicId,
-                            onExportOriginalFile: {
-                                onExportOriginalFile(
-                                    activeComicId,
-                                    activeEdition?.downloadUrl,
-                                    displayedLocation?.filename ?? activeFilename
-                                )
-                            }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
 struct SeriesItemEditionBar: View {
     let editions: [ComicEditionInfo]
     let activeComicId: String
-    let isNovelLibrary: Bool
-    let exportingComicId: String?
     let onSelectEdition: (String) -> Void
-    let onExportEdition: (ComicEditionInfo) -> Void
 
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 ForEach(editions) { edition in
                     let isSelected = edition.comicId == activeComicId
-                    HStack(spacing: 4) {
-                        Button {
-                            onSelectEdition(edition.comicId)
-                        } label: {
-                            Text(edition.displayChipLabel)
-                                .font(.caption2.weight(isSelected ? .bold : .medium))
-                        }
-                        .buttonStyle(.plain)
-
-                        NavigationLink {
-                            edition.readerView(isNovelLibrary: isNovelLibrary)
-                                .bookCoverDestination(id: "reader-\(edition.comicId)")
-                        } label: {
-                            Image(systemName: "book")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("以 \(edition.displayFormat) 格式阅读")
-
-                        if edition.canDownloadOriginalFile {
-                            Button {
-                                onExportEdition(edition)
-                            } label: {
-                                if exportingComicId == edition.comicId {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                } else {
-                                    Image(systemName: "arrow.down.doc")
-                                        .font(.system(size: 10, weight: .semibold))
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(exportingComicId == edition.comicId)
-                            .accessibilityLabel("下载 \(edition.displayFormat) 原文件")
-                        }
+                    Button {
+                        onSelectEdition(edition.comicId)
+                    } label: {
+                        Text(edition.displayChipLabel)
+                            .font(.caption2.weight(isSelected ? .bold : .medium))
+                            .foregroundStyle(isSelected ? .white : .primary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                            .clipShape(Capsule())
                     }
-                    .foregroundStyle(isSelected ? .white : .primary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(isSelected ? Color.accentColor : Color(.systemGray6))
-                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -1533,14 +1523,8 @@ final class SeriesDetailViewModel {
     var detail: SeriesDetailResponse?
     var isLoading = false
     var errorMessage: String?
-    var focusedItemId: String?
-    var selectedUnitComic: Comic?
-    var isLoadingSelectedUnit = false
-    var isSwitchingEdition = false
-    var exportingComicId: String?
-    var exportedFileItem: ExportedOriginalFileItem?
-    var actionErrorMessage: String?
-    var isActionErrorPresented = false
+    var isFavorite = false
+    var isUpdatingFavorite = false
     private(set) var selectedEditionIdByItemId: [String: String] = [:]
     private(set) var allItems: [SeriesItem] = []
     private(set) var visibleItems: [SeriesItem] = []
@@ -1548,13 +1532,91 @@ final class SeriesDetailViewModel {
     private var allItemIds: [String] = []
     private var allItemIndexById: [String: Int] = [:]
     private var sectionItemsById: [String: [SeriesItem]] = [:]
-    private var unitLoadVersion = 0
+    private var modelContext: ModelContext?
 
-    var focusedItem: SeriesItem? {
-        if let focusedItemId, let matched = allItems.first(where: { $0.id == focusedItemId }) {
-            return matched
+    func setModelContext(_ context: ModelContext) {
+        self.modelContext = context
+    }
+
+    var hasReadingProgress: Bool {
+        (detail?.series.completedItemCount ?? 0) > 0
+            || allItems.contains { hasStarted($0) || $0.comic.readingStatus == "finished" }
+    }
+
+    var downloadableUnits: [GroupComicItem] {
+        allItems.map { item in
+            let edition = activeEdition(for: item)
+            let comicId = edition?.comicId ?? item.comic.id
+            let fileSize = edition.flatMap { $0.fileSize > 0 ? $0.fileSize : nil } ?? item.comic.fileSize
+            let pageCount = edition.flatMap { $0.pageCount > 0 ? $0.pageCount : nil } ?? item.comic.pageCount
+            return GroupComicItem(
+                id: comicId,
+                filename: edition?.fileLocation?.filename ?? item.comic.filename,
+                title: item.title,
+                pageCount: pageCount,
+                fileSize: fileSize,
+                lastReadPage: edition?.lastReadPage ?? item.comic.lastReadPage,
+                totalReadTime: edition?.totalReadTime ?? item.comic.totalReadTime,
+                coverUrl: item.comic.coverUrl,
+                sortIndex: item.sortIndex,
+                readingStatus: edition?.readingStatus ?? item.comic.readingStatus,
+                lastReadAt: edition?.lastReadAt ?? item.comic.lastReadAt,
+                type: item.comic.type
+            )
         }
-        return continueItem ?? allItems.first
+    }
+
+    var downloadableUnitIds: [String] {
+        downloadableUnits.map(\.id)
+    }
+
+    func toggleFavorite() async {
+        let targetIds = allItems.flatMap { item in
+            [item.comic.id] + item.resolvedEditions.map(\.comicId)
+        }
+        guard !targetIds.isEmpty, !isUpdatingFavorite else { return }
+        let targetFavorite = !isFavorite
+        isUpdatingFavorite = true
+        defer { isUpdatingFavorite = false }
+        do {
+            try await APIClient.shared.batchSetFavorite(comicIds: targetIds, isFavorite: targetFavorite)
+            isFavorite = targetFavorite
+            syncFavoriteToCache(comicIds: targetIds, isFavorite: targetFavorite)
+            APIClient.shared.contentMutationRevision += 1
+        } catch {
+            AppLogger.error("切换目录作品收藏状态失败: \(error.localizedDescription)")
+        }
+    }
+
+    func downloadAllVolumes() -> (queued: Int, skipped: Int) {
+        if let detail {
+            let snapshot = detail
+            Task.detached(priority: .utility) {
+                OfflineFileManager.shared.saveSeries(snapshot)
+            }
+        }
+        cacheSeriesComics()
+        return DownloadManager.shared.downloadAll(comics: downloadableUnits)
+    }
+
+    func deleteWholeSeries(
+        seriesId: String,
+        deleteFiles: Bool,
+        deleteEditions: Bool
+    ) async throws {
+        try await APIClient.shared.deleteSeries(
+            seriesId: seriesId,
+            deleteContent: true,
+            deleteFiles: deleteFiles,
+            deleteEditions: deleteEditions
+        )
+        let editionIds = allItems.flatMap { item in
+            [item.comic.id] + item.resolvedEditions.map(\.comicId)
+        }
+        cleanLocalContentCaches(
+            comicIds: editionIds + [seriesId, "series-\(seriesId)"],
+            modelContext: modelContext
+        )
     }
 
     var continueItem: SeriesItem? {
@@ -1568,17 +1630,202 @@ final class SeriesDetailViewModel {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
+
+        if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
+            await loadOfflineSeries(seriesId: seriesId)
+            isLoading = false
+            return
+        }
+
         do {
             let loadedDetail = try await APIClient.shared.fetchSeriesDetail(id: seriesId)
             updateDetail(loadedDetail)
-            if let initialId = focusedItem?.id {
-                await selectFocusItem(id: initialId)
+            Task.detached(priority: .utility) {
+                OfflineFileManager.shared.saveSeries(loadedDetail)
             }
         } catch {
-            updateDetail(nil)
-            errorMessage = error.localizedDescription
+            if await loadOfflineSeries(seriesId: seriesId) {
+                errorMessage = nil
+            } else {
+                updateDetail(nil)
+                errorMessage = error.localizedDescription
+            }
         }
         isLoading = false
+    }
+
+    func refreshSilently(seriesId: String) async {
+        guard !isLoading else { return }
+        if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
+            _ = await loadOfflineSeries(seriesId: seriesId)
+            return
+        }
+        do {
+            let loadedDetail = try await APIClient.shared.fetchSeriesDetail(id: seriesId)
+            updateDetail(loadedDetail)
+            Task.detached(priority: .utility) {
+                OfflineFileManager.shared.saveSeries(loadedDetail)
+            }
+        } catch {
+            // 静默刷新失败保持当前视图数据
+        }
+    }
+
+    @discardableResult
+    private func loadOfflineSeries(seriesId: String) async -> Bool {
+        let snapshot = await Task.detached(priority: .utility) {
+            (
+                series: OfflineFileManager.shared.loadSeriesDetail(seriesId: seriesId),
+                completed: OfflineFileManager.shared.completedDownloads()
+            )
+        }.value
+        guard !Task.isCancelled else { return false }
+
+        guard let cachedSeries = snapshot.series else {
+            updateDetail(nil)
+            errorMessage = "离线模式下无法加载目录作品"
+            return false
+        }
+
+        var cachedById: [String: CachedComic] = [:]
+        if let context = modelContext {
+            let allCached = context.fetchOrLog(FetchDescriptor<CachedComic>(), label: "离线加载目录作品")
+            for c in allCached { cachedById[c.id] = c }
+        }
+
+        func mergeOfflineItem(_ item: SeriesItem) -> SeriesItem? {
+            let candidateIds = [activeComicId(for: item), item.comic.id] + item.resolvedEditions.map(\.comicId)
+            guard let downloadedId = candidateIds.first(where: { snapshot.completed[$0] != nil }) else {
+                return nil
+            }
+            let cached = cachedById[downloadedId] ?? cachedById[item.comic.id]
+            let meta = snapshot.completed[downloadedId]
+            let base = item.comic
+            let mergedComic = Comic(
+                id: downloadedId,
+                title: cached?.title ?? base.title,
+                author: base.author,
+                publisher: base.publisher,
+                description: base.description,
+                genre: base.genre,
+                language: base.language,
+                year: base.year,
+                pageCount: cached?.pageCount ?? meta?.pageCount ?? base.pageCount,
+                fileSize: meta?.fileSize ?? base.fileSize,
+                lastReadPage: cached?.lastReadPage ?? base.lastReadPage,
+                lastReadPositionRatio: base.lastReadPositionRatio,
+                totalReadTime: base.totalReadTime,
+                readingStatus: cached?.readingStatus ?? base.readingStatus,
+                lastReadAt: cached?.lastReadAt?.iso8601String ?? base.lastReadAt,
+                metadataSource: base.metadataSource,
+                coverUrl: cached?.coverUrl ?? base.coverUrl,
+                coverAspectRatio: base.coverAspectRatio,
+                rating: cached?.rating ?? base.rating,
+                isFavorite: cached?.isFavorite ?? base.isFavorite,
+                type: cached?.type ?? base.type,
+                filename: base.filename,
+                titleSortKey: base.titleSortKey,
+                sortOrder: base.sortOrder,
+                libraryId: base.libraryId,
+                canManage: false,
+                canDownload: false,
+                comicCount: base.comicCount,
+                relativePath: base.relativePath,
+                format: base.format,
+                editionLabel: base.editionLabel,
+                editionGroupId: base.editionGroupId,
+                formats: base.formats,
+                editionCount: base.editionCount,
+                preferredComicId: base.preferredComicId,
+                fileLocation: base.fileLocation,
+                editions: base.editions,
+                tags: base.tags,
+                categories: base.categories
+            )
+            return SeriesItem(
+                comic: mergedComic,
+                sectionId: item.sectionId,
+                sortIndex: item.sortIndex,
+                displayLabel: item.displayLabel,
+                format: item.format,
+                formats: item.formats,
+                editionCount: item.editionCount,
+                editions: item.editions
+            )
+        }
+
+        let offlineSections = cachedSeries.sections.compactMap { section -> SeriesSection? in
+            let items = section.items.compactMap(mergeOfflineItem)
+            guard !items.isEmpty else { return nil }
+            return SeriesSection(
+                id: section.id,
+                title: section.title,
+                relativePath: section.relativePath,
+                kind: section.kind,
+                seasonNumber: section.seasonNumber,
+                sortIndex: section.sortIndex,
+                manualLocked: section.manualLocked,
+                items: items
+            )
+        }
+        let offlineUnsectioned = cachedSeries.unsectioned.compactMap(mergeOfflineItem)
+        let totalOfflineCount = offlineSections.reduce(0) { $0 + $1.items.count } + offlineUnsectioned.count
+        guard totalOfflineCount > 0 else {
+            updateDetail(nil)
+            errorMessage = "离线模式下尚无已缓存的分卷"
+            return false
+        }
+
+        let offlineDetail = SeriesDetailResponse(
+            series: cachedSeries.series,
+            sections: offlineSections,
+            unsectioned: offlineUnsectioned
+        )
+        updateDetail(offlineDetail)
+        isFavorite = offlineSections.flatMap(\.items).contains(where: { $0.comic.isFavorite })
+            || offlineUnsectioned.contains(where: { $0.comic.isFavorite })
+            || cachedSeries.series.isFavorite
+        return true
+    }
+
+    private func cacheSeriesComics() {
+        guard let modelContext else { return }
+        let existing = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "缓存系列分卷前查询")
+        var byId: [String: CachedComic] = [:]
+        for item in existing { byId[item.id] = item }
+        for item in allItems {
+            let comic = item.comic
+            let targetId = activeComicId(for: item)
+            if let existingCached = byId[targetId] {
+                existingCached.title = comic.title
+                existingCached.author = comic.author
+                existingCached.coverUrl = comic.coverUrl
+                existingCached.pageCount = max(existingCached.pageCount, comic.pageCount)
+                existingCached.lastReadPage = max(existingCached.lastReadPage, comic.lastReadPage)
+                existingCached.isFavorite = existingCached.isFavorite || comic.isFavorite
+                existingCached.readingStatus = comic.readingStatus ?? existingCached.readingStatus
+                existingCached.type = comic.type
+                existingCached.cachedAt = Date()
+            } else {
+                let c = CachedComic.from(comic)
+                c.id = targetId
+                modelContext.insert(c)
+                byId[targetId] = c
+            }
+        }
+        modelContext.saveOrLog()
+    }
+
+    private func syncFavoriteToCache(comicIds: [String], isFavorite: Bool) {
+        guard let modelContext else { return }
+        let targetSet = Set(comicIds)
+        let cached = modelContext.fetchOrLog(FetchDescriptor<CachedComic>(), label: "同步系列收藏状态")
+        var changed = false
+        for item in cached where targetSet.contains(item.id) {
+            item.isFavorite = isFavorite
+            changed = true
+        }
+        if changed { modelContext.saveOrLog() }
     }
 
     func activeEdition(for item: SeriesItem) -> ComicEditionInfo? {
@@ -1595,67 +1842,8 @@ final class SeriesDetailViewModel {
         activeEdition(for: item)?.comicId ?? item.comic.id
     }
 
-    func selectFocusItem(id itemId: String) async {
-        focusedItemId = itemId
-        guard let item = allItems.first(where: { $0.id == itemId }) else { return }
-        let targetComicId = activeComicId(for: item)
-        await fetchFocusedComic(comicId: targetComicId)
-    }
-
-    func switchEdition(itemId: String, to targetComicId: String) async {
+    func switchEdition(itemId: String, to targetComicId: String) {
         selectedEditionIdByItemId[itemId] = targetComicId
-        if focusedItem?.id == itemId {
-            guard targetComicId != selectedUnitComic?.id, !isSwitchingEdition else { return }
-            isSwitchingEdition = true
-            defer { isSwitchingEdition = false }
-            await fetchFocusedComic(comicId: targetComicId)
-        }
-    }
-
-    private func fetchFocusedComic(comicId: String) async {
-        guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
-            selectedUnitComic = nil
-            isLoadingSelectedUnit = false
-            return
-        }
-        unitLoadVersion += 1
-        let version = unitLoadVersion
-        isLoadingSelectedUnit = true
-        defer {
-            if version == unitLoadVersion {
-                isLoadingSelectedUnit = false
-            }
-        }
-        do {
-            let loaded = try await APIClient.shared.fetchComic(id: comicId)
-            guard !Task.isCancelled, version == unitLoadVersion else { return }
-            selectedUnitComic = loaded
-        } catch {
-            guard !Task.isCancelled, version == unitLoadVersion else { return }
-            AppLogger.error("加载目录作品分卷详情失败: \(error)")
-        }
-    }
-
-    func exportOriginalFile(
-        comicId: String,
-        downloadPath: String? = nil,
-        preferredFilename: String? = nil
-    ) async {
-        guard exportingComicId == nil else { return }
-        exportingComicId = comicId
-        defer { exportingComicId = nil }
-        do {
-            let fileURL = try await APIClient.shared.downloadOriginalComicFile(
-                comicId: comicId,
-                downloadPath: downloadPath,
-                preferredFilename: preferredFilename
-            )
-            exportedFileItem = ExportedOriginalFileItem(url: fileURL)
-        } catch {
-            guard !Task.isCancelled else { return }
-            actionErrorMessage = "下载原文件失败：\(error.localizedDescription)"
-            isActionErrorPresented = true
-        }
     }
 
     func readingContext(for item: SeriesItem) -> ReadingGroupContext? {
@@ -1674,6 +1862,7 @@ final class SeriesDetailViewModel {
 
     private func updateDetail(_ newDetail: SeriesDetailResponse?) {
         detail = newDetail
+        isFavorite = newDetail?.series.isFavorite ?? false
         guard let newDetail else {
             allItems = []
             visibleItems = []
@@ -1681,8 +1870,6 @@ final class SeriesDetailViewModel {
             sectionItemsById = [:]
             allItemIds = []
             allItemIndexById = [:]
-            focusedItemId = nil
-            selectedUnitComic = nil
             return
         }
 
@@ -1703,12 +1890,6 @@ final class SeriesDetailViewModel {
         for (index, comicId) in allItemIds.enumerated()
         where allItemIndexById[comicId] == nil {
             allItemIndexById[comicId] = index
-        }
-        if let current = focusedItemId, allItems.contains(where: { $0.id == current }) {
-            // keep selection
-        } else {
-            focusedItemId = continueItem?.id ?? allItems.first?.id
-            selectedUnitComic = nil
         }
     }
 

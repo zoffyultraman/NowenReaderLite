@@ -24,6 +24,7 @@ struct ComicReaderView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @State private var showOverlay = false
+    @State private var isApplyingCloudPreferences = false
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -98,7 +99,34 @@ struct ComicReaderView: View {
                 hasGroupContext: viewModel.groupContext != nil,
                 volumeLabel: volumeLabel,
                 isRTL: $isRTL,
+                isCurrentPageBookmarked: viewModel.isCurrentPageBookmarked,
+                isBookmarkBusy: viewModel.isBookmarkBusy,
+                bookmarks: viewModel.bookmarks,
+                preferenceScope: viewModel.preferenceScope,
+                canUseSeriesScope: viewModel.canUseSeriesScope,
+                hasComicOverride: viewModel.scopedPreferences?.comicOverride != nil,
+                isPreferenceBusy: viewModel.isPreferenceBusy,
                 onSeek: { viewModel.onSliderChanged($0) },
+                onToggleBookmark: {
+                    Task { await viewModel.toggleCurrentPageBookmark() }
+                },
+                onUpdateBookmark: { bookmark, name, note in
+                    await viewModel.updateBookmark(bookmark, name: name, note: note)
+                },
+                onDeleteBookmark: { bookmark in
+                    await viewModel.deleteBookmark(bookmark)
+                },
+                onSelectPreferenceScope: { scope in
+                    await viewModel.switchPreferenceScope(
+                        scope,
+                        isRTL: isRTL,
+                        pageDisplayMode: pageDisplayMode,
+                        upscaleMode: upscaleMode
+                    )
+                },
+                onResetOverride: {
+                    await viewModel.resetCurrentComicOverride()
+                },
                 onDismiss: { dismiss() }
             )
         }
@@ -137,6 +165,45 @@ struct ComicReaderView: View {
                 }
             }
         }
+        .onChange(of: viewModel.cloudPreferenceRevision) { _, _ in
+            isApplyingCloudPreferences = true
+            if let cloudRTL = viewModel.cloudResolvedIsRTL {
+                isRTL = cloudRTL
+            }
+            if let cloudFit = viewModel.cloudResolvedFitMode {
+                pageDisplayMode = cloudFit
+            }
+            if let cloudUpscale = viewModel.cloudResolvedUpscaleMode {
+                upscaleMode = cloudUpscale
+            }
+            Task { @MainActor in
+                isApplyingCloudPreferences = false
+            }
+        }
+        .onChange(of: isRTL) { _, _ in
+            guard !isApplyingCloudPreferences else { return }
+            viewModel.scheduleSaveCloudPreferences(
+                isRTL: isRTL,
+                pageDisplayMode: pageDisplayMode,
+                upscaleMode: upscaleMode
+            )
+        }
+        .onChange(of: pageDisplayMode) { _, _ in
+            guard !isApplyingCloudPreferences else { return }
+            viewModel.scheduleSaveCloudPreferences(
+                isRTL: isRTL,
+                pageDisplayMode: pageDisplayMode,
+                upscaleMode: upscaleMode
+            )
+        }
+        .onChange(of: upscaleMode) { _, _ in
+            guard !isApplyingCloudPreferences else { return }
+            viewModel.scheduleSaveCloudPreferences(
+                isRTL: isRTL,
+                pageDisplayMode: pageDisplayMode,
+                upscaleMode: upscaleMode
+            )
+        }
     }
 
     private var volumeLabel: String {
@@ -155,17 +222,60 @@ struct ReaderOverlayView: View {
     let hasGroupContext: Bool
     let volumeLabel: String
     @Binding var isRTL: Bool
+    let isCurrentPageBookmarked: Bool
+    let isBookmarkBusy: Bool
+    let bookmarks: [UserBookmark]
+    let preferenceScope: ComicPreferenceScope
+    let canUseSeriesScope: Bool
+    let hasComicOverride: Bool
+    let isPreferenceBusy: Bool
     let onSeek: (Int) -> Void
+    let onToggleBookmark: () -> Void
+    let onUpdateBookmark: (UserBookmark, String, String) async -> Void
+    let onDeleteBookmark: (UserBookmark) async -> Void
+    let onSelectPreferenceScope: (ComicPreferenceScope) async -> Void
+    let onResetOverride: () async -> Void
     let onDismiss: () -> Void
 
     @State private var showSettings = false
+    @State private var showBookmarks = false
 
     var body: some View {
         ReaderChrome(isPresented: isPresented) {
-            HStack {
+            HStack(spacing: 4) {
                 ReaderBackButton(action: onDismiss)
 
                 Spacer()
+
+                Button(action: onToggleBookmark) {
+                    Image(systemName: isCurrentPageBookmarked ? "bookmark.fill" : "bookmark")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(isCurrentPageBookmarked ? Color.yellow : Color.white)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(isCurrentPageBookmarked ? "取消当前页书签" : "添加当前页书签")
+                .disabled(totalPages <= 0 || isBookmarkBusy)
+
+                Button(action: { showBookmarks = true }) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "list.bullet.rectangle.portrait")
+                            .font(.title3.weight(.medium))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+
+                        if !bookmarks.isEmpty {
+                            Text("\(bookmarks.count)")
+                                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.yellow, in: Capsule())
+                                .offset(x: -2, y: 4)
+                        }
+                    }
+                }
+                .accessibilityLabel("书签列表（\(bookmarks.count)）")
+                .disabled(totalPages <= 0)
 
                 Button(action: { showSettings = true }) {
                     Image(systemName: "gearshape")
@@ -188,7 +298,29 @@ struct ReaderOverlayView: View {
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .sheet(isPresented: $showSettings) {
-            ReaderSettingsView()
+            ReaderSettingsView(
+                preferenceScope: preferenceScope,
+                canUseSeriesScope: canUseSeriesScope,
+                hasComicOverride: hasComicOverride,
+                isPreferenceBusy: isPreferenceBusy,
+                onSelectPreferenceScope: onSelectPreferenceScope,
+                onResetOverride: onResetOverride
+            )
+        }
+        .sheet(isPresented: $showBookmarks) {
+            ComicBookmarksSheet(
+                currentPage: currentPage,
+                bookmarks: bookmarks,
+                isCurrentPageBookmarked: isCurrentPageBookmarked,
+                isBookmarkBusy: isBookmarkBusy,
+                onToggleCurrentPageBookmark: onToggleBookmark,
+                onSelectPage: { page in
+                    showBookmarks = false
+                    onSeek(page)
+                },
+                onUpdateBookmark: onUpdateBookmark,
+                onDeleteBookmark: onDeleteBookmark
+            )
         }
     }
 }
@@ -1395,14 +1527,72 @@ class BlankPageVC: UIViewController {
 import SwiftUI
 
 struct ReaderSettingsView: View {
+    let preferenceScope: ComicPreferenceScope
+    let canUseSeriesScope: Bool
+    let hasComicOverride: Bool
+    let isPreferenceBusy: Bool
+    let onSelectPreferenceScope: (ComicPreferenceScope) async -> Void
+    let onResetOverride: () async -> Void
+
     @Environment(\.dismiss) private var dismiss
     @AppStorage("isRTL") private var isRTL: Bool = true
     @AppStorage("comicPageDisplayMode") private var pageDisplayMode: ComicPageDisplayMode = .fit
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
-    
+    @State private var selectedScope: ComicPreferenceScope = .global
+
+    private var availableScopes: [ComicPreferenceScope] {
+        canUseSeriesScope ? [.global, .series, .comic] : [.global, .comic]
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("同步作用域", selection: $selectedScope) {
+                        ForEach(availableScopes) { scope in
+                            Text(scope.title).tag(scope)
+                        }
+                    }
+                    .disabled(isPreferenceBusy)
+                    .onAppear {
+                        selectedScope = preferenceScope
+                    }
+                    .onChange(of: preferenceScope) { _, newValue in
+                        if selectedScope != newValue {
+                            selectedScope = newValue
+                        }
+                    }
+                    .onChange(of: selectedScope) { _, newValue in
+                        guard newValue != preferenceScope else { return }
+                        Task { await onSelectPreferenceScope(newValue) }
+                    }
+
+                    if hasComicOverride {
+                        Button("恢复全局默认（清除本作品覆盖）", role: .destructive) {
+                            Task { await onResetOverride() }
+                        }
+                        .disabled(isPreferenceBusy)
+                    }
+                } header: {
+                    HStack {
+                        Text("云端偏好同步")
+                        if isPreferenceBusy {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                } footer: {
+                    switch preferenceScope {
+                    case .global:
+                        Text("使用全局默认设置（global_comic），修改将同步到所有漫画。")
+                    case .series:
+                        Text("仅为当前系列保存独立的阅读方向与画面适配方式（series）。")
+                    case .comic:
+                        Text("仅为当前作品覆盖阅读方向与画面适配方式（comic）；切回全局将移除作品覆盖。")
+                    }
+                }
+
                 Section {
                     Picker("页面显示", selection: $pageDisplayMode) {
                         Text("完整显示").tag(ComicPageDisplayMode.fit)
@@ -1425,7 +1615,7 @@ struct ReaderSettingsView: View {
 
                 Section("阅读设置") {
                     Toggle("从右向左阅读 (RTL)", isOn: $isRTL)
-                    
+
                     Picker("超分辨率", selection: $upscaleMode) {
                         ForEach(UpscaleMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
@@ -1441,6 +1631,190 @@ struct ReaderSettingsView: View {
                         dismiss()
                     }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - 漫画书签抽屉
+
+struct ComicBookmarksSheet: View {
+    let currentPage: Int
+    let bookmarks: [UserBookmark]
+    let isCurrentPageBookmarked: Bool
+    let isBookmarkBusy: Bool
+    let onToggleCurrentPageBookmark: () -> Void
+    let onSelectPage: (Int) -> Void
+    let onUpdateBookmark: (UserBookmark, String, String) async -> Void
+    let onDeleteBookmark: (UserBookmark) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var editingBookmark: UserBookmark?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if bookmarks.isEmpty {
+                    ContentUnavailableView(
+                        "暂无书签",
+                        systemImage: "bookmark",
+                        description: Text("阅读时点击右上角书签按钮可保存当前页")
+                    )
+                } else {
+                    List {
+                        ForEach(bookmarks) { bookmark in
+                            ComicBookmarkRow(
+                                bookmark: bookmark,
+                                isCurrentPage: bookmark.pageIndex == currentPage,
+                                onSelect: { onSelectPage(bookmark.pageIndex) },
+                                onEdit: { editingBookmark = bookmark }
+                            )
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    Task { await onDeleteBookmark(bookmark) }
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    editingBookmark = bookmark
+                                } label: {
+                                    Label("编辑", systemImage: "pencil")
+                                }
+                                .tint(.blue)
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("漫画书签")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("关闭") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        onToggleCurrentPageBookmark()
+                    } label: {
+                        Label(
+                            isCurrentPageBookmarked ? "移除当前页" : "书签当前页",
+                            systemImage: isCurrentPageBookmarked ? "bookmark.slash" : "bookmark.fill"
+                        )
+                    }
+                    .disabled(isBookmarkBusy)
+                }
+            }
+            .sheet(item: $editingBookmark) { bookmark in
+                BookmarkEditorSheet(
+                    title: "编辑书签（第 \(bookmark.pageIndex + 1) 页）",
+                    initialName: bookmark.name,
+                    initialNote: bookmark.note
+                ) { name, note in
+                    await onUpdateBookmark(bookmark, name, note)
+                }
+            }
+        }
+    }
+}
+
+private struct ComicBookmarkRow: View {
+    let bookmark: UserBookmark
+    let isCurrentPage: Bool
+    let onSelect: () -> Void
+    let onEdit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onSelect) {
+                HStack(spacing: 12) {
+                    Text("P.\(bookmark.pageIndex + 1)")
+                        .font(.caption.bold().monospacedDigit())
+                        .foregroundStyle(isCurrentPage ? .black : .accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            isCurrentPage ? Color.yellow : Color.accentColor.opacity(0.15),
+                            in: RoundedRectangle(cornerRadius: 6)
+                        )
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(bookmark.name.isEmpty ? "第 \(bookmark.pageIndex + 1) 页" : bookmark.name)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                        if !bookmark.note.isEmpty {
+                            Text(bookmark.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onEdit) {
+                Image(systemName: "pencil")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("编辑书签")
+        }
+    }
+}
+
+struct BookmarkEditorSheet: View {
+    let title: String
+    let initialName: String
+    let initialNote: String
+    let onSave: (String, String) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String = ""
+    @State private var note: String = ""
+    @State private var isSaving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("名称") {
+                    TextField("书签名称", text: $name)
+                }
+                Section("备注") {
+                    TextField("添加备注（可选）", text: $note, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        isSaving = true
+                        Task {
+                            await onSave(name, note)
+                            isSaving = false
+                            dismiss()
+                        }
+                    }
+                    .disabled(isSaving)
+                }
+            }
+            .onAppear {
+                name = initialName
+                note = initialNote
             }
         }
     }

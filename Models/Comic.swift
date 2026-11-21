@@ -606,10 +606,378 @@ struct PageEntry: Codable, Identifiable, Hashable, Sendable {
 
 // MARK: - 章节内容
 
-struct ChapterContent: Codable, Sendable {
+struct ChapterContent: Codable, Equatable, Sendable {
     let title: String?
     let content: String?
     let chapterIndex: Int?
     let totalChapters: Int?
     let mimeType: String?
+}
+
+// MARK: - 云端书签与批注（Phase 2）
+
+struct UserBookmark: Codable, Equatable, Identifiable, Hashable, Sendable {
+    let id: String
+    let userId: String?
+    let comicId: String
+    let pageIndex: Int
+    let positionRatio: Double
+    let chapterTitle: String
+    var name: String
+    var note: String
+    let createdAt: Int64
+    var updatedAt: Int64
+
+    init(
+        id: String,
+        userId: String? = nil,
+        comicId: String,
+        pageIndex: Int,
+        positionRatio: Double = 0,
+        chapterTitle: String = "",
+        name: String = "",
+        note: String = "",
+        createdAt: Int64 = 0,
+        updatedAt: Int64 = 0
+    ) {
+        self.id = id
+        self.userId = userId
+        self.comicId = comicId
+        self.pageIndex = max(0, pageIndex)
+        self.positionRatio = min(max(positionRatio, 0.0), 1.0)
+        self.chapterTitle = chapterTitle
+        self.name = name
+        self.note = note
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        userId = try container.decodeIfPresent(String.self, forKey: .userId)
+        comicId = try container.decodeIfPresent(String.self, forKey: .comicId) ?? ""
+        pageIndex = max(0, try container.decodeIfPresent(Int.self, forKey: .pageIndex) ?? 0)
+        let rawRatio = try container.decodeIfPresent(Double.self, forKey: .positionRatio) ?? 0
+        positionRatio = min(max(rawRatio, 0.0), 1.0)
+        chapterTitle = try container.decodeIfPresent(String.self, forKey: .chapterTitle) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        createdAt = try container.decodeIfPresent(Int64.self, forKey: .createdAt) ?? 0
+        updatedAt = try container.decodeIfPresent(Int64.self, forKey: .updatedAt) ?? 0
+    }
+}
+
+struct BookmarkListResponse: Codable, Sendable {
+    let bookmarks: [UserBookmark]
+}
+
+struct BookmarkSingleResponse: Codable, Sendable {
+    let bookmark: UserBookmark
+}
+
+struct UserHighlight: Codable, Equatable, Identifiable, Hashable, Sendable {
+    let id: String
+    let userId: String?
+    let comicId: String
+    let chapterIndex: Int
+    let chapterTitle: String
+    let text: String
+    var note: String
+    var color: String
+    let startOffset: Int
+    let createdAt: Int64
+    var updatedAt: Int64
+
+    init(
+        id: String,
+        userId: String? = nil,
+        comicId: String,
+        chapterIndex: Int,
+        chapterTitle: String = "",
+        text: String,
+        note: String = "",
+        color: String = "#fbbf24",
+        startOffset: Int = -1,
+        createdAt: Int64 = 0,
+        updatedAt: Int64 = 0
+    ) {
+        self.id = id
+        self.userId = userId
+        self.comicId = comicId
+        self.chapterIndex = max(0, chapterIndex)
+        self.chapterTitle = chapterTitle
+        self.text = text
+        self.note = note
+        let trimmedColor = color.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.color = trimmedColor.isEmpty ? "#fbbf24" : trimmedColor
+        self.startOffset = startOffset
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        userId = try container.decodeIfPresent(String.self, forKey: .userId)
+        comicId = try container.decodeIfPresent(String.self, forKey: .comicId) ?? ""
+        chapterIndex = max(0, try container.decodeIfPresent(Int.self, forKey: .chapterIndex) ?? 0)
+        chapterTitle = try container.decodeIfPresent(String.self, forKey: .chapterTitle) ?? ""
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        let rawColor = (try container.decodeIfPresent(String.self, forKey: .color) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        color = rawColor.isEmpty ? "#fbbf24" : rawColor
+        startOffset = try container.decodeIfPresent(Int.self, forKey: .startOffset) ?? -1
+        createdAt = try container.decodeIfPresent(Int64.self, forKey: .createdAt) ?? 0
+        updatedAt = try container.decodeIfPresent(Int64.self, forKey: .updatedAt) ?? 0
+    }
+}
+
+struct HighlightListResponse: Codable, Sendable {
+    let highlights: [UserHighlight]
+}
+
+struct HighlightSingleResponse: Codable, Sendable {
+    let highlight: UserHighlight
+}
+
+// MARK: - 云端阅读偏好（Phase 2）
+
+enum ReaderPreferenceValue: Codable, Equatable, Hashable, Sendable,
+    ExpressibleByBooleanLiteral, ExpressibleByIntegerLiteral,
+    ExpressibleByFloatLiteral, ExpressibleByStringLiteral
+{
+    case bool(Bool)
+    case int(Int)
+    case double(Double)
+    case string(String)
+    case null
+
+    init(booleanLiteral value: Bool) {
+        self = .bool(value)
+    }
+
+    init(integerLiteral value: Int) {
+        self = .int(value)
+    }
+
+    init(floatLiteral value: Double) {
+        self = .double(value)
+    }
+
+    init(stringLiteral value: String) {
+        self = .string(value)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let boolValue = try? container.decode(Bool.self) {
+            self = .bool(boolValue)
+        } else if let intValue = try? container.decode(Int.self) {
+            self = .int(intValue)
+        } else if let doubleValue = try? container.decode(Double.self) {
+            self = .double(doubleValue)
+        } else if let stringValue = try? container.decode(String.self) {
+            self = .string(stringValue)
+        } else {
+            self = .null
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .bool(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    var boolValue: Bool? {
+        switch self {
+        case .bool(let value):
+            return value
+        case .int(let value):
+            return value != 0
+        case .double(let value):
+            return value != 0
+        case .string(let value):
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes": return true
+            case "false", "0", "no": return false
+            default: return nil
+            }
+        case .null:
+            return nil
+        }
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .double(let value):
+            return Int(value)
+        case .bool(let value):
+            return value ? 1 : 0
+        case .string(let value):
+            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .null:
+            return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .double(let value):
+            return value
+        case .int(let value):
+            return Double(value)
+        case .bool(let value):
+            return value ? 1.0 : 0.0
+        case .string(let value):
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .null:
+            return nil
+        }
+    }
+
+    var stringValue: String? {
+        switch self {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return String(value)
+        case .double(let value):
+            return String(value)
+        case .bool(let value):
+            return value ? "true" : "false"
+        case .null:
+            return nil
+        }
+    }
+}
+
+struct ScopedReaderPreferences: Codable, Equatable, Identifiable, Sendable {
+    var id: String = "scoped-reader-preferences"
+    var globalComic: [String: ReaderPreferenceValue]
+    var globalNovel: [String: ReaderPreferenceValue]
+    var seriesOverride: [String: ReaderPreferenceValue]?
+    var comicOverride: [String: ReaderPreferenceValue]?
+    var resolvedComic: [String: ReaderPreferenceValue]
+
+    enum CodingKeys: String, CodingKey {
+        case globalComic, globalNovel, seriesOverride, comicOverride, resolvedComic
+    }
+
+    init(
+        id: String = "scoped-reader-preferences",
+        globalComic: [String: ReaderPreferenceValue] = [:],
+        globalNovel: [String: ReaderPreferenceValue] = [:],
+        seriesOverride: [String: ReaderPreferenceValue]? = nil,
+        comicOverride: [String: ReaderPreferenceValue]? = nil,
+        resolvedComic: [String: ReaderPreferenceValue] = [:]
+    ) {
+        self.id = id
+        self.globalComic = globalComic
+        self.globalNovel = globalNovel
+        self.seriesOverride = seriesOverride
+        self.comicOverride = comicOverride
+        self.resolvedComic = resolvedComic
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = "scoped-reader-preferences"
+        globalComic = try container.decodeIfPresent([String: ReaderPreferenceValue].self, forKey: .globalComic) ?? [:]
+        globalNovel = try container.decodeIfPresent([String: ReaderPreferenceValue].self, forKey: .globalNovel) ?? [:]
+        seriesOverride = try container.decodeIfPresent([String: ReaderPreferenceValue].self, forKey: .seriesOverride)
+        comicOverride = try container.decodeIfPresent([String: ReaderPreferenceValue].self, forKey: .comicOverride)
+        resolvedComic = try container.decodeIfPresent([String: ReaderPreferenceValue].self, forKey: .resolvedComic) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(globalComic, forKey: .globalComic)
+        try container.encode(globalNovel, forKey: .globalNovel)
+        try container.encodeIfPresent(seriesOverride, forKey: .seriesOverride)
+        try container.encodeIfPresent(comicOverride, forKey: .comicOverride)
+        try container.encode(resolvedComic, forKey: .resolvedComic)
+    }
+}
+
+// MARK: - 小说服务端全书搜索（Phase 3）
+
+struct NovelSearchResultItem: Codable, Identifiable, Equatable, Sendable {
+    let chapterIndex: Int
+    let chapterTitle: String
+    let matchText: String
+    let matchCount: Int
+
+    var id: Int { chapterIndex }
+
+    init(
+        chapterIndex: Int,
+        chapterTitle: String,
+        matchText: String,
+        matchCount: Int
+    ) {
+        self.chapterIndex = max(0, chapterIndex)
+        self.chapterTitle = chapterTitle
+        self.matchText = matchText
+        self.matchCount = max(0, matchCount)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        chapterIndex = max(0, try container.decodeIfPresent(Int.self, forKey: .chapterIndex) ?? 0)
+        chapterTitle = try container.decodeIfPresent(String.self, forKey: .chapterTitle) ?? ""
+        matchText = try container.decodeIfPresent(String.self, forKey: .matchText) ?? ""
+        matchCount = max(0, try container.decodeIfPresent(Int.self, forKey: .matchCount) ?? 0)
+    }
+}
+
+struct NovelSearchResponse: Codable, Equatable, Sendable {
+    let query: String
+    let totalChapters: Int
+    let matchedChapters: Int
+    let totalMatches: Int
+    let truncated: Bool
+    let results: [NovelSearchResultItem]
+
+    init(
+        query: String,
+        totalChapters: Int,
+        matchedChapters: Int,
+        totalMatches: Int,
+        truncated: Bool,
+        results: [NovelSearchResultItem]
+    ) {
+        self.query = query
+        self.totalChapters = max(0, totalChapters)
+        self.matchedChapters = max(0, matchedChapters)
+        self.totalMatches = max(0, totalMatches)
+        self.truncated = truncated
+        self.results = results
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        query = try container.decodeIfPresent(String.self, forKey: .query) ?? ""
+        totalChapters = max(0, try container.decodeIfPresent(Int.self, forKey: .totalChapters) ?? 0)
+        matchedChapters = max(0, try container.decodeIfPresent(Int.self, forKey: .matchedChapters) ?? 0)
+        totalMatches = max(0, try container.decodeIfPresent(Int.self, forKey: .totalMatches) ?? 0)
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        results = try container.decodeIfPresent([NovelSearchResultItem].self, forKey: .results) ?? []
+    }
 }

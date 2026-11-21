@@ -10,6 +10,7 @@ final class OfflineFileManager {
     private let baseDir: URL
     private let fileManager = FileManager.default
     private let groupsLock = NSLock()
+    private let seriesLock = NSLock()
     private let comicFilesLock = NSLock()
     private var acceptedDownloadGenerations: [String: String] = [:]
     private var discardedComicIds = Set<String>()
@@ -466,6 +467,44 @@ final class OfflineFileManager {
     /// 查找单个合集
     func loadGroupDetail(groupId: Int) -> OfflineGroupMeta? {
         loadGroups().first { $0.id == groupId }
+    }
+
+    // MARK: - 目录作品离线元数据
+
+    private var seriesFileURL: URL {
+        baseDir.appendingPathComponent("series.json")
+    }
+
+    func loadAllSeries() -> [SeriesDetailResponse] {
+        seriesLock.lock()
+        defer { seriesLock.unlock() }
+        return loadAllSeriesUnlocked()
+    }
+
+    func saveSeries(_ detail: SeriesDetailResponse) {
+        seriesLock.lock()
+        defer { seriesLock.unlock() }
+        var list = loadAllSeriesUnlocked()
+        if let index = list.firstIndex(where: { $0.series.id == detail.series.id }) {
+            list[index] = detail
+        } else {
+            list.append(detail)
+        }
+        saveAllSeriesUnlocked(list)
+    }
+
+    func loadSeriesDetail(seriesId: String) -> SeriesDetailResponse? {
+        loadAllSeries().first { $0.series.id == seriesId }
+    }
+
+    private func loadAllSeriesUnlocked() -> [SeriesDetailResponse] {
+        guard let data = try? Data(contentsOf: seriesFileURL) else { return [] }
+        return (try? JSONDecoder().decode([SeriesDetailResponse].self, from: data)) ?? []
+    }
+
+    private func saveAllSeriesUnlocked(_ list: [SeriesDetailResponse]) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        try? data.write(to: seriesFileURL, options: .atomic)
     }
 }
 

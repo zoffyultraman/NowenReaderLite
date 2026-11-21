@@ -78,6 +78,9 @@ struct MainTabView: View {
                 Task { _ = try? await api.fetchAccessibleLibraries() }
             }
         }
+        .onChange(of: api.tagFilterNavigationRevision) { _, _ in
+            selectedTab = 0
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await api.reevaluateAutomaticRoute()
@@ -130,7 +133,12 @@ struct MainTabView: View {
                       !api.isOfflineMode,
                       api.isNetworkReachable else { return }
                 do {
-                    try await api.updateProgress(comicId: comicId, page: record.page, totalPages: record.totalPages)
+                    try await api.updateProgress(
+                        comicId: comicId,
+                        page: record.page,
+                        totalPages: record.totalPages,
+                        positionRatio: record.positionRatio
+                    )
                     manager.remove(
                         comicId: comicId,
                         ifUnchangedSince: record.updatedAt

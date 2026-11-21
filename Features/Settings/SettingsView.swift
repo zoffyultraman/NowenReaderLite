@@ -7,6 +7,8 @@ struct SettingsView: View {
     @Environment(APIClient.self) private var api
     @State private var showLogoutAlert = false
     @State private var showClearCacheAlert = false
+    @State private var showEditNicknameSheet = false
+    @State private var showChangePasswordSheet = false
     @State private var coverCacheSize: Int = 0
     @State private var metaCacheSize: Int = 0
     @State private var novelCacheSize: Int = 0
@@ -14,11 +16,23 @@ struct SettingsView: View {
     @AppStorage("keepOriginalSize") private var keepOriginalSize: Bool = false
     @AppStorage("offlineStorageLimitMB") private var storageLimitMB: Int = 0  // 0 = 无限制
 
+    private var userDisplayName: String {
+        if let nick = api.currentUser?.nickname?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !nick.isEmpty {
+            return nick
+        }
+        return api.currentUser?.username ?? "用户"
+    }
+
     var body: some View {
         List {
             UserProfileSettingsSection(
-                displayName: api.currentUser?.nickname ?? api.currentUser?.username ?? "用户",
-                username: api.currentUser?.username ?? ""
+                displayName: userDisplayName,
+                username: api.currentUser?.username ?? "",
+                isAdmin: api.currentUser?.isAdmin == true,
+                canEditProfile: !api.isOfflineMode && api.isLoggedIn && api.currentUser != nil,
+                onEditNickname: { showEditNicknameSheet = true },
+                onChangePassword: { showChangePasswordSheet = true }
             )
             ServerSettingsSection(
                 primaryURL: api.primaryServerURL,
@@ -68,6 +82,14 @@ struct SettingsView: View {
         } message: {
             Text("将释放 \(formatFileSize(Int64(coverCacheSize + metaCacheSize + novelCacheSize))) 空间，不影响服务器数据。")
         }
+        .sheet(isPresented: $showEditNicknameSheet) {
+            EditNicknameSheet(
+                initialNickname: api.currentUser?.nickname ?? api.currentUser?.username ?? ""
+            )
+        }
+        .sheet(isPresented: $showChangePasswordSheet) {
+            ChangePasswordSheet()
+        }
     }
 
     @MainActor
@@ -112,6 +134,10 @@ struct SettingsView: View {
 private struct UserProfileSettingsSection: View {
     let displayName: String
     let username: String
+    let isAdmin: Bool
+    let canEditProfile: Bool
+    let onEditNickname: () -> Void
+    let onChangePassword: () -> Void
 
     var body: some View {
         Section {
@@ -121,14 +147,185 @@ private struct UserProfileSettingsSection: View {
                     .foregroundStyle(Color.accentColor)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(displayName)
-                        .font(.headline)
-                    Text(username)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(displayName)
+                            .font(.headline)
+
+                        if isAdmin {
+                            Text("管理员")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        }
+                    }
+
+                    if !username.isEmpty {
+                        Text(username)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(.vertical, 4)
+
+            if canEditProfile {
+                Button(action: onEditNickname) {
+                    Label("修改昵称", systemImage: "pencil")
+                }
+
+                Button(action: onChangePassword) {
+                    Label("修改密码", systemImage: "key")
+                }
+            }
+        }
+    }
+}
+
+private struct EditNicknameSheet: View {
+    let initialNickname: String
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(APIClient.self) private var api
+    @State private var nickname = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private var trimmedNickname: String {
+        nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("请输入新昵称", text: $nickname)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("个人昵称")
+                } footer: {
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("修改昵称")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        saveNickname()
+                    }
+                    .disabled(trimmedNickname.isEmpty || isSaving)
+                }
+            }
+            .onAppear {
+                nickname = initialNickname
+            }
+        }
+    }
+
+    private func saveNickname() {
+        guard !trimmedNickname.isEmpty, !isSaving else { return }
+        isSaving = true
+        errorMessage = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                try await api.updateProfile(nickname: trimmedNickname)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct ChangePasswordSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Environment(APIClient.self) private var api
+    @State private var oldPassword = ""
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private var validationError: String? {
+        if oldPassword.isEmpty { return "请输入当前密码" }
+        if newPassword.count < 6 { return "新密码至少需要 6 个字符" }
+        if newPassword != confirmPassword { return "两次输入的新密码不一致" }
+        if newPassword == oldPassword { return "新密码不能与当前密码相同" }
+        return nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("验证当前密码") {
+                    SecureField("当前密码", text: $oldPassword)
+                }
+
+                Section {
+                    SecureField("新密码（至少 6 位）", text: $newPassword)
+                    SecureField("确认新密码", text: $confirmPassword)
+                } header: {
+                    Text("设置新密码")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .foregroundStyle(.red)
+                        } else if !newPassword.isEmpty && !confirmPassword.isEmpty && newPassword != confirmPassword {
+                            Text("两次输入的新密码不一致")
+                                .foregroundStyle(.red)
+                        } else {
+                            Text("修改成功后将同步更新本机已保存的对应账号凭据，并使其他设备会话失效。")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("修改密码")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        submitPasswordChange()
+                    }
+                    .disabled(validationError != nil || isSaving)
+                }
+            }
+        }
+    }
+
+    private func submitPasswordChange() {
+        if let validationError {
+            errorMessage = validationError
+            return
+        }
+        isSaving = true
+        errorMessage = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                try await api.changePassword(
+                    oldPassword: oldPassword,
+                    newPassword: newPassword,
+                    context: modelContext
+                )
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

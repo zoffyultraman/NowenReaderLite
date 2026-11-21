@@ -9,6 +9,7 @@ final class PendingReadingActivityManager: @unchecked Sendable {
         let clientSessionId: String
         var page: Int
         var totalPages: Int
+        var positionRatio: Double? = nil
         var activeSeconds: Int
         var sequence: Int
         var finalize: Bool
@@ -29,16 +30,19 @@ final class PendingReadingActivityManager: @unchecked Sendable {
         clientSessionId: String,
         page: Int,
         totalPages: Int,
+        positionRatio: Double? = nil,
         activeSeconds: Int,
         sequence: Int,
         finalize: Bool,
         trackProgress: Bool
     ) {
+        let clampedRatio = positionRatio.map { min(max($0, 0.0), 1.0) }
         save(PendingActivity(
             comicId: comicId,
             clientSessionId: clientSessionId,
             page: page,
             totalPages: totalPages,
+            positionRatio: clampedRatio,
             activeSeconds: activeSeconds,
             sequence: sequence,
             finalize: finalize,

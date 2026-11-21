@@ -8,6 +8,8 @@ enum UserDefaultsKey {
     static let serverRouteMode = "server_route_mode"
     static let serverRouteIdentities = "server_route_identities"
     static let novelFontSize = "novel_font_size"
+    static let novelLineSpacing = "novel_line_spacing"
+    static let novelLetterSpacing = "novel_letter_spacing"
     static let readingRecords = "reading_records"
 
     static func activeServerRoute(for primaryURL: String) -> String {
@@ -26,10 +28,26 @@ final class ReadingRecordManager {
     static let shared = ReadingRecordManager()
     private let defaults = UserDefaults.standard
 
-    struct Record: Codable {
+    struct Record: Codable, Sendable {
         let chapter: Int
         let page: Int
+        let totalPages: Int?
+        let positionRatio: Double?
         let timestamp: Date
+
+        init(
+            chapter: Int,
+            page: Int,
+            totalPages: Int? = nil,
+            positionRatio: Double? = nil,
+            timestamp: Date = Date()
+        ) {
+            self.chapter = chapter
+            self.page = page
+            self.totalPages = totalPages
+            self.positionRatio = positionRatio.map { min(max($0, 0.0), 1.0) }
+            self.timestamp = timestamp
+        }
     }
 
     // 内存缓存，避免每次读写都做 JSON 编解码
@@ -40,9 +58,21 @@ final class ReadingRecordManager {
 
     private init() {}
 
-    func save(comicId: String, chapter: Int, page: Int) {
+    func save(
+        comicId: String,
+        chapter: Int,
+        page: Int,
+        totalPages: Int? = nil,
+        positionRatio: Double? = nil
+    ) {
         var records = loadAll()
-        records[comicId] = Record(chapter: chapter, page: page, timestamp: Date())
+        records[comicId] = Record(
+            chapter: chapter,
+            page: page,
+            totalPages: totalPages,
+            positionRatio: positionRatio,
+            timestamp: Date()
+        )
         cache = records
         scheduleFlush()
     }

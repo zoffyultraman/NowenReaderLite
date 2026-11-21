@@ -80,7 +80,8 @@ struct HomeView: View {
         .task(id: HomeRefreshID(
             selectedLibraryId: api.selectedLibraryId,
             isOffline: api.isOfflineMode,
-            networkRecovered: api.networkRecovered
+            networkRecovered: api.networkRecovered,
+            contentMutationRevision: api.contentMutationRevision
         )) {
             continueReadingVM.setModelContext(modelContext)
             await continueReadingVM.load()
@@ -127,6 +128,7 @@ private struct HomeRefreshID: Hashable {
     let selectedLibraryId: String?
     let isOffline: Bool
     let networkRecovered: Bool
+    let contentMutationRevision: Int
 }
 
 private struct LibraryContentLoadID: Hashable {
@@ -136,8 +138,10 @@ private struct LibraryContentLoadID: Hashable {
     let directoryPath: String
     let contentType: String?
     let sortOption: String?
+    let activeTagFilter: String?
     let isOffline: Bool
     let networkRecovered: Bool
+    let contentMutationRevision: Int
     let refreshNonce: Int
 }
 
@@ -147,15 +151,22 @@ private struct HomeSiteIdentityView: View {
     @Environment(APIClient.self) private var api
 
     private var displayName: String {
+        _ = api.siteBrandingRevision
         let name = api.siteName.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "弄文阅读" : name
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            if !api.isOfflineMode,
-               api.isNetworkReachable,
-               let iconURL = api.siteIconURL {
+            if let cachedImage = api.siteIconImage {
+                Image(uiImage: cachedImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+            } else if !api.isOfflineMode,
+                      api.isNetworkReachable,
+                      let iconURL = api.siteIconURL {
                 AuthenticatedImage(url: iconURL)
                     .frame(width: 30, height: 30)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
@@ -219,13 +230,6 @@ struct HomeSearchBar: View {
 struct LibraryPickerView: View {
     @Environment(APIClient.self) private var api
 
-    private var totalLogicalCount: Int? {
-        let enabled = api.accessibleLibraries.filter(\.enabled)
-        let target = enabled.isEmpty ? api.accessibleLibraries : enabled
-        guard !target.isEmpty else { return nil }
-        return target.reduce(0) { $0 + $1.logicalCount }
-    }
-
     private var pickerDisplayName: String {
         if api.selectedLibraryId == nil,
            let single = api.activeDirectoryLibrary {
@@ -238,12 +242,12 @@ struct LibraryPickerView: View {
         if api.accessibleLibraries.count > 1 {
             Menu {
                 Button(
-                    totalLogicalCount.map { "全部书库 (\($0))" } ?? "全部书库",
+                    api.totalLogicalCount.map { "全部书库 (\($0))" } ?? "全部书库",
                     systemImage: "square.grid.2x2"
                 ) {
                     api.selectedLibraryId = nil
                 }
-                ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
+                ForEach(api.enabledAccessibleLibraries) { library in
                     Button(
                         "\(library.name) (\(library.logicalCount))",
                         systemImage: api.libraryIcon(for: library.type)
@@ -405,6 +409,14 @@ struct HomeMainContent: View {
                 )
                 .padding(.horizontal, 16)
 
+                if let activeTag = api.activeTagFilter, !activeTag.isEmpty {
+                    ActiveTagFilterBar(tagName: activeTag) {
+                        api.clearTagFilter()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                }
+
                 LibraryContentView(
                     contentType: selectedLibraryType,
                     viewMode: $viewMode,
@@ -415,8 +427,12 @@ struct HomeMainContent: View {
             }
             .refreshable {
                 refreshNonce += 1
-                _ = try? await api.fetchAccessibleLibraries()
-                await continueReadingVM.load()
+                async let libs = api.fetchAccessibleLibraries()
+                async let branding: Void = api.fetchSiteSettings()
+                async let continueTask: Void = continueReadingVM.load()
+                _ = try? await libs
+                await branding
+                await continueTask
             }
             .contentMargins(.bottom, 104, for: .scrollContent)
             .onChange(of: api.selectedLibraryId) { _, _ in
@@ -800,8 +816,10 @@ private struct LibraryContentView: View {
             directoryPath: directoryPath,
             contentType: contentType,
             sortOption: sortOption.rawValue,
+            activeTagFilter: api.activeTagFilter,
             isOffline: api.isOfflineMode,
             networkRecovered: api.networkRecovered,
+            contentMutationRevision: api.contentMutationRevision,
             refreshNonce: refreshNonce
         )) {
             viewModel.setModelContext(modelContext)
@@ -812,13 +830,15 @@ private struct LibraryContentView: View {
                 sortBy: sortOption.rawValue,
                 sortOrder: sortOption == .title ? "asc" : "desc",
                 library: dirLibrary,
-                directoryPath: effectiveDir
+                directoryPath: effectiveDir,
+                tag: api.activeTagFilter
             )
             if effectiveDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 async let groups: Void = collectionViewModel.configure(
                     contentType: contentType,
                     sortBy: sortOption == .title ? "title" : "defaultOrder",
-                    sortOrder: "asc"
+                    sortOrder: "asc",
+                    tag: api.activeTagFilter
                 )
                 _ = await (comics, groups)
             } else {
@@ -827,6 +847,34 @@ private struct LibraryContentView: View {
         }
     }
 
+}
+
+private struct ActiveTagFilterBar: View {
+    let tagName: String
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "tag.fill")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+            Text("标签筛选：\(tagName)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer()
+            Button(action: onClear) {
+                Label("清除", systemImage: "xmark.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("清除标签筛选")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+    }
 }
 
 private enum LibraryShelfEntry: Identifiable {

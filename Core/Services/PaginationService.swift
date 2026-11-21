@@ -34,6 +34,8 @@ enum PaginationService {
     static func paginate(
         text: String,
         fontSize: Double,
+        lineSpacing: Double = 10,
+        letterSpacing: Double = 0,
         maxWidth: CGFloat,
         maxHeight: CGFloat,
         firstPageMaxH: CGFloat? = nil
@@ -41,10 +43,12 @@ enum PaginationService {
         guard !text.isEmpty else { return [""] }
         guard maxWidth > 0, maxHeight > 0 else { return [text] }
 
-        let font = UIFont.systemFont(ofSize: fontSize)
-        let paraStyle = NSMutableParagraphStyle()
-        paraStyle.lineSpacing = fontSize * 0.6
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paraStyle]
+        let attrs = attributes(
+            style: .body,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing
+        )
         let attributedText = NSAttributedString(string: text, attributes: attrs)
         let framesetter = CTFramesetterCreateWithAttributedString(attributedText)
         let source = text as NSString
@@ -67,7 +71,17 @@ enum PaginationService {
             )
             let visibleRange = CTFrameGetVisibleStringRange(frame)
             let remainingLength = source.length - location
-            var pageLength = min(max(visibleRange.length, 1), remainingLength)
+            var pageLength = fittedTextLength(
+                in: source,
+                location: location,
+                candidateLength: min(max(visibleRange.length, 1), remainingLength),
+                style: .body,
+                fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                letterSpacing: letterSpacing,
+                maxWidth: maxWidth,
+                maxHeight: pageHeight
+            )
 
             if pageLength < remainingLength {
                 pageLength = sentenceBoundaryLength(
@@ -83,6 +97,121 @@ enum PaginationService {
         }
 
         return result
+    }
+
+    static func attributes(
+        style: NovelTextStyle,
+        fontSize: Double,
+        lineSpacing: Double = 10,
+        letterSpacing: Double = 0,
+        textColor: UIColor? = nil
+    ) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = CGFloat(max(0, lineSpacing))
+        let font: UIFont = style == .title
+            ? .boldSystemFont(ofSize: fontSize + 4)
+            : .systemFont(ofSize: fontSize)
+        var result: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: paragraph,
+            .kern: CGFloat(max(0, letterSpacing)),
+        ]
+        if let textColor {
+            result[.foregroundColor] = textColor
+        }
+        return result
+    }
+
+    static func measuredTextHeight(
+        _ text: String,
+        style: NovelTextStyle,
+        fontSize: Double,
+        lineSpacing: Double = 10,
+        letterSpacing: Double = 0,
+        maxWidth: CGFloat
+    ) -> CGFloat {
+        guard !text.isEmpty, maxWidth > 0 else { return 1 }
+        let attrs = attributes(
+            style: style,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing
+        )
+        let attributed = NSAttributedString(string: text, attributes: attrs)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        let ctSize = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            CFRange(location: 0, length: 0),
+            nil,
+            CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
+            nil
+        )
+        let tkRect = (text as NSString).boundingRect(
+            with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attrs,
+            context: nil
+        )
+        return max(1, ceil(max(ctSize.height, tkRect.height)) + 2)
+    }
+
+    static func fittedTextLength(
+        in source: NSString,
+        location: Int,
+        candidateLength: Int,
+        style: NovelTextStyle,
+        fontSize: Double,
+        lineSpacing: Double,
+        letterSpacing: Double,
+        maxWidth: CGFloat,
+        maxHeight: CGFloat
+    ) -> Int {
+        guard candidateLength > 0 else { return 0 }
+        let safeCandidate = alignedLength(in: source, location: location, length: candidateLength)
+        let candidateFragment = source.substring(with: NSRange(location: location, length: safeCandidate))
+        if measuredTextHeight(
+            candidateFragment,
+            style: style,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
+            maxWidth: maxWidth
+        ) <= maxHeight {
+            return safeCandidate
+        }
+
+        // CoreText 与 TextKit 在非零字间距/行间距下偶有微差，二分回退至不裁切为止
+        var low = alignedLength(in: source, location: location, length: 1)
+        var high = safeCandidate - 1
+        var best = low
+
+        while low <= high {
+            if Task.isCancelled { return best }
+            let mid = alignedLength(in: source, location: location, length: (low + high) / 2)
+            let fragment = source.substring(with: NSRange(location: location, length: mid))
+            let height = measuredTextHeight(
+                fragment,
+                style: style,
+                fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                letterSpacing: letterSpacing,
+                maxWidth: maxWidth
+            )
+            if height <= maxHeight {
+                best = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return best
+    }
+
+    private static func alignedLength(in source: NSString, location: Int, length: Int) -> Int {
+        let remaining = source.length - location
+        let clamped = min(max(1, length), remaining)
+        let endRange = source.rangeOfComposedCharacterSequence(at: location + clamped - 1)
+        return min(remaining, endRange.location + endRange.length - location)
     }
 
     // MARK: - Private

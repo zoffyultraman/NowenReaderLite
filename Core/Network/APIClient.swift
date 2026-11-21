@@ -1,7 +1,9 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 import SwiftData
 import Network
+import UIKit
 
 // MARK: - 统一网络层
 
@@ -38,16 +40,55 @@ final class APIClient: ReaderWarmupClient {
     /// 服务器站点名称（从 /api/site-settings 获取，按服务器身份缓存）
     var siteName: String {
         get { UserDefaults.standard.string(forKey: "siteName_\(primaryServerURL)") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "siteName_\(primaryServerURL)") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "siteName_\(primaryServerURL)")
+            siteBrandingRevision += 1
+        }
     }
+    /// 离线可用的本地站点图标数据（按 primaryServerURL 隔离存储）
+    private(set) var siteIconData: Data? {
+        didSet { siteIconImage = siteIconData.flatMap(UIImage.init(data:)) }
+    }
+    /// 缓存解码后的站点图标实例（避免视图 body 重复解码 Data）
+    private(set) var siteIconImage: UIImage?
+    /// 站点品牌刷新版本号（用于在名称/图标刷新时触发视图更新）
+    private(set) var siteBrandingRevision: Int = 0
     /// 站点图标 URL（固定端点 /api/site-settings/icon）
     var siteIconURL: URL? {
         guard !serverURL.isEmpty else { return nil }
         return URL(string: "\(serverURL)/api/site-settings/icon")
     }
+    /// 内容删除/变更递增版本号（触发书架刷新）
+    var contentMutationRevision: Int = 0
+    /// 详情页点击 Tag 联动书架的激活筛选标签
+    var activeTagFilter: String?
+    /// Tag 筛选跳转修订号（用于通知 Tab 切回书架）
+    var tagFilterNavigationRevision: Int = 0
+
+    func activateTagFilter(_ tagName: String) {
+        let trimmed = tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        activeTagFilter = trimmed
+        tagFilterNavigationRevision += 1
+    }
+
+    func clearTagFilter() {
+        activeTagFilter = nil
+    }
 
     /// 用户可访问的书库列表
-    var accessibleLibraries: [Library] = []
+    var accessibleLibraries: [Library] = [] {
+        didSet {
+            let enabled = accessibleLibraries.filter(\.enabled)
+            enabledAccessibleLibraries = enabled
+            let target = enabled.isEmpty ? accessibleLibraries : enabled
+            totalLogicalCount = target.isEmpty ? nil : target.reduce(0) { $0 + $1.logicalCount }
+        }
+    }
+    /// 已启用的可访问书库（预先过滤以供 ForEach 直接遍历）
+    private(set) var enabledAccessibleLibraries: [Library] = []
+    /// 全部书库汇总的逻辑作品数
+    private(set) var totalLogicalCount: Int?
     /// 当前选中的书库 ID（nil = 全部）
     var selectedLibraryId: String? {
         didSet { UserDefaults.standard.set(selectedLibraryId, forKey: "selectedLibraryId") }
@@ -75,18 +116,15 @@ final class APIClient: ReaderWarmupClient {
            let lib = accessibleLibraries.first(where: { $0.id == id }) {
             return lib.logicalCount
         }
-        let enabled = accessibleLibraries.filter(\.enabled)
-        let target = enabled.isEmpty ? accessibleLibraries : enabled
-        return target.reduce(0) { $0 + $1.logicalCount }
+        return totalLogicalCount
     }
     /// 当前用于目录分类导航的单一活跃书库（显式选中或唯一可访问书库）
     var activeDirectoryLibrary: Library? {
         if let id = selectedLibraryId {
             return accessibleLibraries.first(where: { $0.id == id })
         }
-        let enabled = accessibleLibraries.filter(\.enabled)
-        if enabled.count == 1 {
-            return enabled.first
+        if enabledAccessibleLibraries.count == 1 {
+            return enabledAccessibleLibraries.first
         }
         return accessibleLibraries.count == 1 ? accessibleLibraries.first : nil
     }
@@ -155,6 +193,9 @@ final class APIClient: ReaderWarmupClient {
         config.timeoutIntervalForResource = 120
         self.session = URLSession(configuration: config)
         self.selectedLibraryId = UserDefaults.standard.string(forKey: "selectedLibraryId")
+        let initialIconData = Self.readCachedSiteIcon(for: primary)
+        self.siteIconData = initialIconData
+        self.siteIconImage = initialIconData.flatMap(UIImage.init(data:))
 
         guard !serverURL.isEmpty else { return }
 
@@ -253,6 +294,8 @@ final class APIClient: ReaderWarmupClient {
         UserDefaults.standard.set(primary, forKey: UserDefaultsKey.serverURL)
         UserDefaults.standard.set(normalizedBackup, forKey: UserDefaultsKey.backupServerURL)
         UserDefaults.standard.set(effectiveMode.rawValue, forKey: UserDefaultsKey.serverRouteMode)
+        siteIconData = Self.readCachedSiteIcon(for: primary)
+        siteBrandingRevision += 1
         activateRoute(targetURL, copyAuthentication: isSameProfile)
         lastRouteSwitch = nil
     }
@@ -277,6 +320,7 @@ final class APIClient: ReaderWarmupClient {
         if let siteName = defaults.string(forKey: "siteName_\(oldPrimary)") {
             defaults.set(siteName, forKey: "siteName_\(newPrimary)")
         }
+        Self.migrateCachedSiteIcon(from: oldPrimary, to: newPrimary)
     }
 
     var isUsingBackupRoute: Bool {
@@ -366,19 +410,118 @@ final class APIClient: ReaderWarmupClient {
         isNetworkReachable = reachable
     }
 
-    /// 获取服务器站点信息并缓存
+    /// 获取服务器站点名称与 Logo 并按主线路隔离持久化（在线时始终刷新以感知服务端修改）
     func fetchSiteSettings() async {
         guard !serverURL.isEmpty, isNetworkReachable else { return }
-        // 已有缓存则跳过
-        guard siteName.isEmpty else { return }
+        let targetPrimary = primaryServerURL
+        let previousCachedName = UserDefaults.standard.string(forKey: "siteName_\(targetPrimary)") ?? ""
+
         do {
             let resp: SiteSettingsResponse = try await get("/api/site-settings")
-            if let name = resp.siteName, !name.isEmpty {
-                siteName = name
+            guard targetPrimary == primaryServerURL else { return }
+            let nextName = (resp.siteName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if nextName != previousCachedName {
+                UserDefaults.standard.set(nextName, forKey: "siteName_\(targetPrimary)")
+                siteBrandingRevision += 1
             }
         } catch {
-            // 静默失败，不影响主流程
+            // 静默保留本地缓存名称
         }
+
+        await refreshSiteIconCache(for: targetPrimary)
+    }
+
+    private func refreshSiteIconCache(for targetPrimary: String) async {
+        guard !serverURL.isEmpty, isNetworkReachable, !targetPrimary.isEmpty else { return }
+        do {
+            let (data, response) = try await performTransportRequest(allowsFailover: true) { baseURL in
+                guard let url = URL(string: "\(baseURL)/api/site-settings/icon") else {
+                    throw APIError.invalidURL
+                }
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 5
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+                return request
+            }
+            guard let http = response as? HTTPURLResponse,
+                  targetPrimary == primaryServerURL else {
+                return
+            }
+
+            if http.statusCode == 404 {
+                Self.removeCachedSiteIcon(for: targetPrimary)
+                siteIconData = nil
+                siteBrandingRevision += 1
+                return
+            }
+
+            guard (200..<300).contains(http.statusCode),
+                  !data.isEmpty,
+                  data.count <= 2 * 1024 * 1024,
+                  UIImage(data: data) != nil else {
+                return
+            }
+
+            Self.writeCachedSiteIcon(data, for: targetPrimary)
+            if siteIconData != data {
+                siteIconData = data
+                siteBrandingRevision += 1
+            }
+        } catch {
+            // 静默保留本地离线图标缓存
+        }
+    }
+
+    private static func siteBrandingDirectory(for primaryURL: String) -> URL? {
+        let trimmed = primaryURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let digest = SHA256.hash(data: Data(trimmed.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return supportDir
+            .appendingPathComponent("ServerBranding", isDirectory: true)
+            .appendingPathComponent(digest, isDirectory: true)
+    }
+
+    private static func siteIconFileURL(for primaryURL: String) -> URL? {
+        siteBrandingDirectory(for: primaryURL)?.appendingPathComponent("icon.bin", isDirectory: false)
+    }
+
+    private static func readCachedSiteIcon(for primaryURL: String) -> Data? {
+        guard let url = siteIconFileURL(for: primaryURL),
+              let data = try? Data(contentsOf: url),
+              !data.isEmpty,
+              UIImage(data: data) != nil else {
+            return nil
+        }
+        return data
+    }
+
+    private static func writeCachedSiteIcon(_ data: Data, for primaryURL: String) {
+        guard let dir = siteBrandingDirectory(for: primaryURL),
+              let fileURL = siteIconFileURL(for: primaryURL) else {
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            AppLogger.error("保存站点图标缓存失败: \(error.localizedDescription)")
+        }
+    }
+
+    private static func removeCachedSiteIcon(for primaryURL: String) {
+        guard let fileURL = siteIconFileURL(for: primaryURL) else { return }
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private static func migrateCachedSiteIcon(from oldPrimary: String, to newPrimary: String) {
+        guard let data = readCachedSiteIcon(for: oldPrimary) else { return }
+        writeCachedSiteIcon(data, for: newPrimary)
     }
 
     func testConnection(_ url: String) async -> Bool {
@@ -1149,6 +1292,47 @@ final class APIClient: ReaderWarmupClient {
         return user
     }
 
+    // MARK: - User Self-Service (Phase 4)
+
+    /// 自助修改当前用户昵称（PUT /api/auth/users）
+    func updateProfile(nickname: String) async throws {
+        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = UpdateProfileBody(nickname: trimmed)
+        let _: EmptyResponse = try await put("/api/auth/users", body: body)
+        if let user = currentUser {
+            currentUser = AuthUser(
+                id: user.id,
+                username: user.username,
+                nickname: trimmed,
+                role: user.role,
+                aiEnabled: user.aiEnabled
+            )
+        }
+    }
+
+    /// 自助修改当前用户密码，若当前账号保存在 SavedAccount 中则同步更新 Keychain 密码
+    func changePassword(
+        oldPassword: String,
+        newPassword: String,
+        context: ModelContext? = nil
+    ) async throws {
+        let body = ChangePasswordBody(oldPassword: oldPassword, newPassword: newPassword)
+        let _: EmptyResponse = try await put("/api/auth/users", body: body)
+        if let context {
+            syncSavedAccountPassword(newPassword: newPassword, context: context)
+        }
+    }
+
+    func syncSavedAccountPassword(newPassword: String, context: ModelContext) {
+        guard let username = currentUser?.username, !username.isEmpty else { return }
+        let accounts = fetchAllAccounts(context: context)
+        for account in accounts where account.username == username {
+            if !KeychainHelper.savePassword(newPassword, for: account.id) {
+                AppLogger.error("同步更新 Keychain 密码失败: \(account.username)")
+            }
+        }
+    }
+
     // MARK: - Comics
 
     func fetchComics(
@@ -1208,13 +1392,58 @@ final class APIClient: ReaderWarmupClient {
         )
     }
 
-    func updateProgress(comicId: String, page: Int, totalPages: Int? = nil) async throws {
-        let body = PageBody(page: page, totalPages: totalPages)
+    func updateProgress(
+        comicId: String,
+        page: Int,
+        totalPages: Int? = nil,
+        positionRatio: Double? = nil
+    ) async throws {
+        let clampedRatio = positionRatio.map { min(max($0, 0.0), 1.0) }
+        let body = PageBody(page: page, totalPages: totalPages, positionRatio: clampedRatio)
         let _: EmptyResponse = try await put(
             "/api/comics/\(comicId)/progress",
             body: body,
             retryOnTransportFailure: true
         )
+    }
+
+    /// 删除单个作品（仅管理员可用）
+    func deleteComic(
+        comicId: String,
+        deleteFiles: Bool = false,
+        deleteEditions: Bool = false
+    ) async throws {
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        var query: [String: String] = [:]
+        if deleteFiles { query["deleteFiles"] = "true" }
+        if deleteEditions { query["deleteEditions"] = "true" }
+        let _: EmptyResponse = try await delete(
+            "/api/comics/\(encodedId)",
+            query: query.isEmpty ? nil : query
+        )
+    }
+
+    /// 批量删除作品（仅管理员可用）
+    func batchDeleteComics(
+        comicIds: [String],
+        deleteFiles: Bool = false,
+        deleteEditions: Bool = true
+    ) async throws {
+        guard !comicIds.isEmpty else { return }
+        let body = BatchDeleteComicsBody(
+            comicIds: comicIds,
+            deleteFiles: deleteFiles,
+            deleteEditions: deleteEditions
+        )
+        let _: EmptyResponse = try await post("/api/comics/batch", body: body)
+    }
+
+    /// 批量收藏 / 取消收藏作品（合集与目录作品共用）
+    func batchSetFavorite(comicIds: [String], isFavorite: Bool) async throws {
+        let uniqueIds = Array(Set(comicIds.filter { !$0.isEmpty }))
+        guard !uniqueIds.isEmpty else { return }
+        let body = BatchFavoriteComicsBody(comicIds: uniqueIds, isFavorite: isFavorite)
+        let _: EmptyResponse = try await post("/api/comics/batch", body: body)
     }
 
     // MARK: - Pages & Content
@@ -1257,6 +1486,25 @@ final class APIClient: ReaderWarmupClient {
         try await get(
             "/api/comics/\(comicId)/chapter/\(index)",
             timeout: 120
+        )
+    }
+
+    /// 服务端小说全书关键词检索（GET /api/comics/:id/search?q=...&limit=...）
+    func searchNovel(
+        comicId: String,
+        query: String,
+        limit: Int = 100
+    ) async throws -> NovelSearchResponse {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clampedLimit = min(max(limit, 1), 500)
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        return try await get(
+            "/api/comics/\(encodedId)/search",
+            query: [
+                "q": trimmedQuery,
+                "limit": "\(clampedLimit)",
+            ],
+            timeout: 60
         )
     }
 
@@ -1533,15 +1781,18 @@ final class APIClient: ReaderWarmupClient {
         clientSessionId: String,
         page: Int,
         totalPages: Int,
+        positionRatio: Double? = nil,
         activeSeconds: Int,
         sequence: Int,
         finalize: Bool = false,
         trackProgress: Bool = true
     ) async throws {
+        let clampedRatio = positionRatio.map { min(max($0, 0.0), 1.0) }
         let body = ReadingActivityBody(
             clientSessionId: clientSessionId,
             page: page,
             totalPages: totalPages,
+            positionRatio: clampedRatio,
             activeSeconds: activeSeconds,
             sequence: sequence,
             finalize: finalize,
@@ -1565,6 +1816,7 @@ final class APIClient: ReaderWarmupClient {
                     clientSessionId: activity.clientSessionId,
                     page: activity.page,
                     totalPages: activity.totalPages,
+                    positionRatio: activity.positionRatio,
                     activeSeconds: activity.activeSeconds,
                     sequence: activity.sequence,
                     finalize: activity.finalize,
@@ -1579,6 +1831,218 @@ final class APIClient: ReaderWarmupClient {
                 AppLogger.log("离线阅读活动同步失败: \(activity.comicId) \(error.localizedDescription)")
             }
         }
+    }
+
+    // MARK: - Bookmarks & Highlights (Phase 2)
+
+    func fetchBookmarks(comicId: String) async throws -> [UserBookmark] {
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let resp: BookmarkListResponse = try await get("/api/comics/\(encodedId)/bookmarks")
+        return resp.bookmarks
+    }
+
+    func upsertBookmark(
+        comicId: String,
+        id: String? = nil,
+        pageIndex: Int,
+        positionRatio: Double = 0,
+        chapterTitle: String = "",
+        name: String = "",
+        note: String = ""
+    ) async throws -> UserBookmark {
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let body = UpsertBookmarkBody(
+            id: id ?? UUID().uuidString,
+            pageIndex: max(0, pageIndex),
+            positionRatio: min(max(positionRatio, 0.0), 1.0),
+            chapterTitle: chapterTitle,
+            name: name,
+            note: note,
+            createdAt: nowMs,
+            updatedAt: nowMs
+        )
+        let resp: BookmarkSingleResponse = try await post(
+            "/api/comics/\(encodedId)/bookmarks",
+            body: body
+        )
+        return resp.bookmark
+    }
+
+    func updateBookmark(
+        comicId: String,
+        bookmarkId: String,
+        name: String,
+        note: String
+    ) async throws -> UserBookmark {
+        let encodedComicId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let encodedBookmarkId = bookmarkId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? bookmarkId
+        let resp: BookmarkSingleResponse = try await put(
+            "/api/comics/\(encodedComicId)/bookmarks/\(encodedBookmarkId)",
+            body: UpdateBookmarkBody(name: name, note: note)
+        )
+        return resp.bookmark
+    }
+
+    func deleteBookmark(comicId: String, bookmarkId: String) async throws {
+        let encodedComicId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let encodedBookmarkId = bookmarkId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? bookmarkId
+        let _: EmptyResponse = try await delete(
+            "/api/comics/\(encodedComicId)/bookmarks/\(encodedBookmarkId)"
+        )
+    }
+
+    func fetchHighlights(comicId: String) async throws -> [UserHighlight] {
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let resp: HighlightListResponse = try await get("/api/comics/\(encodedId)/highlights")
+        return resp.highlights
+    }
+
+    func upsertHighlight(
+        comicId: String,
+        id: String? = nil,
+        chapterIndex: Int,
+        chapterTitle: String = "",
+        text: String,
+        note: String = "",
+        color: String = "#fbbf24",
+        startOffset: Int = -1
+    ) async throws -> UserHighlight {
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let trimmedColor = color.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = UpsertHighlightBody(
+            id: id ?? UUID().uuidString,
+            chapterIndex: max(0, chapterIndex),
+            chapterTitle: chapterTitle,
+            text: text,
+            note: note,
+            color: trimmedColor.isEmpty ? "#fbbf24" : trimmedColor,
+            startOffset: startOffset,
+            createdAt: nowMs,
+            updatedAt: nowMs
+        )
+        let resp: HighlightSingleResponse = try await post(
+            "/api/comics/\(encodedId)/highlights",
+            body: body
+        )
+        return resp.highlight
+    }
+
+    func updateHighlight(
+        comicId: String,
+        highlightId: String,
+        note: String,
+        color: String
+    ) async throws -> UserHighlight {
+        let encodedComicId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let encodedHighlightId = highlightId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? highlightId
+        let trimmedColor = color.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resp: HighlightSingleResponse = try await put(
+            "/api/comics/\(encodedComicId)/highlights/\(encodedHighlightId)",
+            body: UpdateHighlightBody(
+                note: note,
+                color: trimmedColor.isEmpty ? "#fbbf24" : trimmedColor
+            )
+        )
+        return resp.highlight
+    }
+
+    func deleteHighlight(comicId: String, highlightId: String) async throws {
+        let encodedComicId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        let encodedHighlightId = highlightId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? highlightId
+        let _: EmptyResponse = try await delete(
+            "/api/comics/\(encodedComicId)/highlights/\(encodedHighlightId)"
+        )
+    }
+
+    func exportHighlightsMarkdown(
+        comicId: String,
+        preferredTitle: String? = nil,
+        timeout: TimeInterval = 60
+    ) async throws -> URL {
+        guard isNetworkReachable else { throw APIError.networkError }
+        guard !serverURL.isEmpty else { throw APIError.invalidURL }
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        guard let exportURL = URL(string: "\(serverURL)/api/comics/\(encodedId)/highlights/export") else {
+            throw APIError.invalidURL
+        }
+        let (tempFileURL, response) = try await authenticatedDownloadWithResponse(
+            from: exportURL,
+            timeout: timeout
+        )
+        let preferredName = preferredTitle?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+            ? "\(preferredTitle!.trimmingCharacters(in: .whitespacesAndNewlines))-notes.md"
+            : nil
+        var resolvedName = Self.resolvedDownloadFilename(
+            preferred: preferredName,
+            suggested: response.suggestedFilename,
+            fallbackId: "\(comicId)-notes.md"
+        )
+        if !resolvedName.lowercased().hasSuffix(".md") {
+            resolvedName += ".md"
+        }
+        let exportRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OriginalExports", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: exportRoot,
+                withIntermediateDirectories: true
+            )
+            let destinationURL = exportRoot.appendingPathComponent(resolvedName, isDirectory: false)
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.moveItem(at: tempFileURL, to: destinationURL)
+            return destinationURL
+        } catch {
+            try? FileManager.default.removeItem(at: tempFileURL)
+            throw error
+        }
+    }
+
+    // MARK: - Cloud Reader Preferences (Phase 2)
+
+    func fetchReaderPreferences(
+        comicId: String? = nil,
+        seriesId: String? = nil
+    ) async throws -> ScopedReaderPreferences {
+        var params: [String: String] = [:]
+        if let comicId = comicId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !comicId.isEmpty {
+            params["comicId"] = comicId
+        }
+        if let seriesId = seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !seriesId.isEmpty {
+            params["seriesId"] = seriesId
+        }
+        return try await get(
+            "/api/user/reader-preferences",
+            query: params.isEmpty ? nil : params
+        )
+    }
+
+    func saveReaderPreference(
+        scope: String,
+        prefs: [String: ReaderPreferenceValue]
+    ) async throws {
+        let body = SaveReaderPreferenceBody(scope: scope, prefs: prefs)
+        let _: EmptyResponse = try await put(
+            "/api/user/reader-preferences",
+            body: body,
+            retryOnTransportFailure: true
+        )
+    }
+
+    func deleteReaderPreference(scope: String) async throws {
+        let _: EmptyResponse = try await delete(
+            "/api/user/reader-preferences",
+            query: ["scope": scope],
+            retryOnTransportFailure: true
+        )
     }
 
     // MARK: - Stats
@@ -1609,17 +2073,21 @@ final class APIClient: ReaderWarmupClient {
     }
 
     func deleteGoal(goalType: String) async throws {
-        guard var components = URLComponents(string: "\(serverURL)/api/goals") else {
-            throw APIError.invalidURL
+        let trimmed = goalType.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encodedType = trimmed.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? trimmed
+        do {
+            let _: EmptyResponse = try await delete(
+                "/api/goals/\(encodedType)",
+                query: ["goalType": trimmed],
+                retryOnTransportFailure: true
+            )
+        } catch APIError.serverError(let code, _) where code == 404 || code == 405 {
+            let _: EmptyResponse = try await delete(
+                "/api/goals",
+                query: ["goalType": trimmed],
+                retryOnTransportFailure: true
+            )
         }
-        components.queryItems = [URLQueryItem(name: "goalType", value: goalType)]
-        guard let url = components.url else { throw APIError.invalidURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        applyAuthentication(to: &request)
-        let (data, response) = try await session.data(for: request)
-        try validate(response: response, data: data)
     }
 
     // MARK: - Reading Status
@@ -1730,6 +2198,27 @@ final class APIClient: ReaderWarmupClient {
 
     func fetchSeriesDetail(id: String) async throws -> SeriesDetailResponse {
         try await get("/api/series/\(id)")
+    }
+
+    /// 删除目录系列（仅管理员可用）
+    func deleteSeries(
+        seriesId: String,
+        deleteContent: Bool = true,
+        deleteFiles: Bool = false,
+        deleteEditions: Bool = true
+    ) async throws {
+        let encodedId = seriesId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? seriesId
+        var query: [String: String] = [
+            "deleteContent": deleteContent ? "true" : "false",
+            "deleteEditions": deleteEditions ? "true" : "false",
+        ]
+        if deleteFiles {
+            query["deleteFiles"] = "true"
+        }
+        let _: EmptyResponse = try await delete(
+            "/api/series/\(encodedId)",
+            query: query
+        )
     }
 
     /// 返回已分组的漫画 ID 集合
@@ -1857,6 +2346,39 @@ final class APIClient: ReaderWarmupClient {
             retryOnTransportFailure: retryOnTransportFailure,
             usesAuthentication: true
         )
+    }
+
+    private func delete<T: Decodable & Sendable>(
+        _ path: String,
+        query: [String: String]? = nil,
+        retryOnTransportFailure: Bool = false
+    ) async throws -> T {
+        guard isNetworkReachable else { throw APIError.networkError }
+
+        let (data, response) = try await performTransportRequest(
+            allowsFailover: retryOnTransportFailure
+        ) { baseURL in
+            guard var components = URLComponents(string: "\(baseURL)\(path)") else {
+                throw APIError.invalidURL
+            }
+            if let query, !query.isEmpty {
+                components.queryItems = query.map {
+                    URLQueryItem(name: $0.key, value: $0.value)
+                }
+            }
+            guard let url = components.url else { throw APIError.invalidURL }
+            var request = URLRequest(url: url)
+            request.httpMethod = "DELETE"
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            applyAuthentication(to: &request)
+            return request
+        }
+        try validate(response: response, data: data)
+
+        if data.isEmpty, let empty = EmptyResponse() as? T {
+            return empty
+        }
+        return try await decode(T.self, from: data)
     }
 
     private func performRequest<T: Decodable & Sendable, B: Encodable>(
@@ -2009,16 +2531,104 @@ struct RatingBody: Encodable, Sendable {
 struct PageBody: Encodable, Sendable {
     let page: Int
     let totalPages: Int?
+    let positionRatio: Double?
 }
 
 struct ReadingActivityBody: Encodable, Sendable {
     let clientSessionId: String
     let page: Int
     let totalPages: Int
+    let positionRatio: Double?
     let activeSeconds: Int
     let sequence: Int
     let finalize: Bool
     let trackProgress: Bool
+}
+
+struct UpsertBookmarkBody: Encodable, Sendable {
+    let id: String
+    let pageIndex: Int
+    let positionRatio: Double
+    let chapterTitle: String
+    let name: String
+    let note: String
+    let createdAt: Int64
+    let updatedAt: Int64
+}
+
+struct UpdateBookmarkBody: Encodable, Sendable {
+    let name: String
+    let note: String
+}
+
+struct UpsertHighlightBody: Encodable, Sendable {
+    let id: String
+    let chapterIndex: Int
+    let chapterTitle: String
+    let text: String
+    let note: String
+    let color: String
+    let startOffset: Int
+    let createdAt: Int64
+    let updatedAt: Int64
+}
+
+struct UpdateHighlightBody: Encodable, Sendable {
+    let note: String
+    let color: String
+}
+
+struct SaveReaderPreferenceBody: Encodable, Sendable {
+    let scope: String
+    let prefs: [String: ReaderPreferenceValue]
+}
+
+struct UpdateProfileBody: Encodable, Sendable {
+    let action: String
+    let nickname: String
+
+    init(nickname: String) {
+        self.action = "updateProfile"
+        self.nickname = nickname
+    }
+}
+
+struct ChangePasswordBody: Encodable, Sendable {
+    let action: String
+    let oldPassword: String
+    let newPassword: String
+
+    init(oldPassword: String, newPassword: String) {
+        self.action = "changePassword"
+        self.oldPassword = oldPassword
+        self.newPassword = newPassword
+    }
+}
+
+struct BatchDeleteComicsBody: Encodable, Sendable {
+    let action: String
+    let comicIds: [String]
+    let deleteFiles: Bool
+    let deleteEditions: Bool
+
+    init(comicIds: [String], deleteFiles: Bool, deleteEditions: Bool) {
+        self.action = "delete"
+        self.comicIds = comicIds
+        self.deleteFiles = deleteFiles
+        self.deleteEditions = deleteEditions
+    }
+}
+
+struct BatchFavoriteComicsBody: Encodable, Sendable {
+    let action: String
+    let comicIds: [String]
+    let isFavorite: Bool
+
+    init(comicIds: [String], isFavorite: Bool) {
+        self.action = isFavorite ? "favorite" : "unfavorite"
+        self.comicIds = comicIds
+        self.isFavorite = isFavorite
+    }
 }
 
 struct ComicMapResponse: Decodable, Sendable {
@@ -2041,7 +2651,14 @@ enum APIError: LocalizedError {
         case .secureStorage: return "无法访问本机 Keychain"
         case .networkError: return "网络连接失败"
         case .unauthorized: return "登录已过期，请重新登录"
-        case .serverError(let code, let msg): return "服务器错误 (\(code)): \(msg)"
+        case .serverError(let code, let msg):
+            if let data = msg.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let errMsg = obj["error"] as? String,
+               !errMsg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "服务器错误 (\(code)): \(errMsg)"
+            }
+            return "服务器错误 (\(code)): \(msg)"
         case .dataFormat: return "数据格式异常，请检查服务器版本"
         }
     }

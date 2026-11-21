@@ -31,7 +31,7 @@ struct StatsMainContent: View {
                 VStack(spacing: 20) {
                     GoalSectionView(
                         goals: viewModel.goals,
-                        canManage: api.currentUser?.isAdmin == true,
+                        canManage: !api.isOfflineMode && api.isLoggedIn,
                         onAddGoal: { showGoalSheet = true }
                     )
 
@@ -318,7 +318,7 @@ struct GoalSectionView: View {
                         Text("暂无阅读目标")
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.secondary)
-                        Text("管理员可设置每日或每周目标")
+                        Text("登录后可设置每日或每周目标")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }

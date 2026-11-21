@@ -215,6 +215,8 @@ extension PaginationService {
         blocks: [NovelResolvedBlock],
         title: String?,
         fontSize: Double,
+        lineSpacing: Double = 10,
+        letterSpacing: Double = 0,
         maxWidth: CGFloat,
         maxHeight: CGFloat
     ) -> [NovelPage] {
@@ -234,6 +236,8 @@ extension PaginationService {
                 text: text,
                 title: title,
                 fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                letterSpacing: letterSpacing,
                 maxWidth: maxWidth,
                 maxHeight: maxHeight
             )
@@ -242,6 +246,8 @@ extension PaginationService {
             blocks: blocks,
             title: title,
             fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
             maxWidth: maxWidth,
             maxHeight: maxHeight
         )
@@ -251,17 +257,23 @@ extension PaginationService {
         text: String,
         title: String?,
         fontSize: Double,
+        lineSpacing: Double,
+        letterSpacing: Double,
         maxWidth: CGFloat,
         maxHeight: CGFloat
     ) -> [NovelPage] {
         let titleLayout = titleLayout(
             title: title,
             fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
             maxWidth: maxWidth
         )
         let textPages = paginate(
             text: text,
             fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
             maxWidth: maxWidth,
             maxHeight: maxHeight,
             firstPageMaxH: max(1, maxHeight - titleLayout.bodyOffset)
@@ -278,6 +290,8 @@ extension PaginationService {
                 pageText,
                 style: .body,
                 fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                letterSpacing: letterSpacing,
                 maxWidth: maxWidth
             )
             items.append(.text(NovelTextPageItem(
@@ -298,14 +312,18 @@ extension PaginationService {
         blocks: [NovelResolvedBlock],
         title: String?,
         fontSize: Double,
+        lineSpacing: Double,
+        letterSpacing: Double,
         maxWidth: CGFloat,
         maxHeight: CGFloat
     ) -> [NovelPage] {
         let blockSpacing = max(10, CGFloat(fontSize) * 0.7)
-        let minimumLineHeight = max(20, CGFloat(fontSize) * 1.6)
+        let minimumLineHeight = max(20, CGFloat(fontSize + lineSpacing) * 1.2)
         let titleLayout = titleLayout(
             title: title,
             fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
             maxWidth: maxWidth
         )
 
@@ -343,6 +361,8 @@ extension PaginationService {
                         in: source,
                         location: location,
                         fontSize: fontSize,
+                        lineSpacing: lineSpacing,
+                        letterSpacing: letterSpacing,
                         maxWidth: maxWidth,
                         maxHeight: max(1, availableHeight)
                     )
@@ -357,6 +377,8 @@ extension PaginationService {
                                 fragment,
                                 style: .body,
                                 fontSize: fontSize,
+                                lineSpacing: lineSpacing,
+                                letterSpacing: letterSpacing,
                                 maxWidth: maxWidth
                             )
                             items.append(.text(NovelTextPageItem(
@@ -386,6 +408,8 @@ extension PaginationService {
                             fragment,
                             style: .body,
                             fontSize: fontSize,
+                            lineSpacing: lineSpacing,
+                            letterSpacing: letterSpacing,
                             maxWidth: maxWidth
                         ),
                         availableHeight
@@ -444,6 +468,8 @@ extension PaginationService {
     private static func titleLayout(
         title: String?,
         fontSize: Double,
+        lineSpacing: Double,
+        letterSpacing: Double,
         maxWidth: CGFloat
     ) -> (item: NovelTextPageItem?, bodyOffset: CGFloat) {
         guard let title, !title.isEmpty else { return (nil, 0) }
@@ -451,6 +477,8 @@ extension PaginationService {
             title,
             style: .title,
             fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
             maxWidth: maxWidth
         )
         let spacing = max(12, CGFloat(fontSize) * 1.15)
@@ -473,13 +501,20 @@ extension PaginationService {
         in source: NSString,
         location: Int,
         fontSize: Double,
+        lineSpacing: Double,
+        letterSpacing: Double,
         maxWidth: CGFloat,
         maxHeight: CGFloat
     ) -> Int {
         let remaining = source.substring(from: location)
         let attributed = NSAttributedString(
             string: remaining,
-            attributes: attributes(style: .body, fontSize: fontSize)
+            attributes: attributes(
+                style: .body,
+                fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                letterSpacing: letterSpacing
+            )
         )
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let path = CGPath(
@@ -495,55 +530,23 @@ extension PaginationService {
         let visible = CTFrameGetVisibleStringRange(frame).length
         guard visible > 0 else { return 0 }
         let remainingLength = source.length - location
-        let bounded = min(visible, remainingLength)
-        guard bounded < remainingLength else { return bounded }
+        let fitted = fittedTextLength(
+            in: source,
+            location: location,
+            candidateLength: min(visible, remainingLength),
+            style: .body,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight
+        )
+        guard fitted < remainingLength else { return fitted }
         return sentenceBoundaryLength(
             in: source,
             location: location,
-            visibleLength: bounded
+            visibleLength: fitted
         )
-    }
-
-    static func attributes(
-        style: NovelTextStyle,
-        fontSize: Double,
-        textColor: UIColor? = nil
-    ) -> [NSAttributedString.Key: Any] {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = fontSize * 0.6
-        let font: UIFont = style == .title
-            ? .boldSystemFont(ofSize: fontSize + 4)
-            : .systemFont(ofSize: fontSize)
-        var result: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .paragraphStyle: paragraph,
-        ]
-        if let textColor {
-            result[.foregroundColor] = textColor
-        }
-        return result
-    }
-
-    private static func measuredTextHeight(
-        _ text: String,
-        style: NovelTextStyle,
-        fontSize: Double,
-        maxWidth: CGFloat
-    ) -> CGFloat {
-        guard !text.isEmpty else { return 1 }
-        let attributed = NSAttributedString(
-            string: text,
-            attributes: attributes(style: style, fontSize: fontSize)
-        )
-        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let size = CTFramesetterSuggestFrameSizeWithConstraints(
-            framesetter,
-            CFRange(location: 0, length: 0),
-            nil,
-            CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
-            nil
-        )
-        return max(1, ceil(size.height) + 1)
     }
 
     private static func displaySize(

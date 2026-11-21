@@ -1,6 +1,6 @@
 import Foundation
 
-struct ReadingGroupContext: Sendable {
+struct ReadingGroupContext: Equatable, Sendable {
     let groupId: Int
     let volumeIds: [String]
     let currentIndex: Int
@@ -32,7 +32,7 @@ struct GroupListResponse: Codable, Sendable {
     let groups: [ComicGroup]
 }
 
-struct GroupDetailResponse: Codable, Sendable {
+struct GroupDetailResponse: Codable, Equatable, Sendable {
     let id: Int
     let name: String
     let coverUrl: String?
@@ -232,7 +232,7 @@ struct SeriesListResponse: Codable, Sendable {
     let series: [SeriesSummary]
 }
 
-struct SeriesDetailResponse: Codable, Sendable {
+struct SeriesDetailResponse: Codable, Equatable, Sendable {
     let series: SeriesSummary
     let sections: [SeriesSection]
     let unsectioned: [SeriesItem]
@@ -304,7 +304,7 @@ private extension String {
     }
 }
 
-struct SeriesSection: Codable, Identifiable, Sendable {
+struct SeriesSection: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let title: String
     let relativePath: String
@@ -315,7 +315,7 @@ struct SeriesSection: Codable, Identifiable, Sendable {
     let items: [SeriesItem]
 }
 
-struct SeriesItem: Codable, Identifiable, Sendable {
+struct SeriesItem: Codable, Identifiable, Equatable, Sendable {
     let comic: Comic
     let sectionId: String?
     let sortIndex: Int

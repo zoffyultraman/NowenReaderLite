@@ -25,11 +25,11 @@ struct FavoritesMainContent: View {
 
     var body: some View {
         Group {
-            if viewModel.comics.isEmpty && !viewModel.isLoading {
+            if viewModel.entries.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView(
                     "还没有收藏",
                     systemImage: "heart",
-                    description: Text("在详情页点击心形收藏喜欢的漫画")
+                    description: Text("在作品、合集或目录作品详情页点击心形即可加入收藏")
                 )
             } else {
                 ScrollView {
@@ -38,11 +38,35 @@ struct FavoritesMainContent: View {
                         GridItem(.flexible(), spacing: 12),
                         GridItem(.flexible(), spacing: 12),
                     ], spacing: 16) {
-                        ForEach(viewModel.comics) { comic in
-                            NavigationLink(value: ComicDetailRoute(comic: comic)) {
-                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating, formatBadge: comic.formatBadge)
+                        ForEach(viewModel.entries) { entry in
+                            switch entry {
+                            case .group(let group):
+                                NavigationLink {
+                                    GroupDetailView(groupId: group.id, contentType: group.contentType)
+                                } label: {
+                                    GroupCardView(group: group, serverURL: api.serverURL)
+                                }
+                                .buttonStyle(.plain)
+                            case .comic(let comic):
+                                NavigationLink(value: ComicDetailRoute(comic: comic)) {
+                                    if comic.isSeriesShelfItem {
+                                        SeriesShelfCardView(comic: comic, serverURL: api.serverURL)
+                                    } else {
+                                        ComicCardView(
+                                            id: comic.id,
+                                            title: comic.title,
+                                            isFavorite: comic.isFavorite,
+                                            isNovel: comic.isNovel,
+                                            progress: comic.progress,
+                                            serverURL: api.serverURL,
+                                            readingStatus: comic.readingStatus,
+                                            rating: comic.rating,
+                                            formatBadge: comic.formatBadge
+                                        )
+                                    }
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -60,13 +84,33 @@ struct FavoritesMainContent: View {
             ComicDetailView(comicId: comicId)
                 .bookCoverDestination(id: "comic-\(comicId)")
         }
-        .task(id: api.selectedLibraryId) {
+        .task(id: FavoritesRefreshID(
+            selectedLibraryId: api.selectedLibraryId,
+            contentMutationRevision: api.contentMutationRevision
+        )) {
             await viewModel.loadFavorites()
         }
         .overlay {
-            if viewModel.isLoading && viewModel.comics.isEmpty {
+            if viewModel.isLoading && viewModel.entries.isEmpty {
                 ProgressView()
             }
+        }
+    }
+}
+
+private struct FavoritesRefreshID: Hashable {
+    let selectedLibraryId: String?
+    let contentMutationRevision: Int
+}
+
+enum FavoritesEntry: Identifiable, Equatable {
+    case group(ComicGroup)
+    case comic(Comic)
+
+    var id: String {
+        switch self {
+        case .group(let group): return "group-\(group.id)"
+        case .comic(let comic): return "comic-\(comic.id)"
         }
     }
 }
@@ -97,7 +141,7 @@ struct OfflineUnavailableView: View {
 @MainActor
 @Observable
 final class FavoritesViewModel {
-    var comics: [Comic] = []
+    var entries: [FavoritesEntry] = []
     var isLoading = false
     private var loadVersion = 0
 
@@ -106,7 +150,7 @@ final class FavoritesViewModel {
         let version = loadVersion
         // 离线或网络不可达：立即返回，不挂起等超时
         guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
-            comics = []
+            entries = []
             isLoading = false
             return
         }
@@ -117,9 +161,42 @@ final class FavoritesViewModel {
             }
         }
         do {
-            let resp = try await APIClient.shared.fetchComics(page: 1, pageSize: 50, favorites: true)
+            async let favComicsTask = APIClient.shared.fetchComics(
+                page: 1,
+                pageSize: 0,
+                favorites: true,
+                excludeGrouped: true,
+                seriesView: true
+            )
+            async let favComicGroupsTask = APIClient.shared.fetchGroups(
+                contentType: "comic",
+                favoritesOnly: true
+            )
+            async let favNovelGroupsTask = APIClient.shared.fetchGroups(
+                contentType: "novel",
+                favoritesOnly: true
+            )
+
+            let resp = try await favComicsTask
+            let comicGroups = (try? await favComicGroupsTask) ?? []
+            let novelGroups = (try? await favNovelGroupsTask) ?? []
             guard !Task.isCancelled, version == loadVersion else { return }
-            comics = resp.comics
+
+            var seenGroupIds = Set<Int>()
+            let mergedGroups = (comicGroups + novelGroups).filter {
+                seenGroupIds.insert($0.id).inserted
+            }
+
+            let groupedSeriesIds = await loadGroupedSeriesIds(for: mergedGroups)
+            guard !Task.isCancelled, version == loadVersion else { return }
+
+            let filteredComics = resp.comics.filter { comic in
+                guard let seriesId = comic.seriesId else { return true }
+                return !groupedSeriesIds.contains(seriesId)
+            }
+
+            entries = mergedGroups.map(FavoritesEntry.group)
+                + filteredComics.map(FavoritesEntry.comic)
         } catch {
             guard !Task.isCancelled,
                   (error as? URLError)?.code != .cancelled,
@@ -127,7 +204,29 @@ final class FavoritesViewModel {
                 return
             }
             AppLogger.error("加载收藏失败: \(error)")
-            if APIClient.shared.isOfflineMode { comics = [] }
+            if APIClient.shared.isOfflineMode { entries = [] }
+        }
+    }
+
+    private func loadGroupedSeriesIds(for groups: [ComicGroup]) async -> Set<String> {
+        guard !groups.isEmpty else { return [] }
+        return await withTaskGroup(of: Set<String>.self) { taskGroup in
+            for group in groups {
+                taskGroup.addTask {
+                    guard let detail = try? await APIClient.shared.fetchGroupDetail(
+                        id: group.id,
+                        contentType: group.contentType
+                    ) else {
+                        return []
+                    }
+                    return Set(detail.seriesList.map(\.id))
+                }
+            }
+            var result = Set<String>()
+            for await ids in taskGroup {
+                result.formUnion(ids)
+            }
+            return result
         }
     }
 }

@@ -394,8 +394,8 @@ private struct LibraryDirectoryBreadcrumbBar: View {
                 }
                 .buttonStyle(.plain)
 
-                ForEach(Array(breadcrumbs.enumerated()), id: \.element.path) { index, crumb in
-                    let isLast = index == breadcrumbs.count - 1
+                ForEach(breadcrumbs) { crumb in
+                    let isLast = crumb.path == breadcrumbs.last?.path
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -519,6 +519,7 @@ final class LibraryViewModel {
     private var sortBy = "addedAt"
     private var sortOrder = "desc"
     private var contentType: String?
+    private var tag: String?
     private(set) var libraryId: String?
     private(set) var directoryPath: String = ""
     private let api = APIClient.shared
@@ -598,14 +599,9 @@ final class LibraryViewModel {
         let useSeriesView = contentType != "novel"
         if useSeriesView { currentPage = 1 }
 
-        // 离线模式或网络不可达：直接从缓存加载已下载漫画（不等 API 超时）
+        // 离线模式或网络不可达：直接从缓存加载已下载漫画与目录作品（不等 API 超时）
         if APIClient.shared.isOfflineMode || !APIClient.shared.isNetworkReachable {
-            let downloadedIds = await visibleOfflineShelfIds()
-            guard !Task.isCancelled, version == loadVersion else { return false }
-            if let context = modelContext {
-                let cached = loadFromCache(context: context)
-                comics = cached.filter { downloadedIds.contains($0.id) && matchesContentType($0) }
-            }
+            await applyOfflineShelfFromCache(version: version)
             hasMore = false
             return true
         }
@@ -618,6 +614,7 @@ final class LibraryViewModel {
                 sortBy: sortBy,
                 sortOrder: sortOrder,
                 contentType: contentType,
+                tag: tag,
                 excludeGrouped: trimmedDir.isEmpty ? true : nil,
                 libraryId: libraryId,
                 directoryPath: trimmedDir.isEmpty ? nil : trimmedDir,
@@ -642,16 +639,7 @@ final class LibraryViewModel {
             }
             if currentPage == 1 {
                 AppLogger.log("网络不可用，从本地缓存加载书架")
-                let downloadedIds = await visibleOfflineShelfIds()
-                guard !Task.isCancelled, version == loadVersion else {
-                    return false
-                }
-                if let context = modelContext {
-                    let cached = loadFromCache(context: context)
-                    comics = cached.filter {
-                        downloadedIds.contains($0.id) && matchesContentType($0)
-                    }
-                }
+                await applyOfflineShelfFromCache(version: version)
             } else {
                 AppLogger.error("加载书架第 \(currentPage) 页失败: \(error)")
             }
@@ -726,11 +714,15 @@ final class LibraryViewModel {
         sortBy: String,
         sortOrder: String,
         library: Library? = nil,
-        directoryPath: String = ""
+        directoryPath: String = "",
+        tag: String? = nil
     ) async {
         self.contentType = contentType
         self.sortBy = sortBy
         self.sortOrder = sortOrder
+        self.tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? tag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
         let nextLibraryId = library?.id ?? api.selectedLibraryId
         let libraryChanged = self.libraryId != nextLibraryId
         let pathChanged = self.directoryPath != directoryPath
@@ -748,7 +740,67 @@ final class LibraryViewModel {
         Task.isCancelled || (error as? URLError)?.code == .cancelled
     }
 
-    private func visibleOfflineShelfIds() async -> Set<String> {
+    private func applyOfflineShelfFromCache(version: Int) async {
+        let snapshot = await offlineShelfSnapshot()
+        guard !Task.isCancelled, version == loadVersion, let context = modelContext else { return }
+
+        let cached = loadFromCache(context: context)
+        var cachedById: [String: Comic] = [:]
+        for comic in cached { cachedById[comic.id] = comic }
+
+        var coveredBySeriesIds = Set<String>()
+        var seriesShelfComics: [Comic] = []
+
+        for seriesDetail in snapshot.seriesList {
+            let summary = seriesDetail.series
+            let allItems = seriesDetail.unsectioned + seriesDetail.sections.flatMap(\.items)
+            let memberComicIds: [String] = allItems.flatMap { item in
+                [item.comic.id] + item.resolvedEditions.map(\.comicId)
+            }
+            let downloadedMemberIds = memberComicIds.filter { snapshot.visibleIds.contains($0) }
+            guard !downloadedMemberIds.isEmpty else { continue }
+            coveredBySeriesIds.formUnion(downloadedMemberIds)
+
+            let downloadedUnitsCount = allItems.filter { item in
+                let candidateIds = [item.comic.id] + item.resolvedEditions.map(\.comicId)
+                return candidateIds.contains(where: { snapshot.visibleIds.contains($0) })
+            }.count
+            let isFav = downloadedMemberIds.contains { cachedById[$0]?.isFavorite == true } || summary.isFavorite
+            let seriesItem = Comic(
+                id: Comic.seriesShelfPrefix + summary.id,
+                title: summary.title,
+                author: summary.author,
+                publisher: summary.publisher,
+                description: summary.description,
+                genre: summary.genre,
+                language: summary.language,
+                year: summary.year,
+                pageCount: max(1, downloadedUnitsCount),
+                fileSize: summary.fileSize,
+                lastReadPage: summary.completedItemCount,
+                lastReadAt: summary.lastReadAt,
+                coverUrl: summary.coverUrl,
+                isFavorite: isFav,
+                type: summary.contentType ?? "comic",
+                filename: "__series__.cbz",
+                titleSortKey: summary.sortTitle,
+                libraryId: summary.libraryId,
+                comicCount: max(1, downloadedUnitsCount)
+            )
+            if matchesContentType(seriesItem) {
+                seriesShelfComics.append(seriesItem)
+            }
+        }
+
+        let standaloneComics = cached.filter { comic in
+            snapshot.visibleIds.contains(comic.id)
+                && !coveredBySeriesIds.contains(comic.id)
+                && matchesContentType(comic)
+        }
+        comics = seriesShelfComics + standaloneComics
+    }
+
+    private func offlineShelfSnapshot() async -> OfflineShelfSnapshot {
         await Task.detached(priority: .utility) {
             let downloadedIds = Set(
                 OfflineFileManager.shared.completedDownloads().keys
@@ -756,9 +808,18 @@ final class LibraryViewModel {
             let groupedIds = Set(
                 OfflineFileManager.shared.loadGroups().flatMap(\.comicIds)
             )
-            return downloadedIds.subtracting(groupedIds)
+            let seriesList = OfflineFileManager.shared.loadAllSeries()
+            return OfflineShelfSnapshot(
+                visibleIds: downloadedIds.subtracting(groupedIds),
+                seriesList: seriesList
+            )
         }.value
     }
+}
+
+private struct OfflineShelfSnapshot: Sendable {
+    let visibleIds: Set<String>
+    let seriesList: [SeriesDetailResponse]
 }
 
 @MainActor
@@ -773,6 +834,7 @@ final class CollectionViewModel {
     private var sortBy = "defaultOrder"
     private var sortOrder = "asc"
     private var contentType: String?
+    private var tag: String?
     private let api = APIClient.shared
     private var modelContext: ModelContext?
     private var loadVersion = 0
@@ -819,14 +881,15 @@ final class CollectionViewModel {
         do {
             errorMessage = nil
             let loadedGroups: [ComicGroup]
+            let tagFilter = tag.map { [$0] } ?? []
             if contentType == nil {
-                async let comicGroups = api.fetchGroups(contentType: "comic")
-                async let novelGroups = api.fetchGroups(contentType: "novel")
+                async let comicGroups = api.fetchGroups(contentType: "comic", tags: tagFilter)
+                async let novelGroups = api.fetchGroups(contentType: "novel", tags: tagFilter)
                 let allGroups = try await comicGroups + novelGroups
                 var seen = Set<Int>()
                 loadedGroups = allGroups.filter { seen.insert($0.id).inserted }
             } else {
-                loadedGroups = try await api.fetchGroups(contentType: contentType)
+                loadedGroups = try await api.fetchGroups(contentType: contentType, tags: tagFilter)
             }
             let membership = await loadGroupMembership(for: loadedGroups)
             return RemoteGroupsSnapshot(groups: loadedGroups, membership: membership)
@@ -945,10 +1008,13 @@ final class CollectionViewModel {
         }
     }
 
-    func configure(contentType: String?, sortBy: String, sortOrder: String) async {
+    func configure(contentType: String?, sortBy: String, sortOrder: String, tag: String? = nil) async {
         self.contentType = contentType
         self.sortBy = sortBy
         self.sortOrder = sortOrder
+        self.tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? tag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
         await load(refresh: true)
     }
 }

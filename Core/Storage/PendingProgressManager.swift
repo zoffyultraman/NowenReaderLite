@@ -8,6 +8,7 @@ final class PendingProgressManager: @unchecked Sendable {
     struct PendingRecord: Codable, Sendable {
         var page: Int
         var totalPages: Int?
+        var positionRatio: Double? = nil
         var updatedAt: Date
     }
 
@@ -21,9 +22,15 @@ final class PendingProgressManager: @unchecked Sendable {
 
     // MARK: - Public
 
-    func save(comicId: String, page: Int, totalPages: Int? = nil) {
+    func save(comicId: String, page: Int, totalPages: Int? = nil, positionRatio: Double? = nil) {
+        let clampedRatio = positionRatio.map { min(max($0, 0.0), 1.0) }
         queue.async(flags: .barrier) {
-            self._cache[comicId] = PendingRecord(page: page, totalPages: totalPages, updatedAt: Date())
+            self._cache[comicId] = PendingRecord(
+                page: page,
+                totalPages: totalPages,
+                positionRatio: clampedRatio,
+                updatedAt: Date()
+            )
             self.persist()
         }
         AppLogger.log("离线进度已暂存: \(comicId) page=\(page)")

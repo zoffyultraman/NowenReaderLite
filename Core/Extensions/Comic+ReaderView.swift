@@ -32,6 +32,29 @@ extension ComicEditionInfo {
     }
 }
 
+extension GroupComicItem {
+    var isPdf: Bool {
+        filename?.lowercased().hasSuffix(".pdf") == true
+    }
+
+    var isNovel: Bool {
+        type?.lowercased() == "novel" && !isPdf
+    }
+
+    /// 根据合集分卷信息打开对应的阅读器 View
+    @MainActor
+    @ViewBuilder
+    func readerView(groupContext: ReadingGroupContext? = nil) -> some View {
+        if isPdf {
+            PDFReaderView(comicId: id, initialPage: lastReadPage)
+        } else if isNovel {
+            NovelReaderView(comicId: id, initialChapter: lastReadPage, groupContext: groupContext)
+        } else {
+            ComicReaderView(comicId: id, initialPage: lastReadPage, groupContext: groupContext)
+        }
+    }
+}
+
 extension View {
     @ViewBuilder
     func readerStatusBarHidden(_ hidden: Bool) -> some View {
