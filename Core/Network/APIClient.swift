@@ -68,6 +68,28 @@ final class APIClient: ReaderWarmupClient {
         }
         return libraryIcon(for: lib.type)
     }
+    /// 当前选中书库的逻辑作品数（"全部书库"时汇总已启用书库的 logicalCount）
+    var selectedLibraryLogicalCount: Int? {
+        guard !accessibleLibraries.isEmpty else { return nil }
+        if let id = selectedLibraryId,
+           let lib = accessibleLibraries.first(where: { $0.id == id }) {
+            return lib.logicalCount
+        }
+        let enabled = accessibleLibraries.filter(\.enabled)
+        let target = enabled.isEmpty ? accessibleLibraries : enabled
+        return target.reduce(0) { $0 + $1.logicalCount }
+    }
+    /// 当前用于目录分类导航的单一活跃书库（显式选中或唯一可访问书库）
+    var activeDirectoryLibrary: Library? {
+        if let id = selectedLibraryId {
+            return accessibleLibraries.first(where: { $0.id == id })
+        }
+        let enabled = accessibleLibraries.filter(\.enabled)
+        if enabled.count == 1 {
+            return enabled.first
+        }
+        return accessibleLibraries.count == 1 ? accessibleLibraries.first : nil
+    }
     /// 书库类型对应图标
     func libraryIcon(for type: String) -> String {
         switch type {
@@ -1142,6 +1164,7 @@ final class APIClient: ReaderWarmupClient {
         category: String? = nil,
         excludeGrouped: Bool? = nil,
         libraryId: String? = nil,
+        directoryPath: String? = nil,
         seriesView: Bool = false
     ) async throws -> ComicListResponse {
         var params: [String: String] = [
@@ -1157,7 +1180,13 @@ final class APIClient: ReaderWarmupClient {
         if let t = tag { params["tags"] = t }
         if let c = category { params["category"] = c }
         if excludeGrouped == true { params["excludeGrouped"] = "true" }
-        if let lid = libraryId ?? selectedLibraryId { params["libraryIds"] = lid }
+        if let lid = libraryId ?? selectedLibraryId, !lid.isEmpty {
+            params["libraryIds"] = lid
+            if let dir = directoryPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !dir.isEmpty {
+                params["directoryPath"] = dir
+            }
+        }
         if seriesView { params["seriesView"] = "true" }
         return try await get("/api/comics", query: params)
     }
@@ -1241,6 +1270,23 @@ final class APIClient: ReaderWarmupClient {
 
     func pdfURL(comicId: String) -> URL? {
         URL(string: "\(serverURL)/api/comics/\(comicId)/pdf")
+    }
+
+    func comicDownloadURL(comicId: String, downloadPath: String? = nil) -> URL? {
+        if let downloadPath = downloadPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !downloadPath.isEmpty {
+            if let absolute = URL(string: downloadPath), absolute.scheme != nil {
+                return absolute
+            }
+            if downloadPath.hasPrefix("/") {
+                guard !serverURL.isEmpty else { return nil }
+                return URL(string: "\(serverURL)\(downloadPath)")
+            }
+            return serverResourceURL(from: downloadPath)
+        }
+        guard !serverURL.isEmpty else { return nil }
+        let encodedId = comicId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? comicId
+        return URL(string: "\(serverURL)/api/comics/\(encodedId)/download")
     }
 
     /// 将 EPUB 章节中的相对资源地址解析到当前线路。
@@ -1349,6 +1395,54 @@ final class APIClient: ReaderWarmupClient {
 
     /// 下载到临时文件；调用方负责移动文件，并在不再使用时删除。
     func authenticatedDownload(from url: URL, timeout: TimeInterval = 60) async throws -> URL {
+        let (fileURL, _) = try await authenticatedDownloadWithResponse(from: url, timeout: timeout)
+        return fileURL
+    }
+
+    /// 下载原始漫画/电子书文件（/api/comics/:id/download）到带原文件名的临时目录，便于分享或保存到“文件”。
+    func downloadOriginalComicFile(
+        comicId: String,
+        downloadPath: String? = nil,
+        preferredFilename: String? = nil,
+        timeout: TimeInterval = 300
+    ) async throws -> URL {
+        guard isNetworkReachable else { throw APIError.networkError }
+        guard let downloadURL = comicDownloadURL(comicId: comicId, downloadPath: downloadPath) else {
+            throw APIError.invalidURL
+        }
+        let (tempFileURL, response) = try await authenticatedDownloadWithResponse(
+            from: downloadURL,
+            timeout: timeout
+        )
+        let resolvedName = Self.resolvedDownloadFilename(
+            preferred: preferredFilename,
+            suggested: response.suggestedFilename,
+            fallbackId: comicId
+        )
+        let exportRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OriginalExports", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: exportRoot,
+                withIntermediateDirectories: true
+            )
+            let destinationURL = exportRoot.appendingPathComponent(resolvedName, isDirectory: false)
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.moveItem(at: tempFileURL, to: destinationURL)
+            return destinationURL
+        } catch {
+            try? FileManager.default.removeItem(at: tempFileURL)
+            throw error
+        }
+    }
+
+    private func authenticatedDownloadWithResponse(
+        from url: URL,
+        timeout: TimeInterval
+    ) async throws -> (URL, URLResponse) {
         let absoluteURL = url.absoluteString
         let knownBase = currentServerBaseURL(for: url)
         let suffix = knownBase.map { String(absoluteURL.dropFirst($0.count)) }
@@ -1385,11 +1479,36 @@ final class APIClient: ReaderWarmupClient {
                 errorData = try file.read(upToCount: 64 * 1024) ?? Data()
             }
             try validate(response: response, data: errorData)
-            return fileURL
+            return (fileURL, response)
         } catch {
             try? FileManager.default.removeItem(at: fileURL)
             throw error
         }
+    }
+
+    private static func resolvedDownloadFilename(
+        preferred: String?,
+        suggested: String?,
+        fallbackId: String
+    ) -> String {
+        let candidates = [preferred, suggested, fallbackId]
+        for candidate in candidates {
+            guard let raw = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty,
+                  !raw.hasSuffix("/") else {
+                continue
+            }
+            let normalized = raw.replacingOccurrences(of: "\\", with: "/")
+            let base = (normalized as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let sanitized = base
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: ":", with: "_")
+            if !sanitized.isEmpty && sanitized != "." && sanitized != ".." {
+                return sanitized
+            }
+        }
+        return fallbackId
     }
 
     /// 供后台下载在连接失败后恢复线路；已由其他请求完成切换时也视为恢复成功。
@@ -1645,6 +1764,36 @@ final class APIClient: ReaderWarmupClient {
             selectedLibraryId = nil
         }
         return resp.libraries
+    }
+
+    /// 获取书库物理目录派生的目录分类节点（仅展开至 d-1 层，独立于人工 Category）
+    func fetchLibraryDirectories(
+        libraryId: String,
+        parent: String = "",
+        page: Int = 1,
+        pageSize: Int = 100
+    ) async throws -> LibraryDirectoryListResponse {
+        let trimmedParent = parent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clampedPage = max(1, page)
+        let clampedPageSize = max(1, pageSize)
+        var params: [String: String] = [
+            "page": "\(clampedPage)",
+            "pageSize": "\(clampedPageSize)",
+        ]
+        if !trimmedParent.isEmpty {
+            params["parent"] = trimmedParent
+        }
+        let encodedId = libraryId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? libraryId
+        do {
+            return try await get("/api/libraries/\(encodedId)/directories", query: params)
+        } catch APIError.serverError(let code, _) where code == 404 {
+            return LibraryDirectoryListResponse(
+                libraryId: libraryId,
+                parent: trimmedParent,
+                page: clampedPage,
+                pageSize: clampedPageSize
+            )
+        }
     }
 
     // MARK: - HTTP Methods

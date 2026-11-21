@@ -40,7 +40,7 @@ struct FavoritesMainContent: View {
                     ], spacing: 16) {
                         ForEach(viewModel.comics) { comic in
                             NavigationLink(value: ComicDetailRoute(comic: comic)) {
-                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating)
+                                ComicCardView(id: comic.id, title: comic.title, isFavorite: comic.isFavorite, isNovel: comic.isNovel, progress: comic.progress, serverURL: api.serverURL, readingStatus: comic.readingStatus, rating: comic.rating, formatBadge: comic.formatBadge)
                             }
                             .buttonStyle(.plain)
                         }

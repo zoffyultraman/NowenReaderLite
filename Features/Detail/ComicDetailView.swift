@@ -12,13 +12,15 @@ struct ComicDetailPreview: Hashable {
     var isNovel: Bool = false
     var fileSize: Int64? = nil
     var rating: Double? = nil
+    var formatBadge: String = ""
 }
 
 extension ComicDetailPreview {
     init(comic: GroupComicItem) {
         self.init(
             id: comic.id, title: comic.title, pageCount: comic.pageCount,
-            isNovel: comic.type?.lowercased() == "novel", fileSize: comic.fileSize
+            isNovel: comic.type?.lowercased() == "novel", fileSize: comic.fileSize,
+            formatBadge: comic.formatBadge
         )
     }
 
@@ -27,7 +29,8 @@ extension ComicDetailPreview {
             id: comic.id, title: comic.title, author: comic.author,
             publisher: comic.publisher, year: comic.year, language: comic.language,
             pageCount: comic.pageCount, isNovel: comic.isNovel,
-            fileSize: comic.fileSize, rating: comic.rating
+            fileSize: comic.fileSize, rating: comic.rating,
+            formatBadge: comic.formatBadge
         )
     }
 }
@@ -104,7 +107,10 @@ struct ComicDetailView: View {
         } message: {
             Text(viewModel.actionErrorMessage ?? "请稍后重试。")
         }
-        .task {
+        .sheet(item: $viewModel.exportedFileItem) { item in
+            OriginalFileShareSheet(fileURL: item.url)
+        }
+        .task(id: comicId) {
             viewModel.setModelContext(modelContext)
             DownloadManager.shared.setModelContext(modelContext)
             await viewModel.load(id: comicId)
@@ -120,7 +126,8 @@ private struct ComicDetailHeader: View {
             comicId: preview.id, title: preview.title, author: preview.author,
             publisher: preview.publisher, year: preview.year, language: preview.language,
             pageCount: preview.pageCount, isNovel: preview.isNovel,
-            fileSize: preview.fileSize, rating: preview.rating
+            fileSize: preview.fileSize, rating: preview.rating,
+            formatBadge: preview.formatBadge
         )
     }
 }
@@ -155,6 +162,47 @@ struct ComicDetailContent: View {
                 }
             )
             .disabled(viewModel.isPerformingAction)
+
+            ComicEditionsSection(
+                activeComicId: comic.id,
+                editions: comic.resolvedEditions,
+                isNovelLibrary: comic.isNovel,
+                isSwitchingEdition: viewModel.isSwitchingEdition,
+                exportingComicId: viewModel.exportingEditionComicId,
+                groupContext: groupContext,
+                onSelectEdition: { targetId in
+                    Task { await viewModel.switchEdition(to: targetId) }
+                },
+                onExportEdition: { edition in
+                    Task {
+                        await viewModel.exportOriginalFile(
+                            comicId: edition.comicId,
+                            downloadPath: edition.downloadUrl,
+                            preferredFilename: edition.fileLocation?.filename
+                        )
+                    }
+                }
+            )
+
+            ComicFileLocationSection(
+                comicId: comic.id,
+                filename: comic.filename,
+                relativePath: comic.relativePath,
+                formatBadge: comic.formatBadge,
+                fileLocation: comic.fileLocation,
+                canDownload: comic.canDownloadOriginalFile,
+                isImageFolder: comic.isImageFolder,
+                isExporting: viewModel.exportingEditionComicId == comic.id,
+                onExportOriginalFile: {
+                    Task {
+                        await viewModel.exportOriginalFile(
+                            comicId: comic.id,
+                            downloadPath: nil,
+                            preferredFilename: comic.fileLocation?.filename ?? comic.filename
+                        )
+                    }
+                }
+            )
 
             ComicTagsSection(tags: comic.tags)
 
@@ -249,6 +297,7 @@ struct ComicCoverInfoSection: View {
     let isNovel: Bool
     let fileSize: Int64?
     let rating: Double?
+    var formatBadge: String = ""
     @Environment(APIClient.self) private var api
 
     var body: some View {
@@ -263,6 +312,16 @@ struct ComicCoverInfoSection: View {
                 Text(title)
                     .font(.title3.weight(.bold))
                     .lineLimit(3)
+
+                if !formatBadge.isEmpty {
+                    Text(formatBadge)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.accentColor.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
 
                 if let author, !author.isEmpty {
                     Label(author, systemImage: "person")
@@ -528,6 +587,354 @@ struct DownloadButton: View {
     }
 }
 
+// MARK: - 多格式版本切换与文件位置区块
+
+struct ExportedOriginalFileItem: Identifiable, Equatable {
+    let id: String
+    let url: URL
+
+    init(id: String = UUID().uuidString, url: URL) {
+        self.id = id
+        self.url = url
+    }
+}
+
+struct OriginalFileShareSheet: UIViewControllerRepresentable {
+    let fileURL: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(
+            activityItems: [fileURL],
+            applicationActivities: nil
+        )
+        if let popover = controller.popoverPresentationController,
+           let windowScene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first,
+           let rootView = windowScene.windows.first(where: \.isKeyWindow)?.rootViewController?.view {
+            popover.sourceView = rootView
+            popover.sourceRect = CGRect(
+                x: rootView.bounds.midX,
+                y: rootView.bounds.midY,
+                width: 0,
+                height: 0
+            )
+            popover.permittedArrowDirections = []
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+struct ComicEditionsSection: View {
+    let activeComicId: String
+    let editions: [ComicEditionInfo]
+    let isNovelLibrary: Bool
+    let isSwitchingEdition: Bool
+    let exportingComicId: String?
+    var groupContext: ReadingGroupContext? = nil
+    let onSelectEdition: (String) -> Void
+    let onExportEdition: (ComicEditionInfo) -> Void
+
+    var body: some View {
+        if editions.count > 1 {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Label("格式版本 (\(editions.count))", systemImage: "square.stack.3d.up")
+                        .font(.subheadline.weight(.semibold))
+                    if isSwitchingEdition {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(editions) { edition in
+                        ComicEditionRowView(
+                            edition: edition,
+                            isActive: edition.comicId == activeComicId || (edition.isCurrent && activeComicId.isEmpty),
+                            isNovelLibrary: isNovelLibrary,
+                            isSwitchingDisabled: isSwitchingEdition,
+                            isExporting: exportingComicId == edition.comicId,
+                            groupContext: groupContext,
+                            onSelect: { onSelectEdition(edition.comicId) },
+                            onExport: { onExportEdition(edition) }
+                        )
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 20)
+        }
+    }
+}
+
+private struct ComicEditionRowView: View {
+    let edition: ComicEditionInfo
+    let isActive: Bool
+    let isNovelLibrary: Bool
+    let isSwitchingDisabled: Bool
+    let isExporting: Bool
+    let groupContext: ReadingGroupContext?
+    let onSelect: () -> Void
+    let onExport: () -> Void
+
+    private var metadataLine: String {
+        var parts: [String] = []
+        if edition.fileSize > 0 {
+            parts.append(formatFileSize(edition.fileSize))
+        }
+        if edition.pageCount > 0 {
+            parts.append("\(edition.pageCount) \(isNovelLibrary && !edition.isPdf ? "章" : "页")")
+        }
+        if edition.progress > 0 {
+            parts.append("进度 \(edition.progress)%")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(edition.displayFormat)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(isActive ? .white : Color.accentColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(isActive ? Color.accentColor : Color.accentColor.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                if let label = edition.editionLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !label.isEmpty {
+                    Text(label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if isActive {
+                    Text("当前")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12))
+                        .clipShape(Capsule())
+                } else if edition.isPreferred {
+                    Text(edition.lastReadAt?.isEmpty == false ? "最近阅读" : "推荐")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.teal)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.teal.opacity(0.14))
+                        .clipShape(Capsule())
+                }
+
+                Spacer(minLength: 4)
+
+                if !isActive {
+                    Button("切换", action: onSelect)
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .disabled(isSwitchingDisabled)
+                }
+
+                NavigationLink {
+                    edition.readerView(
+                        isNovelLibrary: isNovelLibrary,
+                        groupContext: groupContext
+                    )
+                    .bookCoverDestination(id: "reader-\(edition.comicId)")
+                } label: {
+                    Text("阅读")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+
+                if edition.canDownloadOriginalFile {
+                    Button(action: onExport) {
+                        if isExporting {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .disabled(isExporting)
+                    .accessibilityLabel("下载 \(edition.displayFormat) 原文件")
+                }
+            }
+
+            if !metadataLine.isEmpty {
+                Text(metadataLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let loc = edition.fileLocation {
+                Text(loc.displayRelativeSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(10)
+        .background(isActive ? Color.accentColor.opacity(0.08) : Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(
+                    isActive ? Color.accentColor.opacity(0.45) : Color(.separator).opacity(0.3),
+                    lineWidth: isActive ? 1 : 0.5
+                )
+        }
+    }
+}
+
+struct ComicFileLocationSection: View {
+    let comicId: String
+    let filename: String?
+    let relativePath: String?
+    let formatBadge: String
+    let fileLocation: ComicFileLocation?
+    let canDownload: Bool
+    let isImageFolder: Bool
+    let isExporting: Bool
+    let onExportOriginalFile: () -> Void
+    @State private var copiedPath = false
+
+    private var hasLocationContent: Bool {
+        if fileLocation != nil { return true }
+        let rel = relativePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = filename?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !rel.isEmpty || !name.isEmpty || canDownload
+    }
+
+    private var physicalPathToCopy: String? {
+        let abs = fileLocation?.absolutePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !abs.isEmpty { return abs }
+        let dir = fileLocation?.realDirPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return dir.isEmpty ? nil : dir
+    }
+
+    private var relativeSummary: String {
+        if let fileLocation {
+            return fileLocation.displayRelativeSummary
+        }
+        if let relativePath, !relativePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return relativePath
+        }
+        return filename ?? comicId
+    }
+
+    private var displayFilename: String {
+        let locName = fileLocation?.filename.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !locName.isEmpty { return locName }
+        return filename?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var body: some View {
+        if hasLocationContent {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Label("文件位置与原文件", systemImage: "folder")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    let badge = fileLocation?.format.isEmpty == false ? (fileLocation?.format ?? "") : formatBadge
+                    if !badge.isEmpty {
+                        Text(badge)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(relativeSummary)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+
+                    if !displayFilename.isEmpty {
+                        Text(displayFilename)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                if fileLocation?.existsOnDisk == false {
+                    Label("磁盘原文件当前不可见，可能已被移动或下线", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                if let physicalPath = physicalPathToCopy {
+                    HStack(spacing: 8) {
+                        Text(physicalPath)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button {
+                            UIPasteboard.general.string = physicalPath
+                            copiedPath = true
+                        } label: {
+                            Label(copiedPath ? "已复制" : "复制路径", systemImage: copiedPath ? "checkmark" : "doc.on.doc")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                    .padding(8)
+                    .background(Color(.systemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                if canDownload {
+                    Button(action: onExportOriginalFile) {
+                        HStack(spacing: 8) {
+                            if isExporting {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在下载原文件…")
+                            } else {
+                                Image(systemName: "arrow.down.doc")
+                                Text("导出原文件")
+                            }
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isExporting)
+                } else if isImageFolder {
+                    Text("图片文件夹暂不支持单文件原件导出，可使用上方“下载”进行离线缓存。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 20)
+        }
+    }
+}
+
 // MARK: - 进度段落
 
 struct ComicProgressSection: View {
@@ -710,7 +1117,11 @@ struct ComicDescriptionSection: View {
 @Observable
 final class DetailViewModel {
     var comic: Comic?
+    var currentComicId: String?
     var isLoading = false
+    var isSwitchingEdition = false
+    var exportingEditionComicId: String?
+    var exportedFileItem: ExportedOriginalFileItem?
     var errorMessage: String?
     var isUpdatingFavorite = false
     var isUpdatingReadingStatus = false
@@ -722,6 +1133,8 @@ final class DetailViewModel {
     private enum FailedAction {
         case favorite
         case readingStatus(String?)
+        case switchEdition(String)
+        case exportOriginalFile(comicId: String, downloadPath: String?, preferredFilename: String?)
     }
     private var failedAction: FailedAction?
 
@@ -734,10 +1147,13 @@ final class DetailViewModel {
 
     func load(id: String) async {
         guard !isLoading else { return }
+        currentComicId = id
         isLoading = true
         errorMessage = nil
         do {
-            comic = try await api.fetchComic(id: id)
+            let loaded = try await api.fetchComic(id: id)
+            currentComicId = loaded.id
+            comic = loaded
         } catch {
             guard !Task.isCancelled else {
                 isLoading = false
@@ -781,6 +1197,53 @@ final class DetailViewModel {
             }
         }
         isLoading = false
+    }
+
+    func switchEdition(to targetComicId: String) async {
+        guard targetComicId != (comic?.id ?? currentComicId), !isSwitchingEdition else { return }
+        isSwitchingEdition = true
+        defer { isSwitchingEdition = false }
+        do {
+            let loaded = try await api.fetchComic(id: targetComicId)
+            currentComicId = loaded.id
+            comic = loaded
+            failedAction = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            AppLogger.error("切换格式版本失败: \(error)")
+            failedAction = .switchEdition(targetComicId)
+            actionErrorMessage = "切换格式版本失败：\(error.localizedDescription)"
+            isActionErrorPresented = true
+        }
+    }
+
+    func exportOriginalFile(
+        comicId: String,
+        downloadPath: String? = nil,
+        preferredFilename: String? = nil
+    ) async {
+        guard exportingEditionComicId == nil else { return }
+        exportingEditionComicId = comicId
+        defer { exportingEditionComicId = nil }
+        do {
+            let fileURL = try await api.downloadOriginalComicFile(
+                comicId: comicId,
+                downloadPath: downloadPath,
+                preferredFilename: preferredFilename
+            )
+            exportedFileItem = ExportedOriginalFileItem(url: fileURL)
+            failedAction = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            AppLogger.error("下载原文件失败: \(error)")
+            failedAction = .exportOriginalFile(
+                comicId: comicId,
+                downloadPath: downloadPath,
+                preferredFilename: preferredFilename
+            )
+            actionErrorMessage = "下载原文件失败：\(error.localizedDescription)"
+            isActionErrorPresented = true
+        }
     }
 
     private func cachedComic(id: String) -> CachedComic? {
@@ -864,6 +1327,13 @@ final class DetailViewModel {
         switch failedAction {
         case .favorite: await toggleFavorite()
         case .readingStatus(let status): await updateReadingStatus(status)
+        case .switchEdition(let targetComicId): await switchEdition(to: targetComicId)
+        case .exportOriginalFile(let comicId, let downloadPath, let preferredFilename):
+            await exportOriginalFile(
+                comicId: comicId,
+                downloadPath: downloadPath,
+                preferredFilename: preferredFilename
+            )
         case nil: break
         }
     }
@@ -899,48 +1369,45 @@ final class DetailViewModel {
 }
 
 extension Comic {
-    func withReadingStatus(_ status: String?) -> Comic {
+    private func copying(
+        lastReadPage: Int? = nil,
+        readingStatus: String?? = nil,
+        lastReadAt: String?? = nil,
+        isFavorite: Bool? = nil
+    ) -> Comic {
         Comic(
             id: id, title: title, author: author, publisher: publisher,
             description: description, genre: genre, language: language,
             year: year, pageCount: pageCount, fileSize: fileSize,
-            lastReadPage: lastReadPage, totalReadTime: totalReadTime,
-            readingStatus: status, lastReadAt: lastReadAt,
+            lastReadPage: lastReadPage ?? self.lastReadPage,
+            lastReadPositionRatio: lastReadPositionRatio,
+            totalReadTime: totalReadTime,
+            readingStatus: readingStatus ?? self.readingStatus,
+            lastReadAt: lastReadAt ?? self.lastReadAt,
             metadataSource: metadataSource, coverUrl: coverUrl,
             coverAspectRatio: coverAspectRatio, rating: rating,
-            isFavorite: isFavorite, type: type, filename: filename,
+            isFavorite: isFavorite ?? self.isFavorite,
+            type: type, filename: filename,
             titleSortKey: titleSortKey, sortOrder: sortOrder,
+            libraryId: libraryId, canManage: canManage, canDownload: canDownload,
+            comicCount: comicCount, relativePath: relativePath,
+            format: format, editionLabel: editionLabel,
+            editionGroupId: editionGroupId, formats: formats,
+            editionCount: editionCount, preferredComicId: preferredComicId,
+            fileLocation: fileLocation, editions: editions,
             tags: tags, categories: categories
         )
+    }
+
+    func withReadingStatus(_ status: String?) -> Comic {
+        copying(readingStatus: .some(status))
     }
 
     func withReadingProgress(lastReadPage: Int, lastReadAt: String?) -> Comic {
-        Comic(
-            id: id, title: title, author: author, publisher: publisher,
-            description: description, genre: genre, language: language,
-            year: year, pageCount: pageCount, fileSize: fileSize,
-            lastReadPage: lastReadPage, totalReadTime: totalReadTime,
-            readingStatus: readingStatus, lastReadAt: lastReadAt,
-            metadataSource: metadataSource, coverUrl: coverUrl,
-            coverAspectRatio: coverAspectRatio, rating: rating,
-            isFavorite: isFavorite, type: type, filename: filename,
-            titleSortKey: titleSortKey, sortOrder: sortOrder,
-            tags: tags, categories: categories
-        )
+        copying(lastReadPage: lastReadPage, lastReadAt: .some(lastReadAt))
     }
 
     func withFavorite(_ fav: Bool) -> Comic {
-        Comic(
-            id: id, title: title, author: author, publisher: publisher,
-            description: description, genre: genre, language: language,
-            year: year, pageCount: pageCount, fileSize: fileSize,
-            lastReadPage: lastReadPage, totalReadTime: totalReadTime,
-            readingStatus: readingStatus, lastReadAt: lastReadAt,
-            metadataSource: metadataSource, coverUrl: coverUrl,
-            coverAspectRatio: coverAspectRatio, rating: rating,
-            isFavorite: fav, type: type, filename: filename,
-            titleSortKey: titleSortKey, sortOrder: sortOrder,
-            tags: tags, categories: categories
-        )
+        copying(isFavorite: fav)
     }
 }

@@ -58,6 +58,7 @@ private enum APICompatibilityTests {
     @MainActor
     static func main() async throws {
         try metadataCompatibility()
+        try phase1ModelsCompatibility()
         try requestEncoding()
         try await foregroundLifecycle()
         try await heartbeatAndNovel()
@@ -73,7 +74,7 @@ private enum APICompatibilityTests {
         try await searchFailureAndRetry()
         try await searchCancellation()
         try await offlineAndDebouncedSearch()
-        print("PASS: 16 API compatibility, reader lifecycle and search scenarios")
+        print("PASS: 17 API compatibility, Phase 1 models, reader lifecycle and search scenarios")
     }
 
     @MainActor
@@ -187,6 +188,208 @@ private enum APICompatibilityTests {
         let newOffline = OfflineGroupMeta(id: 1, name: "离线合集", coverUrl: nil, author: nil, description: nil, comicCount: 1, sortOrder: nil, tagItems: modern.tagItems, categories: modern.categories, comicIds: ["comic-a"])
         let savedOffline = try decoder.decode(OfflineGroupMeta.self, from: JSONEncoder().encode(newOffline))
         try expect(savedOffline.tagItems == modern.tagItems && savedOffline.categories == modern.categories, "离线保存应保留新字段")
+    }
+
+    @MainActor
+    private static func phase1ModelsCompatibility() throws {
+        let decoder = JSONDecoder()
+
+        let multiEditionJSON = #"""
+        {
+            "id": "book-epub",
+            "title": "三体",
+            "filename": "three-body.epub",
+            "pageCount": 32,
+            "fileSize": 2048000,
+            "lastReadPage": 5,
+            "lastReadPositionRatio": 0.42,
+            "readingStatus": "reading",
+            "isFavorite": true,
+            "type": "novel",
+            "libraryId": "lib-novel",
+            "canDownload": true,
+            "format": "epub",
+            "formats": ["epub", "pdf", "txt"],
+            "editionCount": 3,
+            "preferredComicId": "book-epub",
+            "fileLocation": {
+                "libraryId": "lib-novel",
+                "libraryName": "小说库",
+                "filename": "three-body.epub",
+                "relativePath": "科幻/三体/three-body.epub",
+                "relativeDir": "科幻/三体",
+                "baseName": "three-body",
+                "format": "epub",
+                "canDownload": true,
+                "canManage": false
+            },
+            "editions": [
+                {
+                    "comicId": "book-epub",
+                    "title": "三体",
+                    "format": "epub",
+                    "editionLabel": "精排版",
+                    "isCurrent": true,
+                    "isPreferred": true,
+                    "fileSize": 2048000,
+                    "pageCount": 32,
+                    "lastReadPage": 5,
+                    "lastReadAt": "2026-11-20T10:00:00Z",
+                    "readingStatus": "reading",
+                    "downloadUrl": "/api/comics/book-epub/download",
+                    "fileLocation": {
+                        "libraryId": "lib-novel",
+                        "libraryName": "小说库",
+                        "filename": "three-body.epub",
+                        "relativePath": "科幻/三体/three-body.epub",
+                        "relativeDir": "科幻/三体",
+                        "baseName": "three-body",
+                        "format": "epub",
+                        "canDownload": true
+                    }
+                },
+                {
+                    "comicId": "book-pdf",
+                    "title": "三体",
+                    "format": "pdf",
+                    "isCurrent": false,
+                    "fileSize": 8048000,
+                    "pageCount": 420,
+                    "lastReadPage": 0,
+                    "fileLocation": {
+                        "libraryId": "lib-novel",
+                        "libraryName": "小说库",
+                        "filename": "three-body.pdf",
+                        "relativePath": "科幻/三体/three-body.pdf",
+                        "relativeDir": "科幻/三体",
+                        "baseName": "three-body",
+                        "format": "pdf",
+                        "canDownload": false
+                    }
+                }
+            ]
+        }
+        """#
+        let book = try decoder.decode(Comic.self, from: Data(multiEditionJSON.utf8))
+        try expect(book.formatBadge == "EPUB +2", "多格式角标应显示主格式与额外格式数")
+        try expect(book.lastReadPositionRatio == 0.42, "应解码阅读位置比例")
+        try expect(book.canDownloadOriginalFile, "非文件夹且具备权限时允许导出原文件")
+        try expect(book.resolvedEditions.count == 2, "应解码多格式版本数组")
+        try expect(book.resolvedEditions[1].isPdf && !book.resolvedEditions[1].canDownloadOriginalFile,
+                   "应识别 PDF 版本及各自下载权限")
+
+        let seriesShelfJSON = #"""
+        {
+            "id": "series-001",
+            "title": "海贼王",
+            "filename": "__series__.cbz",
+            "pageCount": 1,
+            "comicCount": 1,
+            "lastReadPage": 0,
+            "lastReadAt": "2026-11-20T12:00:00Z",
+            "isFavorite": false,
+            "type": "comic"
+        }
+        """#
+        let seriesShelf = try decoder.decode(Comic.self, from: Data(seriesShelfJSON.utf8))
+        try expect(seriesShelf.isSeriesShelfItem, "应识别目录作品虚拟书架项")
+        try expect(seriesShelf.formatBadge.isEmpty, "目录作品虚拟书架项不展示单册格式角标")
+        try expect(seriesShelf.progress == 0, "单章节目录作品未读完时不应误算为 100%")
+
+        let realFileNamedSeriesJSON = #"""
+        {
+            "id": "series-real-book",
+            "title": "Series Special",
+            "filename": "series-special.cbz",
+            "pageCount": 10,
+            "lastReadPage": 0,
+            "isFavorite": false
+        }
+        """#
+        let realBook = try decoder.decode(Comic.self, from: Data(realFileNamedSeriesJSON.utf8))
+        try expect(!realBook.isSeriesShelfItem && realBook.formatBadge == "CBZ",
+                   "非 __series__.cbz 的作品不应误判为目录虚拟项，且应从 filename 提取格式")
+
+        let librariesJSON = #"""
+        {
+            "libraries": [
+                {
+                    "id": "lib-comic",
+                    "name": "日漫库",
+                    "type": "comic",
+                    "seriesDepth": 3,
+                    "enabled": true,
+                    "defaultAccess": "private",
+                    "comicCount": 120,
+                    "shelfCount": 42,
+                    "canManage": true
+                },
+                {
+                    "id": "lib-novel",
+                    "name": "轻小说",
+                    "type": "novel",
+                    "seriesDepth": 3,
+                    "comicCount": 30
+                }
+            ]
+        }
+        """#
+        let libResponse = try decoder.decode(LibraryListResponse.self, from: Data(librariesJSON.utf8))
+        try expect(libResponse.libraries.count == 2, "应解码书库列表")
+        try expect(libResponse.libraries[0].logicalCount == 42 && libResponse.libraries[0].supportsDirectoryCategories,
+                   "漫画库 seriesDepth > 1 应支持目录分类并展示 shelfCount")
+        try expect(libResponse.libraries[1].logicalCount == 30 && !libResponse.libraries[1].supportsDirectoryCategories,
+                   "小说库不启用漫画目录分类且缺失 shelfCount 时回退 comicCount")
+
+        let dirsJSON = #"""
+        {
+            "libraryId": "lib-comic",
+            "seriesDepth": 3,
+            "maxDirectoryDepth": 2,
+            "parent": "少年漫",
+            "breadcrumbs": [{"name": "少年漫", "path": "少年漫"}],
+            "directories": [
+                {
+                    "name": "热血",
+                    "path": "少年漫/热血",
+                    "depth": 2,
+                    "workCount": 18,
+                    "hasChildren": false,
+                    "coverUrl": "/api/comics/c1/thumbnail"
+                }
+            ],
+            "total": 1,
+            "page": 1,
+            "pageSize": 100,
+            "totalPages": 1
+        }
+        """#
+        let dirs = try decoder.decode(LibraryDirectoryListResponse.self, from: Data(dirsJSON.utf8))
+        try expect(dirs.breadcrumbs.first?.path == "少年漫" && dirs.directories.first?.workCount == 18,
+                   "应正确解码物理目录节点与面包屑")
+
+        let seriesItemJSON = #"""
+        {
+            "comic": {
+                "id": "vol-1",
+                "title": "第 1 卷",
+                "pageCount": 180,
+                "lastReadPage": 0,
+                "isFavorite": false
+            },
+            "sortIndex": 1,
+            "displayLabel": "第 1 卷",
+            "formats": ["CBZ", "PDF"],
+            "editionCount": 2,
+            "editions": [
+                {"comicId": "vol-1", "format": "cbz", "isCurrent": true},
+                {"comicId": "vol-1-pdf", "format": "pdf", "isCurrent": false}
+            ]
+        }
+        """#
+        let seriesItem = try decoder.decode(SeriesItem.self, from: Data(seriesItemJSON.utf8))
+        try expect(seriesItem.formatBadge == "CBZ +1" && seriesItem.resolvedEditions.count == 2,
+                   "目录分卷应正确解码多格式版本信息")
     }
 
     @MainActor

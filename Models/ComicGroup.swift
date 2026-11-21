@@ -220,6 +220,10 @@ struct GroupComicItem: Codable, Identifiable, Hashable, Sendable {
         guard pageCount > 0 else { return 0 }
         return min(100, Int(Double(lastReadPage + 1) / Double(pageCount) * 100))
     }
+
+    var formatBadge: String {
+        Comic.extractFormat(from: filename)
+    }
 }
 
 // MARK: - 目录作品
@@ -316,7 +320,74 @@ struct SeriesItem: Codable, Identifiable, Sendable {
     let sectionId: String?
     let sortIndex: Int
     let displayLabel: String
+    let format: String?
+    let formats: [String]?
+    let editionCount: Int?
+    let editions: [ComicEditionInfo]?
 
     var id: String { comic.id }
     var title: String { displayLabel.isEmpty ? comic.title : displayLabel }
+
+    var resolvedEditions: [ComicEditionInfo] {
+        if let editions, !editions.isEmpty {
+            return editions
+        }
+        return comic.resolvedEditions
+    }
+
+    var formatBadge: String {
+        let normalizedFormats = (formats ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+            .filter { !$0.isEmpty }
+        let explicitFormat = (format ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if normalizedFormats.count > 1 {
+            return "\(normalizedFormats[0]) +\(normalizedFormats.count - 1)"
+        }
+        let resolvedCount = max(editionCount ?? 0, resolvedEditions.count)
+        if resolvedCount > 1 {
+            let lead = normalizedFormats.first ?? (explicitFormat.isEmpty ? comic.formatBadge : explicitFormat)
+            return lead.isEmpty ? "\(resolvedCount)版" : "\(lead) · \(resolvedCount)版"
+        }
+        if let first = normalizedFormats.first, !first.isEmpty {
+            return first
+        }
+        if !explicitFormat.isEmpty {
+            return explicitFormat
+        }
+        return comic.formatBadge
+    }
+
+    init(
+        comic: Comic,
+        sectionId: String? = nil,
+        sortIndex: Int,
+        displayLabel: String,
+        format: String? = nil,
+        formats: [String]? = nil,
+        editionCount: Int? = nil,
+        editions: [ComicEditionInfo]? = nil
+    ) {
+        self.comic = comic
+        self.sectionId = sectionId
+        self.sortIndex = sortIndex
+        self.displayLabel = displayLabel
+        self.format = format?.uppercased()
+        self.formats = formats?.map { $0.uppercased() }.filter { !$0.isEmpty }
+        self.editionCount = editionCount
+        self.editions = editions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        comic = try container.decode(Comic.self, forKey: .comic)
+        sectionId = try container.decodeIfPresent(String.self, forKey: .sectionId)
+        sortIndex = try container.decodeIfPresent(Int.self, forKey: .sortIndex) ?? 0
+        displayLabel = try container.decodeIfPresent(String.self, forKey: .displayLabel) ?? ""
+        format = try container.decodeIfPresent(String.self, forKey: .format)?.uppercased()
+        formats = try container.decodeIfPresent([String].self, forKey: .formats)?
+            .map { $0.uppercased() }
+            .filter { !$0.isEmpty }
+        editionCount = try container.decodeIfPresent(Int.self, forKey: .editionCount)
+        editions = try container.decodeIfPresent([ComicEditionInfo].self, forKey: .editions)
+    }
 }

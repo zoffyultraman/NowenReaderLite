@@ -18,6 +18,7 @@ struct GroupDetailView: View {
     }
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         Group {
             if viewModel.isLoading {
                 ProgressView()
@@ -82,6 +83,32 @@ struct GroupDetailView: View {
                             .padding(.horizontal, 20)
 
                         WorkDescriptionSection(text: detail.description)
+
+                        if !readingUnits.isEmpty && !api.isOfflineMode {
+                            GroupEditionsAndLocationSection(
+                                readingUnits: readingUnits,
+                                selectedUnitId: viewModel.selectedUnitId,
+                                selectedComic: viewModel.selectedUnitComic,
+                                isLoadingUnit: viewModel.isLoadingSelectedUnit,
+                                isSwitchingEdition: viewModel.isSwitchingEdition,
+                                exportingComicId: viewModel.exportingComicId,
+                                onSelectUnit: { unitId in
+                                    Task { await viewModel.selectUnit(comicId: unitId) }
+                                },
+                                onSwitchEdition: { targetId in
+                                    Task { await viewModel.switchEdition(to: targetId) }
+                                },
+                                onExportOriginalFile: { comicId, downloadPath, preferredFilename in
+                                    Task {
+                                        await viewModel.exportOriginalFile(
+                                            comicId: comicId,
+                                            downloadPath: downloadPath,
+                                            preferredFilename: preferredFilename
+                                        )
+                                    }
+                                }
+                            )
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 20) {
@@ -170,8 +197,117 @@ struct GroupDetailView: View {
         } message: {
             Text("已加入 \(downloadQueued) 卷到下载队列，跳过 \(downloadSkipped) 卷（已下载或空间不足）。")
         }
+        .alert("操作未完成", isPresented: $viewModel.isActionErrorPresented) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(viewModel.actionErrorMessage ?? "请稍后重试。")
+        }
+        .sheet(item: $viewModel.exportedFileItem) { item in
+            OriginalFileShareSheet(fileURL: item.url)
+        }
     }
 
+}
+
+struct GroupEditionsAndLocationSection: View {
+    let readingUnits: [GroupComicItem]
+    let selectedUnitId: String?
+    let selectedComic: Comic?
+    let isLoadingUnit: Bool
+    let isSwitchingEdition: Bool
+    let exportingComicId: String?
+    let onSelectUnit: (String) -> Void
+    let onSwitchEdition: (String) -> Void
+    let onExportOriginalFile: (String, String?, String?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if readingUnits.count > 1 {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("版本与文件位置", systemImage: "square.stack.3d.up")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(readingUnits) { unit in
+                                let isSelected = unit.id == selectedUnitId
+                                Button {
+                                    onSelectUnit(unit.id)
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Text(unit.title)
+                                            .lineLimit(1)
+                                        if !unit.formatBadge.isEmpty {
+                                            Text(unit.formatBadge)
+                                                .font(.caption2.weight(.bold))
+                                                .opacity(0.85)
+                                        }
+                                    }
+                                    .font(.caption.weight(isSelected ? .semibold : .regular))
+                                    .foregroundStyle(isSelected ? .white : .primary)
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 6)
+                                    .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .scrollIndicators(.hidden)
+                }
+            }
+
+            if isLoadingUnit && selectedComic == nil {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在加载版本与文件位置…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 20)
+            } else if let comic = selectedComic {
+                ComicEditionsSection(
+                    activeComicId: comic.id,
+                    editions: comic.resolvedEditions,
+                    isNovelLibrary: comic.isNovel,
+                    isSwitchingEdition: isSwitchingEdition,
+                    exportingComicId: exportingComicId,
+                    onSelectEdition: onSwitchEdition,
+                    onExportEdition: { edition in
+                        onExportOriginalFile(
+                            edition.comicId,
+                            edition.downloadUrl,
+                            edition.fileLocation?.filename
+                        )
+                    }
+                )
+
+                ComicFileLocationSection(
+                    comicId: comic.id,
+                    filename: comic.filename,
+                    relativePath: comic.relativePath,
+                    formatBadge: comic.formatBadge,
+                    fileLocation: comic.fileLocation,
+                    canDownload: comic.canDownloadOriginalFile,
+                    isImageFolder: comic.isImageFolder,
+                    isExporting: exportingComicId == comic.id,
+                    onExportOriginalFile: {
+                        onExportOriginalFile(
+                            comic.id,
+                            nil,
+                            comic.fileLocation?.filename ?? comic.filename
+                        )
+                    }
+                )
+            }
+        }
+        .padding(.top, 4)
+    }
 }
 
 struct GroupSeriesSectionView: View {
@@ -335,6 +471,18 @@ struct VolumeCardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 1.5))
                     }
                 }
+
+                if !comic.formatBadge.isEmpty {
+                    Text(comic.formatBadge)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
 
             Text(comic.title)
@@ -363,10 +511,23 @@ struct VolumeListRowView: View {
                 .bookCoverSource(id: "comic-\(comic.id)")
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(comic.title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(comic.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if !comic.formatBadge.isEmpty {
+                        Text(comic.formatBadge)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                    }
+                }
 
                 if comic.pageCount > 0 {
                     Text("\(comic.pageCount) 页 · \(comic.progress)%")
@@ -400,8 +561,17 @@ final class GroupDetailViewModel {
     var detail: GroupDetailResponse?
     var isLoading = false
     var errorMessage: String?
+    var selectedUnitId: String?
+    var selectedUnitComic: Comic?
+    var isLoadingSelectedUnit = false
+    var isSwitchingEdition = false
+    var exportingComicId: String?
+    var exportedFileItem: ExportedOriginalFileItem?
+    var actionErrorMessage: String?
+    var isActionErrorPresented = false
     private var readingUnitIds: [String] = []
     private var readingUnitIndexById: [String: Int] = [:]
+    private var unitLoadVersion = 0
 
     func load(groupId: Int, contentType: String? = nil, context: ModelContext? = nil) async {
         guard !isLoading else { return }
@@ -484,11 +654,78 @@ final class GroupDetailViewModel {
         do {
             let loadedDetail = try await APIClient.shared.fetchGroupDetail(id: groupId, contentType: contentType)
             updateDetail(loadedDetail)
+            if let initialUnitId = selectedUnitId ?? loadedDetail.readingUnits.first?.id {
+                await selectUnit(comicId: initialUnitId)
+            }
         } catch {
             updateDetail(nil)
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    func selectUnit(comicId: String) async {
+        selectedUnitId = comicId
+        guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
+            selectedUnitComic = nil
+            isLoadingSelectedUnit = false
+            return
+        }
+        unitLoadVersion += 1
+        let version = unitLoadVersion
+        isLoadingSelectedUnit = true
+        defer {
+            if version == unitLoadVersion {
+                isLoadingSelectedUnit = false
+            }
+        }
+        do {
+            let loaded = try await APIClient.shared.fetchComic(id: comicId)
+            guard !Task.isCancelled, version == unitLoadVersion else { return }
+            selectedUnitComic = loaded
+        } catch {
+            guard !Task.isCancelled, version == unitLoadVersion else { return }
+            AppLogger.error("加载合集分卷详情失败: \(error)")
+        }
+    }
+
+    func switchEdition(to targetComicId: String) async {
+        guard targetComicId != selectedUnitComic?.id, !isSwitchingEdition else { return }
+        unitLoadVersion += 1
+        let version = unitLoadVersion
+        isSwitchingEdition = true
+        defer { isSwitchingEdition = false }
+        do {
+            let loaded = try await APIClient.shared.fetchComic(id: targetComicId)
+            guard !Task.isCancelled, version == unitLoadVersion else { return }
+            selectedUnitComic = loaded
+        } catch {
+            guard !Task.isCancelled else { return }
+            actionErrorMessage = "切换格式版本失败：\(error.localizedDescription)"
+            isActionErrorPresented = true
+        }
+    }
+
+    func exportOriginalFile(
+        comicId: String,
+        downloadPath: String? = nil,
+        preferredFilename: String? = nil
+    ) async {
+        guard exportingComicId == nil else { return }
+        exportingComicId = comicId
+        defer { exportingComicId = nil }
+        do {
+            let fileURL = try await APIClient.shared.downloadOriginalComicFile(
+                comicId: comicId,
+                downloadPath: downloadPath,
+                preferredFilename: preferredFilename
+            )
+            exportedFileItem = ExportedOriginalFileItem(url: fileURL)
+        } catch {
+            guard !Task.isCancelled else { return }
+            actionErrorMessage = "下载原文件失败：\(error.localizedDescription)"
+            isActionErrorPresented = true
+        }
     }
 
     func readingContext(for comicId: String) -> ReadingGroupContext? {
@@ -505,6 +742,12 @@ final class GroupDetailViewModel {
         where readingUnitIndexById[comicId] == nil {
             readingUnitIndexById[comicId] = index
         }
+        if let current = selectedUnitId, readingUnitIndexById[current] != nil {
+            // keep current selection
+        } else {
+            selectedUnitId = readingUnitIds.first
+            selectedUnitComic = nil
+        }
     }
 }
 
@@ -518,6 +761,7 @@ struct SeriesDetailView: View {
     @State private var isGrid = true
 
     var body: some View {
+        @Bindable var viewModel = viewModel
         Group {
             if viewModel.isLoading {
                 ProgressView()
@@ -533,6 +777,33 @@ struct SeriesDetailView: View {
                         )
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
+
+                        if !viewModel.allItems.isEmpty && !api.isOfflineMode {
+                            SeriesEditionsAndLocationSection(
+                                items: viewModel.allItems,
+                                focusedItem: viewModel.focusedItem,
+                                selectedComic: viewModel.selectedUnitComic,
+                                activeEdition: viewModel.focusedItem.flatMap { viewModel.activeEdition(for: $0) },
+                                isLoadingUnit: viewModel.isLoadingSelectedUnit,
+                                isSwitchingEdition: viewModel.isSwitchingEdition,
+                                exportingComicId: viewModel.exportingComicId,
+                                onSelectItem: { itemId in
+                                    Task { await viewModel.selectFocusItem(id: itemId) }
+                                },
+                                onSelectEdition: { itemId, editionComicId in
+                                    Task { await viewModel.switchEdition(itemId: itemId, to: editionComicId) }
+                                },
+                                onExportOriginalFile: { comicId, downloadPath, preferredFilename in
+                                    Task {
+                                        await viewModel.exportOriginalFile(
+                                            comicId: comicId,
+                                            downloadPath: downloadPath,
+                                            preferredFilename: preferredFilename
+                                        )
+                                    }
+                                }
+                            )
+                        }
 
                         if !detail.sections.isEmpty {
                             ScrollView(.horizontal) {
@@ -574,9 +845,10 @@ struct SeriesDetailView: View {
                             )]
                             LazyVGrid(columns: cols, spacing: 16) {
                                 ForEach(viewModel.visibleItems) { item in
+                                    let targetComicId = viewModel.activeComicId(for: item)
                                     NavigationLink {
                                         ComicDetailView(
-                                            comicId: item.comic.id,
+                                            comicId: targetComicId,
                                             groupContext: viewModel.readingContext(for: item),
                                             initialPreview: ComicDetailPreview(comic: item.comic)
                                         )
@@ -592,10 +864,12 @@ struct SeriesDetailView: View {
                         } else {
                             LazyVStack(spacing: 0) {
                                 ForEach(viewModel.visibleItems) { item in
-                                    VStack(spacing: 0) {
+                                    let targetComicId = viewModel.activeComicId(for: item)
+                                    let editions = item.resolvedEditions
+                                    VStack(alignment: .leading, spacing: 0) {
                                         NavigationLink {
                                             ComicDetailView(
-                                                comicId: item.comic.id,
+                                                comicId: targetComicId,
                                                 groupContext: viewModel.readingContext(for: item),
                                                 initialPreview: ComicDetailPreview(comic: item.comic)
                                             )
@@ -606,6 +880,32 @@ struct SeriesDetailView: View {
                                         }
                                         .buttonStyle(.plain)
                                         .contentShape(Rectangle())
+
+                                        if editions.count > 1 {
+                                            SeriesItemEditionBar(
+                                                editions: editions,
+                                                activeComicId: targetComicId,
+                                                isNovelLibrary: item.comic.isNovel,
+                                                exportingComicId: viewModel.exportingComicId,
+                                                onSelectEdition: { editionComicId in
+                                                    Task {
+                                                        await viewModel.switchEdition(itemId: item.id, to: editionComicId)
+                                                    }
+                                                },
+                                                onExportEdition: { edition in
+                                                    Task {
+                                                        await viewModel.exportOriginalFile(
+                                                            comicId: edition.comicId,
+                                                            downloadPath: edition.downloadUrl,
+                                                            preferredFilename: edition.fileLocation?.filename
+                                                        )
+                                                    }
+                                                }
+                                            )
+                                            .padding(.leading, 88)
+                                            .padding(.trailing, 20)
+                                            .padding(.bottom, 8)
+                                        }
 
                                         Divider().padding(.leading, 80)
                                     }
@@ -638,6 +938,14 @@ struct SeriesDetailView: View {
                     Image(systemName: isGrid ? "list.bullet" : "square.grid.2x2")
                 }
             }
+        }
+        .alert("操作未完成", isPresented: $viewModel.isActionErrorPresented) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(viewModel.actionErrorMessage ?? "请稍后重试。")
+        }
+        .sheet(item: $viewModel.exportedFileItem) { item in
+            OriginalFileShareSheet(fileURL: item.url)
         }
         .task {
             await viewModel.load(seriesId: seriesId)
@@ -880,6 +1188,221 @@ struct SeriesFilterButton: View {
     }
 }
 
+struct SeriesEditionsAndLocationSection: View {
+    let items: [SeriesItem]
+    let focusedItem: SeriesItem?
+    let selectedComic: Comic?
+    let activeEdition: ComicEditionInfo?
+    let isLoadingUnit: Bool
+    let isSwitchingEdition: Bool
+    let exportingComicId: String?
+    let onSelectItem: (String) -> Void
+    let onSelectEdition: (String, String) -> Void
+    let onExportOriginalFile: (String, String?, String?) -> Void
+
+    private var displayedEditions: [ComicEditionInfo] {
+        if let comicEditions = selectedComic?.resolvedEditions, !comicEditions.isEmpty {
+            return comicEditions
+        }
+        return focusedItem?.resolvedEditions ?? []
+    }
+
+    private var activeComicId: String {
+        selectedComic?.id ?? activeEdition?.comicId ?? focusedItem?.comic.id ?? ""
+    }
+
+    private var displayedLocation: ComicFileLocation? {
+        selectedComic?.fileLocation ?? activeEdition?.fileLocation ?? focusedItem?.comic.fileLocation
+    }
+
+    private var canDownloadActive: Bool {
+        if let selectedComic {
+            return selectedComic.canDownloadOriginalFile
+        }
+        if let activeEdition {
+            return activeEdition.canDownloadOriginalFile
+        }
+        return focusedItem?.comic.canDownloadOriginalFile ?? false
+    }
+
+    private var activeIsImageFolder: Bool {
+        selectedComic?.isImageFolder ?? activeEdition?.isImageFolder ?? focusedItem?.comic.isImageFolder ?? false
+    }
+
+    private var activeIsNovel: Bool {
+        selectedComic?.isNovel ?? focusedItem?.comic.isNovel ?? false
+    }
+
+    private var activeFormatBadge: String {
+        selectedComic?.formatBadge ?? activeEdition?.displayFormat ?? focusedItem?.formatBadge ?? ""
+    }
+
+    private var activeFilename: String? {
+        selectedComic?.filename ?? activeEdition?.fileLocation?.filename ?? focusedItem?.comic.filename
+    }
+
+    private var activeRelativePath: String? {
+        selectedComic?.relativePath ?? activeEdition?.fileLocation?.relativePath ?? focusedItem?.comic.relativePath
+    }
+
+    var body: some View {
+        if focusedItem != nil || selectedComic != nil {
+            VStack(alignment: .leading, spacing: 12) {
+                if items.count > 1 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("版本与文件位置", systemImage: "square.stack.3d.up")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                ForEach(items) { item in
+                                    let isSelected = item.id == focusedItem?.id
+                                    Button {
+                                        onSelectItem(item.id)
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Text(item.title)
+                                                .lineLimit(1)
+                                            if !item.formatBadge.isEmpty {
+                                                Text(item.formatBadge)
+                                                    .font(.caption2.weight(.bold))
+                                                    .opacity(0.85)
+                                            }
+                                        }
+                                        .font(.caption.weight(isSelected ? .semibold : .regular))
+                                        .foregroundStyle(isSelected ? .white : .primary)
+                                        .padding(.horizontal, 11)
+                                        .padding(.vertical, 6)
+                                        .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                                        .clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        .scrollIndicators(.hidden)
+                    }
+                }
+
+                if isLoadingUnit && selectedComic == nil && displayedEditions.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在加载版本与文件位置…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 20)
+                } else {
+                    if let itemId = focusedItem?.id {
+                        ComicEditionsSection(
+                            activeComicId: activeComicId,
+                            editions: displayedEditions,
+                            isNovelLibrary: activeIsNovel,
+                            isSwitchingEdition: isSwitchingEdition,
+                            exportingComicId: exportingComicId,
+                            onSelectEdition: { targetComicId in
+                                onSelectEdition(itemId, targetComicId)
+                            },
+                            onExportEdition: { edition in
+                                onExportOriginalFile(
+                                    edition.comicId,
+                                    edition.downloadUrl,
+                                    edition.fileLocation?.filename
+                                )
+                            }
+                        )
+                    }
+
+                    if !activeComicId.isEmpty {
+                        ComicFileLocationSection(
+                            comicId: activeComicId,
+                            filename: activeFilename,
+                            relativePath: activeRelativePath,
+                            formatBadge: activeFormatBadge,
+                            fileLocation: displayedLocation,
+                            canDownload: canDownloadActive,
+                            isImageFolder: activeIsImageFolder,
+                            isExporting: exportingComicId == activeComicId,
+                            onExportOriginalFile: {
+                                onExportOriginalFile(
+                                    activeComicId,
+                                    activeEdition?.downloadUrl,
+                                    displayedLocation?.filename ?? activeFilename
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SeriesItemEditionBar: View {
+    let editions: [ComicEditionInfo]
+    let activeComicId: String
+    let isNovelLibrary: Bool
+    let exportingComicId: String?
+    let onSelectEdition: (String) -> Void
+    let onExportEdition: (ComicEditionInfo) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(editions) { edition in
+                    let isSelected = edition.comicId == activeComicId
+                    HStack(spacing: 4) {
+                        Button {
+                            onSelectEdition(edition.comicId)
+                        } label: {
+                            Text(edition.displayChipLabel)
+                                .font(.caption2.weight(isSelected ? .bold : .medium))
+                        }
+                        .buttonStyle(.plain)
+
+                        NavigationLink {
+                            edition.readerView(isNovelLibrary: isNovelLibrary)
+                                .bookCoverDestination(id: "reader-\(edition.comicId)")
+                        } label: {
+                            Image(systemName: "book")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("以 \(edition.displayFormat) 格式阅读")
+
+                        if edition.canDownloadOriginalFile {
+                            Button {
+                                onExportEdition(edition)
+                            } label: {
+                                if exportingComicId == edition.comicId {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                } else {
+                                    Image(systemName: "arrow.down.doc")
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(exportingComicId == edition.comicId)
+                            .accessibilityLabel("下载 \(edition.displayFormat) 原文件")
+                        }
+                    }
+                    .foregroundStyle(isSelected ? .white : .primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                    .clipShape(Capsule())
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+}
+
 struct SeriesUnitCardView: View {
     let item: SeriesItem
     let serverURL: String
@@ -911,6 +1434,18 @@ struct SeriesUnitCardView: View {
                         .frame(height: 3)
                         .clipShape(RoundedRectangle(cornerRadius: 1.5))
                     }
+                }
+
+                if !item.formatBadge.isEmpty {
+                    Text(item.formatBadge)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.black.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
 
                 if let status = item.comic.readingStatus, !status.isEmpty {
@@ -947,10 +1482,23 @@ struct SeriesUnitListRowView: View {
                 .bookCoverSource(id: "comic-\(item.comic.id)")
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(item.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if !item.formatBadge.isEmpty {
+                        Text(item.formatBadge)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                    }
+                }
 
                 if item.comic.pageCount > 0 {
                     Text("\(item.comic.pageCount) 页 · \(item.comic.progress)%")
@@ -985,12 +1533,29 @@ final class SeriesDetailViewModel {
     var detail: SeriesDetailResponse?
     var isLoading = false
     var errorMessage: String?
+    var focusedItemId: String?
+    var selectedUnitComic: Comic?
+    var isLoadingSelectedUnit = false
+    var isSwitchingEdition = false
+    var exportingComicId: String?
+    var exportedFileItem: ExportedOriginalFileItem?
+    var actionErrorMessage: String?
+    var isActionErrorPresented = false
+    private(set) var selectedEditionIdByItemId: [String: String] = [:]
     private(set) var allItems: [SeriesItem] = []
     private(set) var visibleItems: [SeriesItem] = []
     private(set) var selectedSectionId: String?
     private var allItemIds: [String] = []
     private var allItemIndexById: [String: Int] = [:]
     private var sectionItemsById: [String: [SeriesItem]] = [:]
+    private var unitLoadVersion = 0
+
+    var focusedItem: SeriesItem? {
+        if let focusedItemId, let matched = allItems.first(where: { $0.id == focusedItemId }) {
+            return matched
+        }
+        return continueItem ?? allItems.first
+    }
 
     var continueItem: SeriesItem? {
         if let inProgress = allItems.first(where: { hasStarted($0) && !isFinished($0) }) {
@@ -1006,11 +1571,91 @@ final class SeriesDetailViewModel {
         do {
             let loadedDetail = try await APIClient.shared.fetchSeriesDetail(id: seriesId)
             updateDetail(loadedDetail)
+            if let initialId = focusedItem?.id {
+                await selectFocusItem(id: initialId)
+            }
         } catch {
             updateDetail(nil)
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+
+    func activeEdition(for item: SeriesItem) -> ComicEditionInfo? {
+        let editions = item.resolvedEditions
+        guard !editions.isEmpty else { return nil }
+        if let selectedId = selectedEditionIdByItemId[item.id],
+           let matched = editions.first(where: { $0.comicId == selectedId }) {
+            return matched
+        }
+        return editions.first(where: { $0.isCurrent || $0.isPreferred }) ?? editions.first
+    }
+
+    func activeComicId(for item: SeriesItem) -> String {
+        activeEdition(for: item)?.comicId ?? item.comic.id
+    }
+
+    func selectFocusItem(id itemId: String) async {
+        focusedItemId = itemId
+        guard let item = allItems.first(where: { $0.id == itemId }) else { return }
+        let targetComicId = activeComicId(for: item)
+        await fetchFocusedComic(comicId: targetComicId)
+    }
+
+    func switchEdition(itemId: String, to targetComicId: String) async {
+        selectedEditionIdByItemId[itemId] = targetComicId
+        if focusedItem?.id == itemId {
+            guard targetComicId != selectedUnitComic?.id, !isSwitchingEdition else { return }
+            isSwitchingEdition = true
+            defer { isSwitchingEdition = false }
+            await fetchFocusedComic(comicId: targetComicId)
+        }
+    }
+
+    private func fetchFocusedComic(comicId: String) async {
+        guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
+            selectedUnitComic = nil
+            isLoadingSelectedUnit = false
+            return
+        }
+        unitLoadVersion += 1
+        let version = unitLoadVersion
+        isLoadingSelectedUnit = true
+        defer {
+            if version == unitLoadVersion {
+                isLoadingSelectedUnit = false
+            }
+        }
+        do {
+            let loaded = try await APIClient.shared.fetchComic(id: comicId)
+            guard !Task.isCancelled, version == unitLoadVersion else { return }
+            selectedUnitComic = loaded
+        } catch {
+            guard !Task.isCancelled, version == unitLoadVersion else { return }
+            AppLogger.error("加载目录作品分卷详情失败: \(error)")
+        }
+    }
+
+    func exportOriginalFile(
+        comicId: String,
+        downloadPath: String? = nil,
+        preferredFilename: String? = nil
+    ) async {
+        guard exportingComicId == nil else { return }
+        exportingComicId = comicId
+        defer { exportingComicId = nil }
+        do {
+            let fileURL = try await APIClient.shared.downloadOriginalComicFile(
+                comicId: comicId,
+                downloadPath: downloadPath,
+                preferredFilename: preferredFilename
+            )
+            exportedFileItem = ExportedOriginalFileItem(url: fileURL)
+        } catch {
+            guard !Task.isCancelled else { return }
+            actionErrorMessage = "下载原文件失败：\(error.localizedDescription)"
+            isActionErrorPresented = true
+        }
     }
 
     func readingContext(for item: SeriesItem) -> ReadingGroupContext? {
@@ -1036,6 +1681,8 @@ final class SeriesDetailViewModel {
             sectionItemsById = [:]
             allItemIds = []
             allItemIndexById = [:]
+            focusedItemId = nil
+            selectedUnitComic = nil
             return
         }
 
@@ -1056,6 +1703,12 @@ final class SeriesDetailViewModel {
         for (index, comicId) in allItemIds.enumerated()
         where allItemIndexById[comicId] == nil {
             allItemIndexById[comicId] = index
+        }
+        if let current = focusedItemId, allItems.contains(where: { $0.id == current }) {
+            // keep selection
+        } else {
+            focusedItemId = continueItem?.id ?? allItems.first?.id
+            selectedUnitComic = nil
         }
     }
 

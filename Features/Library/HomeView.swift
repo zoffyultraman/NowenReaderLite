@@ -131,10 +131,14 @@ private struct HomeRefreshID: Hashable {
 
 private struct LibraryContentLoadID: Hashable {
     let selectedLibraryId: String?
+    let activeDirectoryLibraryId: String?
+    let supportsDirectoryCategories: Bool
+    let directoryPath: String
     let contentType: String?
     let sortOption: String?
     let isOffline: Bool
     let networkRecovered: Bool
+    let refreshNonce: Int
 }
 
 // MARK: - 搜索栏
@@ -215,28 +219,51 @@ struct HomeSearchBar: View {
 struct LibraryPickerView: View {
     @Environment(APIClient.self) private var api
 
+    private var totalLogicalCount: Int? {
+        let enabled = api.accessibleLibraries.filter(\.enabled)
+        let target = enabled.isEmpty ? api.accessibleLibraries : enabled
+        guard !target.isEmpty else { return nil }
+        return target.reduce(0) { $0 + $1.logicalCount }
+    }
+
+    private var pickerDisplayName: String {
+        if api.selectedLibraryId == nil,
+           let single = api.activeDirectoryLibrary {
+            return single.name
+        }
+        return api.selectedLibraryName
+    }
+
     var body: some View {
         if api.accessibleLibraries.count > 1 {
             Menu {
-                Button("全部书库", systemImage: "square.grid.2x2") {
+                Button(
+                    totalLogicalCount.map { "全部书库 (\($0))" } ?? "全部书库",
+                    systemImage: "square.grid.2x2"
+                ) {
                     api.selectedLibraryId = nil
                 }
                 ForEach(api.accessibleLibraries.filter { $0.enabled }) { library in
-                    Button(library.name, systemImage: api.libraryIcon(for: library.type)) {
+                    Button(
+                        "\(library.name) (\(library.logicalCount))",
+                        systemImage: api.libraryIcon(for: library.type)
+                    ) {
                         api.selectedLibraryId = library.id
                     }
                 }
             } label: {
                 LibraryPickerLabel(
                     icon: api.selectedLibraryIcon,
-                    title: api.selectedLibraryName,
+                    title: pickerDisplayName,
+                    count: api.selectedLibraryLogicalCount,
                     showsChevron: true
                 )
             }
         } else {
             LibraryPickerLabel(
                 icon: api.selectedLibraryIcon,
-                title: api.selectedLibraryName,
+                title: pickerDisplayName,
+                count: api.selectedLibraryLogicalCount,
                 showsChevron: false
             )
         }
@@ -246,10 +273,11 @@ struct LibraryPickerView: View {
 private struct LibraryPickerLabel: View {
     let icon: String
     let title: String
+    let count: Int?
     let showsChevron: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(.tint)
             Text(title)
@@ -257,6 +285,15 @@ private struct LibraryPickerLabel: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .layoutPriority(1)
+            if let count {
+                Text("\(count)")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color(.tertiarySystemFill))
+                    .clipShape(Capsule())
+            }
             Spacer(minLength: 4)
             if showsChevron {
                 Image(systemName: "chevron.down")
@@ -341,6 +378,8 @@ struct HomeMainContent: View {
     @Environment(APIClient.self) private var api
     @State private var viewMode: HomeViewMode = .grid
     @State private var librarySortOption: LibrarySortOption = .addedAt
+    @State private var currentDirectoryPath = ""
+    @State private var refreshNonce = 0
 
     /// 根据选中的书库类型决定内容筛选
     private var selectedLibraryType: String? {
@@ -369,13 +408,20 @@ struct HomeMainContent: View {
                 LibraryContentView(
                     contentType: selectedLibraryType,
                     viewMode: $viewMode,
-                    sortOption: $librarySortOption
+                    sortOption: $librarySortOption,
+                    directoryPath: $currentDirectoryPath,
+                    refreshNonce: refreshNonce
                 )
             }
             .refreshable {
+                refreshNonce += 1
+                _ = try? await api.fetchAccessibleLibraries()
                 await continueReadingVM.load()
             }
             .contentMargins(.bottom, 104, for: .scrollContent)
+            .onChange(of: api.selectedLibraryId) { _, _ in
+                currentDirectoryPath = ""
+            }
 
             if api.isOfflineMode {
                 Button {
@@ -657,14 +703,20 @@ private struct LibraryContentView: View {
     @State private var collectionViewModel = CollectionViewModel()
     @Binding var viewMode: HomeViewMode
     @Binding var sortOption: LibrarySortOption
+    @Binding var directoryPath: String
+    let refreshNonce: Int
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
 
     private var entries: [LibraryShelfEntry] {
-        let groups = collectionViewModel.groups.map(LibraryShelfEntry.group)
+        let trimmedDir = directoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let groups = trimmedDir.isEmpty
+            ? collectionViewModel.groups.map(LibraryShelfEntry.group)
+            : []
         let comics = viewModel.comics
             .filter { comic in
+                guard trimmedDir.isEmpty else { return true }
                 if collectionViewModel.groupedComicIds.contains(comic.id) {
                     return false
                 }
@@ -679,7 +731,7 @@ private struct LibraryContentView: View {
     }
 
     private var isLoading: Bool {
-        viewModel.isLoading || collectionViewModel.isLoading
+        viewModel.isLoading || (directoryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && collectionViewModel.isLoading)
     }
 
     private var gridColumns: [GridItem] {
@@ -689,8 +741,29 @@ private struct LibraryContentView: View {
     var body: some View {
         let shelfEntries = entries
         let loading = isLoading
+        let dirLibrary = api.activeDirectoryLibrary
 
         VStack(alignment: .leading, spacing: 12) {
+            if let dirLibrary,
+               dirLibrary.supportsDirectoryCategories,
+               !api.isOfflineMode {
+                LibraryDirectoryNavigationView(
+                    currentPath: directoryPath,
+                    response: viewModel.directoryResponse,
+                    isLoading: viewModel.isLoadingDirectories,
+                    currentPage: viewModel.directoryPage,
+                    serverURL: api.serverURL,
+                    onNavigate: { nextPath in
+                        directoryPath = nextPath
+                    },
+                    onPageChange: { nextPage in
+                        Task {
+                            await viewModel.loadDirectories(library: dirLibrary, page: nextPage)
+                        }
+                    }
+                )
+            }
+
             Group {
                 if shelfEntries.isEmpty && !loading {
                     LibraryEmptyState(contentType: contentType)
@@ -716,29 +789,41 @@ private struct LibraryContentView: View {
         }
         .refreshable {
             async let comics: Void = viewModel.loadAll(refresh: true)
+            async let directories: Void = viewModel.loadDirectories(library: dirLibrary, page: viewModel.directoryPage)
             async let groups: Void = collectionViewModel.load(refresh: true)
-            _ = await (comics, groups)
+            _ = await (comics, directories, groups)
         }
         .task(id: LibraryContentLoadID(
             selectedLibraryId: api.selectedLibraryId,
+            activeDirectoryLibraryId: dirLibrary?.id,
+            supportsDirectoryCategories: dirLibrary?.supportsDirectoryCategories ?? false,
+            directoryPath: directoryPath,
             contentType: contentType,
             sortOption: sortOption.rawValue,
             isOffline: api.isOfflineMode,
-            networkRecovered: api.networkRecovered
+            networkRecovered: api.networkRecovered,
+            refreshNonce: refreshNonce
         )) {
             viewModel.setModelContext(modelContext)
             collectionViewModel.setModelContext(modelContext)
+            let effectiveDir = (dirLibrary?.supportsDirectoryCategories == true) ? directoryPath : ""
             async let comics: Void = viewModel.configure(
                 contentType: contentType,
                 sortBy: sortOption.rawValue,
-                sortOrder: sortOption == .title ? "asc" : "desc"
+                sortOrder: sortOption == .title ? "asc" : "desc",
+                library: dirLibrary,
+                directoryPath: effectiveDir
             )
-            async let groups: Void = collectionViewModel.configure(
-                contentType: contentType,
-                sortBy: sortOption == .title ? "title" : "defaultOrder",
-                sortOrder: "asc"
-            )
-            _ = await (comics, groups)
+            if effectiveDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                async let groups: Void = collectionViewModel.configure(
+                    contentType: contentType,
+                    sortBy: sortOption == .title ? "title" : "defaultOrder",
+                    sortOrder: "asc"
+                )
+                _ = await (comics, groups)
+            } else {
+                _ = await comics
+            }
         }
     }
 
@@ -795,7 +880,8 @@ private struct LibraryShelfGridView: View {
                                     progress: comic.progress,
                                     serverURL: serverURL,
                                     readingStatus: comic.readingStatus,
-                                    rating: comic.rating
+                                    rating: comic.rating,
+                                    formatBadge: comic.formatBadge
                                 )
                             }
                         }
@@ -855,7 +941,8 @@ private struct LibraryShelfListView: View {
                                     isFavorite: comic.isFavorite,
                                     serverURL: serverURL,
                                     readingStatus: comic.readingStatus,
-                                    rating: comic.rating
+                                    rating: comic.rating,
+                                    formatBadge: comic.formatBadge
                                 )
                                 .padding(.horizontal, 16)
                             }
@@ -1014,7 +1101,7 @@ struct SeriesShelfCardView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 4) {
-                    Text("\(comic.pageCount) 项")
+                    Text("\(comic.seriesItemCount) 项")
                     Spacer(minLength: 2)
                     if comic.seriesProgress > 0 {
                         Text("\(comic.seriesProgress)%")
@@ -1072,7 +1159,7 @@ struct SeriesShelfCardView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(comic.title)
         .bookCoverSource(id: "comic-\(comic.id)")
-        .accessibilityValue("\(comic.pageCount) 项，进度 \(comic.seriesProgress)%")
+        .accessibilityValue("\(comic.seriesItemCount) 项，进度 \(comic.seriesProgress)%")
     }
 }
 
@@ -1116,7 +1203,7 @@ struct SeriesShelfListRowView: View {
 
                 let sizeText = comic.fileSize.map { formatFileSize($0) } ?? ""
                 Text(
-                    "目录作品 · \(comic.pageCount) 项"
+                    "目录作品 · \(comic.seriesItemCount) 项"
                         + (
                             comic.seriesProgress > 0
                                 ? " · \(ReadingStatus.progressLabel(progress: comic.seriesProgress, status: comic.seriesProgress >= 100 ? "finished" : "reading"))"

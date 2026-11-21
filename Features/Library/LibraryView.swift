@@ -57,6 +57,7 @@ struct ComicCardView: View {
     let serverURL: String
     let readingStatus: String?
     let rating: Double?
+    var formatBadge: String = ""
 
     private var displayStatus: String? {
         ReadingStatus.effectiveStatus(explicit: readingStatus, progress: progress)
@@ -116,15 +117,30 @@ struct ComicCardView: View {
                 .background(.black.opacity(0.68))
             }
 
-            Text(isNovel ? "小说" : "漫画")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(isNovel ? Color.blue.opacity(0.9) : Color.green.opacity(0.9))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .padding(6)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            HStack(spacing: 4) {
+                Text(isNovel ? "小说" : "漫画")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(isNovel ? Color.blue.opacity(0.9) : Color.green.opacity(0.9))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                if !formatBadge.isEmpty {
+                    Text(formatBadge)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.top, 6)
+            .padding(.leading, 6)
+            .padding(.trailing, isFavorite ? 32 : 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             if isFavorite {
                 Image(systemName: "heart.fill")
@@ -164,6 +180,7 @@ struct ComicListRowView: View {
     let serverURL: String
     let readingStatus: String?
     let rating: Double?
+    var formatBadge: String = ""
 
     var body: some View {
         HStack(spacing: 12) {
@@ -174,10 +191,23 @@ struct ComicListRowView: View {
                 .bookCoverSource(id: "comic-\(id)")
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if !formatBadge.isEmpty {
+                        Text(formatBadge)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .fixedSize()
+                    }
+                }
 
                 if let author, !author.isEmpty {
                     Text(author)
@@ -228,6 +258,250 @@ struct ComicListRowView: View {
     }
 }
 
+// MARK: - 物理目录分类导航
+
+struct LibraryDirectoryNavigationView: View {
+    let currentPath: String
+    let response: LibraryDirectoryListResponse?
+    let isLoading: Bool
+    let currentPage: Int
+    let serverURL: String
+    let onNavigate: (String) -> Void
+    let onPageChange: (Int) -> Void
+
+    private var breadcrumbs: [LibraryDirectoryBreadcrumb] {
+        guard !currentPath.isEmpty else { return [] }
+        if let response, response.parent == currentPath, !response.breadcrumbs.isEmpty {
+            return response.breadcrumbs
+        }
+        let parts = currentPath.split(separator: "/").map(String.init)
+        var result: [LibraryDirectoryBreadcrumb] = []
+        for index in parts.indices {
+            let path = parts[0...index].joined(separator: "/")
+            result.append(LibraryDirectoryBreadcrumb(name: parts[index], path: path))
+        }
+        return result
+    }
+
+    private var nodes: [LibraryDirectoryNode] {
+        response?.directories ?? []
+    }
+
+    private var totalPages: Int {
+        max(response?.totalPages ?? 1, currentPage)
+    }
+
+    private var shouldShowContainer: Bool {
+        !nodes.isEmpty || !currentPath.isEmpty || isLoading || currentPage > 1
+    }
+
+    var body: some View {
+        if shouldShowContainer {
+            VStack(alignment: .leading, spacing: 10) {
+                LibraryDirectoryBreadcrumbBar(
+                    currentPath: currentPath,
+                    breadcrumbs: breadcrumbs,
+                    onNavigate: onNavigate
+                )
+
+                if isLoading && nodes.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在加载目录分类…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                } else if !nodes.isEmpty {
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 8) {
+                            ForEach(nodes) { node in
+                                LibraryDirectoryNodeCard(
+                                    node: node,
+                                    serverURL: serverURL,
+                                    onTap: { onNavigate(node.path) }
+                                )
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                }
+
+                if totalPages > 1 || currentPage > 1 {
+                    HStack(spacing: 12) {
+                        Spacer()
+                        Button("上一页") {
+                            onPageChange(max(1, currentPage - 1))
+                        }
+                        .font(.caption.weight(.medium))
+                        .disabled(isLoading || currentPage <= 1)
+
+                        Text("\(currentPage) / \(totalPages)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+
+                        Button("下一页") {
+                            onPageChange(currentPage + 1)
+                        }
+                        .font(.caption.weight(.medium))
+                        .disabled(isLoading || response == nil || currentPage >= totalPages)
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+}
+
+private struct LibraryDirectoryBreadcrumbBar: View {
+    let currentPath: String
+    let breadcrumbs: [LibraryDirectoryBreadcrumb]
+    let onNavigate: (String) -> Void
+
+    private var parentPath: String {
+        breadcrumbs.count > 1 ? breadcrumbs[breadcrumbs.count - 2].path : ""
+    }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                Label("目录分类", systemImage: "folder.badge.gearshape")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                Button {
+                    onNavigate("")
+                } label: {
+                    Text("全部作品")
+                        .font(.caption.weight(currentPath.isEmpty ? .semibold : .medium))
+                        .foregroundStyle(currentPath.isEmpty ? .white : .secondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(currentPath.isEmpty ? Color.accentColor : Color(.tertiarySystemFill))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+
+                ForEach(Array(breadcrumbs.enumerated()), id: \.element.path) { index, crumb in
+                    let isLast = index == breadcrumbs.count - 1
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
+                    Button {
+                        onNavigate(crumb.path)
+                    } label: {
+                        Text(crumb.name)
+                            .font(.caption.weight(isLast ? .bold : .medium))
+                            .foregroundStyle(isLast ? Color.accentColor : .secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(isLast ? Color.accentColor.opacity(0.14) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !currentPath.isEmpty {
+                    Button {
+                        onNavigate(parentPath)
+                    } label: {
+                        Label("返回上级", systemImage: "arrow.up")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color(.tertiarySystemFill))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 4)
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+}
+
+private struct LibraryDirectoryNodeCard: View {
+    let node: LibraryDirectoryNode
+    let serverURL: String
+    let onTap: () -> Void
+
+    private var resolvedCoverURL: URL? {
+        let raw = node.coverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
+            return URL(string: raw)
+        }
+        let cleanServer = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
+        let suffix = raw.hasPrefix("/") ? raw : "/\(raw)"
+        return URL(string: "\(cleanServer)\(suffix)")
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Group {
+                    if let url = resolvedCoverURL {
+                        AuthenticatedImage(url: url)
+                    } else {
+                        Color(.tertiarySystemFill)
+                            .overlay {
+                                Image(systemName: "folder.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                    }
+                }
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 34, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(node.name)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text("\(node.workCount) 部作品")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                if node.hasChildren {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(7)
+            .frame(width: 158, height: 58, alignment: .leading)
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - ViewModel
 
 @MainActor
@@ -237,15 +511,21 @@ final class LibraryViewModel {
     var isLoading = false
     var hasMore = true
     var errorMessage: String?
+    var directoryResponse: LibraryDirectoryListResponse?
+    var isLoadingDirectories = false
+    var directoryPage = 1
 
     private var currentPage = 1
     private var sortBy = "addedAt"
     private var sortOrder = "desc"
     private var contentType: String?
+    private(set) var libraryId: String?
+    private(set) var directoryPath: String = ""
     private let api = APIClient.shared
     private var modelContext: ModelContext?
     /// 当前加载任务版本号，旧任务完成时忽略（避免离线切换时旧请求挂起覆盖状态）
     private var loadVersion: Int = 0
+    private var directoryLoadVersion: Int = 0
 
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
@@ -269,6 +549,49 @@ final class LibraryViewModel {
         isLoading = false
     }
 
+    func loadDirectories(library: Library?, page: Int? = nil) async {
+        guard let library,
+              library.supportsDirectoryCategories,
+              !api.isOfflineMode,
+              api.isNetworkReachable else {
+            directoryLoadVersion += 1
+            directoryResponse = nil
+            isLoadingDirectories = false
+            directoryPage = 1
+            return
+        }
+
+        directoryLoadVersion += 1
+        let version = directoryLoadVersion
+        let targetPage = max(1, page ?? directoryPage)
+        directoryPage = targetPage
+        isLoadingDirectories = true
+
+        do {
+            let response = try await api.fetchLibraryDirectories(
+                libraryId: library.id,
+                parent: directoryPath,
+                page: targetPage
+            )
+            guard !Task.isCancelled, version == directoryLoadVersion else { return }
+            directoryResponse = response
+            directoryPage = response.page
+        } catch {
+            guard !isCancellation(error), version == directoryLoadVersion else { return }
+            AppLogger.error("加载书库目录分类失败: \(error)")
+            directoryResponse = LibraryDirectoryListResponse(
+                libraryId: library.id,
+                seriesDepth: library.seriesDepth,
+                parent: directoryPath,
+                page: targetPage
+            )
+        }
+
+        if version == directoryLoadVersion {
+            isLoadingDirectories = false
+        }
+    }
+
     private func loadComics(refresh: Bool = false, version: Int) async -> Bool {
         guard version == loadVersion else { return false }
         if refresh { currentPage = 1 }
@@ -288,13 +611,16 @@ final class LibraryViewModel {
         }
 
         do {
+            let trimmedDir = directoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
             let resp = try await api.fetchComics(
                 page: currentPage,
                 pageSize: useSeriesView ? 0 : 20,
                 sortBy: sortBy,
                 sortOrder: sortOrder,
                 contentType: contentType,
-                excludeGrouped: true,
+                excludeGrouped: trimmedDir.isEmpty ? true : nil,
+                libraryId: libraryId,
+                directoryPath: trimmedDir.isEmpty ? nil : trimmedDir,
                 seriesView: useSeriesView
             )
             guard !Task.isCancelled, version == loadVersion else { return false }
@@ -395,11 +721,27 @@ final class LibraryViewModel {
         isLoading = false
     }
 
-    func configure(contentType: String?, sortBy: String, sortOrder: String) async {
+    func configure(
+        contentType: String?,
+        sortBy: String,
+        sortOrder: String,
+        library: Library? = nil,
+        directoryPath: String = ""
+    ) async {
         self.contentType = contentType
         self.sortBy = sortBy
         self.sortOrder = sortOrder
-        await loadAll(refresh: true)
+        let nextLibraryId = library?.id ?? api.selectedLibraryId
+        let libraryChanged = self.libraryId != nextLibraryId
+        let pathChanged = self.directoryPath != directoryPath
+        self.libraryId = nextLibraryId
+        self.directoryPath = directoryPath
+        if libraryChanged || pathChanged {
+            self.directoryPage = 1
+        }
+        async let comicsTask: Void = loadAll(refresh: true)
+        async let directoriesTask: Void = loadDirectories(library: library, page: self.directoryPage)
+        _ = await (comicsTask, directoriesTask)
     }
 
     private func isCancellation(_ error: Error) -> Bool {
