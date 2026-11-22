@@ -77,17 +77,27 @@ struct NovelReaderView: View {
                             )
                         },
                         onReachEnd: {
-                            // 兜底：如果追加还没完成，手动切章
-                            if !viewModel.nextChapterAppended {
+                            let hasNextChapter = viewModel.totalChapters > 0
+                                && (viewModel.currentChapter + 1) < viewModel.totalChapters
+                            let hasNextVolume = viewModel.groupContext?.nextVolumeId != nil
+                            guard hasNextChapter || hasNextVolume else { return }
+                            // 兜底：如果追加还没完成（或已到本卷末章需跨卷），手动切章/切卷
+                            if !viewModel.nextChapterAppended || !hasNextChapter {
                                 showOverlay = false
                                 saveRecord()
+                                restoredChapter = -1
                                 currentPage = 0
                                 Task { await viewModel.nextChapter(fontSize: fontSize) }
                             }
                         },
                         onSwipeToPrev: {
+                            guard viewModel.currentChapter > 0
+                                    || viewModel.groupContext?.previousVolumeId != nil else {
+                                return
+                            }
                             showOverlay = false
                             saveRecord()
+                            restoredChapter = -1
                             currentPage = 99999
                             Task { await viewModel.prevChapter(fontSize: fontSize) }
                         }
@@ -102,6 +112,21 @@ struct NovelReaderView: View {
                         Button("返回") { dismiss() }
                     }
                     .foregroundStyle(viewModel.darkMode ? Color.white : Color.primary)
+                }
+
+                if let banner = viewModel.volumeTransitionBanner {
+                    VStack {
+                        Spacer()
+                        Text(banner)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(viewModel.darkMode ? Color.white : Color.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(.bottom, 28)
+                    }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
             }
             .task(id: loadAttempt) {
@@ -611,14 +636,24 @@ struct NovelReaderView: View {
                 }
             },
             onPrevChapter: {
+                guard viewModel.currentChapter > 0
+                        || viewModel.groupContext?.previousVolumeId != nil else {
+                    return
+                }
                 showOverlay = false
                 saveRecord()
+                restoredChapter = -1
                 currentPage = 99999
                 Task { await viewModel.prevChapter(fontSize: fontSize) }
             },
             onNextChapter: {
+                let hasNextChapter = viewModel.totalChapters > 0
+                    && (viewModel.currentChapter + 1) < viewModel.totalChapters
+                let hasNextVolume = viewModel.groupContext?.nextVolumeId != nil
+                guard hasNextChapter || hasNextVolume else { return }
                 showOverlay = false
                 saveRecord()
+                restoredChapter = -1
                 currentPage = 0
                 Task { await viewModel.nextChapter(fontSize: fontSize) }
             },
@@ -1092,12 +1127,15 @@ struct NovelPager: UIViewControllerRepresentable {
         pvc.isDoubleSided = false
         pvc.view.isUserInteractionEnabled = isPageInteractionEnabled
         pvc.view.backgroundColor = pageBackgroundColor
+        context.coordinator.pageViewController = pvc
         let tap = UITapGestureRecognizer(
-            target: context.coordinator, action: #selector(Coordinator.handleOverlayTap)
+            target: context.coordinator, action: #selector(Coordinator.handleTap(_:))
         )
         tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
+        context.coordinator.tapGesture = tap
         pvc.view.addGestureRecognizer(tap)
+        disableBuiltInTapGestures(in: pvc, keeping: tap)
         return pvc
     }
 
@@ -1106,6 +1144,8 @@ struct NovelPager: UIViewControllerRepresentable {
         pvc.view.backgroundColor = pageBackgroundColor
         let coord = context.coordinator
         coord.parent = self
+        coord.pageViewController = pvc
+        disableBuiltInTapGestures(in: pvc, keeping: coord.tapGesture)
         guard !pages.isEmpty else { return }
 
         let oldCount = coord.cachedVCs.count
@@ -1171,8 +1211,20 @@ struct NovelPager: UIViewControllerRepresentable {
         darkMode ? UIColor(white: 0.1, alpha: 1) : .systemBackground
     }
 
+    private func disableBuiltInTapGestures(
+        in pvc: UIPageViewController,
+        keeping tapGesture: UITapGestureRecognizer?
+    ) {
+        for recognizer in pvc.view.gestureRecognizers ?? []
+        where recognizer is UITapGestureRecognizer && recognizer !== tapGesture {
+            recognizer.isEnabled = false
+        }
+    }
+
     class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
         var parent: NovelPager
+        weak var pageViewController: UIPageViewController?
+        weak var tapGesture: UITapGestureRecognizer?
         var cachedVCs: [NovelTextPageVC] = []
         var currentIndex: Int = 0
         var paginationGeneration = -1
@@ -1189,15 +1241,52 @@ struct NovelPager: UIViewControllerRepresentable {
             self.parent = parent
         }
 
-        @objc func handleOverlayTap() {
-            parent.onToggleOverlay()
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let view = gesture.view, view.bounds.width > 0 else { return }
+            let point = gesture.location(in: view)
+            let width = view.bounds.width
+            if point.x < width * 0.3 {
+                if let pvc = pageViewController {
+                    turnToPreviousPage(in: pvc)
+                }
+            } else if point.x > width * 0.7 {
+                if let pvc = pageViewController {
+                    turnToNextPage(in: pvc)
+                }
+            } else {
+                parent.onToggleOverlay()
+            }
+        }
+
+        private func turnToPreviousPage(in pvc: UIPageViewController) {
+            guard !cachedVCs.isEmpty else { return }
+            let prev = currentIndex - 1
+            if prev < 0 {
+                DispatchQueue.main.async { self.parent.onSwipeToPrev() }
+                return
+            }
+            guard let targetVC = cachedVCs[safe: prev] else { return }
+            currentIndex = prev
+            pvc.setViewControllers([targetVC], direction: .reverse, animated: true) { [weak self] _ in
+                self?.parent.onPageChanged(prev)
+            }
+        }
+
+        private func turnToNextPage(in pvc: UIPageViewController) {
+            guard !cachedVCs.isEmpty else { return }
+            let next = currentIndex + 1
+            if next >= cachedVCs.count {
+                DispatchQueue.main.async { self.parent.onReachEnd() }
+                return
+            }
+            guard let targetVC = cachedVCs[safe: next] else { return }
+            currentIndex = next
+            pvc.setViewControllers([targetVC], direction: .forward, animated: true) { [weak self] _ in
+                self?.parent.onPageChanged(next)
+            }
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            guard let view = gestureRecognizer.view else { return false }
-            let point = touch.location(in: view)
-            guard point.x >= view.bounds.width * 0.3,
-                  point.x <= view.bounds.width * 0.7 else { return false }
             var touchedView = touch.view
             while let target = touchedView {
                 // 插图保留自己的放大手势；工具栏由 SwiftUI 接收操作。
@@ -1516,6 +1605,7 @@ final class NovelReaderViewModel {
     var darkMode = false
     var pages: [NovelPage] = []
     var groupContext: ReadingGroupContext?
+    var volumeTransitionBanner: String?
     var currentComicId: String
     var chapterTitles: [Int: String] = [:]
     var chapterEntries: [PageEntry] = []
@@ -1538,6 +1628,7 @@ final class NovelReaderViewModel {
     private(set) var nextChapterAppended = false
 
     private var comicId = ""
+    private var isSwitchingVolume = false
     private var typographyLineSpacing: Double = 10
     private var typographyLetterSpacing: Double = 0
     private let api = APIClient.shared
@@ -1552,6 +1643,7 @@ final class NovelReaderViewModel {
     @ObservationIgnored private var cacheObserver: Any?
     @ObservationIgnored private var paginationTask: Task<Void, Never>?
     @ObservationIgnored private var appendPaginationTask: Task<Void, Never>?
+    @ObservationIgnored private var bannerTask: Task<Void, Never>?
     private var paginationRequestID = UUID()
     private var appendPaginationRequestID: UUID?
     private var appendedChapterContent: ChapterContent?
@@ -1714,8 +1806,17 @@ final class NovelReaderViewModel {
     }
 
     func loadVolume(comicId: String, chapter: Int, fontSize: Double = 17) async {
+        guard !isSwitchingVolume else { return }
+        isSwitchingVolume = true
+        defer { isSwitchingVolume = false }
+
+        let previousIndex = groupContext?.currentIndex
         await finishActivity()
 
+        bannerTask?.cancel()
+        volumeTransitionBanner = nil
+
+        var transitionText: String?
         if let ctx = groupContext,
            let newIdx = ctx.volumeIds.firstIndex(of: comicId) {
             groupContext = ReadingGroupContext(
@@ -1723,6 +1824,13 @@ final class NovelReaderViewModel {
                 volumeIds: ctx.volumeIds,
                 currentIndex: newIdx
             )
+            if let previousIndex {
+                if newIdx > previousIndex {
+                    transitionText = "已进入下一卷（卷 \(newIdx + 1)/\(ctx.volumeIds.count)）"
+                } else if newIdx < previousIndex {
+                    transitionText = "已返回上一卷（卷 \(newIdx + 1)/\(ctx.volumeIds.count)）"
+                }
+            }
         }
 
         self.comicId = comicId
@@ -1768,13 +1876,28 @@ final class NovelReaderViewModel {
         }
         isLoading = false
 
+        if let transitionText, !pages.isEmpty {
+            showVolumeTransitionBanner(transitionText)
+        }
+
         cache.preloadAdjacent(comicId: comicId, currentChapter: currentChapter, totalChapters: totalChapters)
+    }
+
+    private func showVolumeTransitionBanner(_ message: String) {
+        bannerTask?.cancel()
+        volumeTransitionBanner = message
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1800))
+            guard !Task.isCancelled else { return }
+            self?.volumeTransitionBanner = nil
+        }
     }
 
     func nextChapter(fontSize: Double = 17) async {
         let nextIndex = currentChapter + 1
         if totalChapters > 0 && nextIndex >= totalChapters {
             guard let nextId = groupContext?.nextVolumeId else { return }
+            updateActivityProgress(positionRatio: 1.0)
             await loadVolume(comicId: nextId, chapter: 0, fontSize: fontSize)
             return
         }
@@ -2239,10 +2362,22 @@ final class NovelReaderViewModel {
     }
 
     private func loadCloudSyncDataIfNeeded(for targetComicId: String) async {
-        guard loadedCloudComicId != targetComicId else { return }
+        guard loadedCloudComicId != targetComicId, !targetComicId.isEmpty else { return }
         loadedCloudComicId = targetComicId
 
-        guard !targetComicId.isEmpty, api.isNetworkReachable, !api.isOfflineMode else { return }
+        if !api.isNetworkReachable || api.isOfflineMode {
+            if groupContext == nil,
+               let resolved = await api.resolveReadingGroupContext(
+                   for: targetComicId,
+                   libraryId: nil,
+                   relativePath: nil
+               ),
+               !Task.isCancelled,
+               targetComicId == currentComicId {
+                groupContext = resolved.context
+            }
+            return
+        }
 
         async let comicTask: Comic? = try? api.fetchComic(id: targetComicId)
         async let bookmarksTask: [UserBookmark]? = try? api.fetchBookmarks(comicId: targetComicId)
@@ -2261,6 +2396,17 @@ final class NovelReaderViewModel {
             if !hasConsumedRemoteRatio, let ratio = remoteComic.lastReadPositionRatio {
                 remoteInitialPositionRatio = ratio
             }
+        }
+
+        if groupContext == nil,
+           let resolved = await api.resolveReadingGroupContext(
+               for: targetComicId,
+               libraryId: remoteComic?.libraryId,
+               relativePath: remoteComic?.relativePath ?? remoteComic?.fileLocation?.relativePath
+           ),
+           !Task.isCancelled,
+           targetComicId == currentComicId {
+            groupContext = resolved.context
         }
 
         if let remoteBookmarks {

@@ -25,6 +25,7 @@ final class ComicReaderViewModel {
     var isLoading = true
     var currentComicId: String
     var groupContext: ReadingGroupContext?
+    var volumeTransitionBanner: String?
 
     // MARK: - 云端同步状态（Phase 2）
     var bookmarks: [UserBookmark] = []
@@ -40,10 +41,12 @@ final class ComicReaderViewModel {
 
     private var activityTracker: ReadingActivityTracker?
     private var isReaderActive = true
+    private var isSwitchingVolume = false
     private let api = APIClient.shared
     private var modelContext: ModelContext?
     @ObservationIgnored private var prefSaveTask: Task<Void, Never>?
     @ObservationIgnored private var cloudLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var bannerTask: Task<Void, Never>?
 
     init() {
         self.currentComicId = ""
@@ -100,6 +103,23 @@ final class ComicReaderViewModel {
                 currentPage = min(max(initialPage, 0), totalPages - 1)
                 AppLogger.log("离线 fallback 成功: \(comicId), \(meta.pageCount) 页")
                 startActivity()
+                if groupContext == nil {
+                    Task { [weak self] in
+                        guard let self, self.currentComicId == comicId, self.groupContext == nil else { return }
+                        if let resolved = await self.api.resolveReadingGroupContext(
+                            for: comicId,
+                            libraryId: nil,
+                            relativePath: nil
+                        ),
+                        self.currentComicId == comicId,
+                        self.groupContext == nil {
+                            self.groupContext = resolved.context
+                            if self.seriesId == nil, let sid = resolved.seriesId {
+                                self.seriesId = sid
+                            }
+                        }
+                    }
+                }
             } else {
                 AppLogger.log("离线 fallback 失败: 无本地 meta, comicId=\(comicId)")
             }
@@ -107,12 +127,27 @@ final class ComicReaderViewModel {
         }
     }
 
-    func loadVolume(comicId: String, initialPage: Int) async {
+    func loadVolume(
+        comicId: String,
+        initialPage: Int,
+        markCurrentVolumeFinished: Bool = false
+    ) async {
+        guard !isSwitchingVolume else { return }
+        isSwitchingVolume = true
+        defer { isSwitchingVolume = false }
+
+        let previousIndex = groupContext?.currentIndex
+        if markCurrentVolumeFinished && totalPages > 0 {
+            currentPage = totalPages - 1
+        }
+
         await saveProgressAndWait()
         await endSessionAndWait()
         isLoading = true
+        bannerTask?.cancel()
+        volumeTransitionBanner = nil
 
-        // Update group context index
+        var transitionText: String?
         if let ctx = groupContext,
            let newIdx = ctx.volumeIds.firstIndex(of: comicId) {
             groupContext = ReadingGroupContext(
@@ -120,11 +155,20 @@ final class ComicReaderViewModel {
                 volumeIds: ctx.volumeIds,
                 currentIndex: newIdx
             )
+            if let previousIndex {
+                if newIdx > previousIndex {
+                    transitionText = "已进入下一卷（卷 \(newIdx + 1)/\(ctx.volumeIds.count)）"
+                } else if newIdx < previousIndex {
+                    transitionText = "已返回上一卷（卷 \(newIdx + 1)/\(ctx.volumeIds.count)）"
+                }
+            }
         }
 
         currentComicId = comicId
         currentPage = initialPage
+        totalPages = 0
         bookmarks = []
+        seriesId = nil
 
         cloudLoadTask?.cancel()
         cloudLoadTask = Task { [weak self] in
@@ -133,18 +177,37 @@ final class ComicReaderViewModel {
 
         do {
             let pages = try await api.fetchPages(comicId: comicId)
+            guard !Task.isCancelled else { return }
             totalPages = pages.totalPages
+            currentPage = min(max(initialPage, 0), max(totalPages - 1, 0))
             isLoading = false
             startActivity()
+            saveProgress()
         } catch {
-            AppLogger.error("加载下一卷失败: \(error)")
+            AppLogger.error("加载卷失败: \(error)")
             // 离线 fallback：从本地元数据读取页数
             if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
                 totalPages = meta.pageCount
+                currentPage = min(max(initialPage, 0), max(totalPages - 1, 0))
                 AppLogger.log("离线模式：使用本地元数据，共 \(meta.pageCount) 页")
                 startActivity()
+                saveProgress()
             }
             isLoading = false
+        }
+
+        if let transitionText, totalPages > 0 {
+            showVolumeTransitionBanner(transitionText)
+        }
+    }
+
+    private func showVolumeTransitionBanner(_ message: String) {
+        bannerTask?.cancel()
+        volumeTransitionBanner = message
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(1800))
+            guard !Task.isCancelled else { return }
+            self?.volumeTransitionBanner = nil
         }
     }
 
@@ -339,7 +402,22 @@ final class ComicReaderViewModel {
     // MARK: - 云端阅读偏好（Phase 2）
 
     private func loadCloudSyncData(for targetComicId: String) async {
-        guard api.isNetworkReachable, !api.isOfflineMode else { return }
+        if !api.isNetworkReachable || api.isOfflineMode {
+            if groupContext == nil,
+               let resolved = await api.resolveReadingGroupContext(
+                   for: targetComicId,
+                   libraryId: nil,
+                   relativePath: nil
+               ),
+               !Task.isCancelled,
+               targetComicId == currentComicId {
+                groupContext = resolved.context
+                if seriesId == nil, let sid = resolved.seriesId {
+                    seriesId = sid
+                }
+            }
+            return
+        }
 
         async let bookmarksTask: [UserBookmark]? = try? api.fetchBookmarks(comicId: targetComicId)
         async let comicTask: Comic? = try? api.fetchComic(id: targetComicId)
@@ -355,6 +433,20 @@ final class ComicReaderViewModel {
         let detectedSeriesId = loadedComic?.seriesId
         if let detectedSeriesId, !detectedSeriesId.isEmpty {
             seriesId = detectedSeriesId
+        }
+
+        if groupContext == nil,
+           let resolved = await api.resolveReadingGroupContext(
+               for: targetComicId,
+               libraryId: loadedComic?.libraryId,
+               relativePath: loadedComic?.relativePath ?? loadedComic?.fileLocation?.relativePath
+           ),
+           !Task.isCancelled,
+           targetComicId == currentComicId {
+            groupContext = resolved.context
+            if seriesId == nil, let sid = resolved.seriesId {
+                seriesId = sid
+            }
         }
 
         await refreshCloudPreferences(for: targetComicId, seriesId: seriesId)

@@ -1848,7 +1848,8 @@ final class SeriesDetailViewModel {
 
     func readingContext(for item: SeriesItem) -> ReadingGroupContext? {
         guard let index = allItemIndexById[item.comic.id] else { return nil }
-        return ReadingGroupContext(groupId: 0, volumeIds: allItemIds, currentIndex: index)
+        let volumeIds = allItems.map { activeComicId(for: $0) }
+        return ReadingGroupContext(groupId: 0, volumeIds: volumeIds, currentIndex: index)
     }
 
     func selectSection(_ sectionId: String?) {

@@ -2241,6 +2241,121 @@ final class APIClient: ReaderWarmupClient {
         return resp.map
     }
 
+    /// 当从“继续阅读”或单本详情进入阅读器且未携带合集/目录上下文时，自动解析所属目录系列或合集的分卷顺序
+    func resolveReadingGroupContext(
+        for comicId: String,
+        libraryId: String?,
+        relativePath: String?
+    ) async -> (context: ReadingGroupContext, seriesId: String?)? {
+        guard !comicId.isEmpty else { return nil }
+
+        if isNetworkReachable && !isOfflineMode {
+            // 1. 优先匹配物理目录系列（按 rootRelativePath 最长前缀匹配）
+            let normalizedRel = (relativePath ?? "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\t"))
+            if !normalizedRel.isEmpty,
+               let seriesList = try? await fetchSeries(libraryId: libraryId) {
+                let candidates = seriesList
+                    .compactMap { summary -> (summary: SeriesSummary, rootLen: Int)? in
+                        let root = summary.rootRelativePath
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "/ \n\t"))
+                        guard !root.isEmpty else { return nil }
+                        guard normalizedRel == root || normalizedRel.hasPrefix(root + "/") else {
+                            return nil
+                        }
+                        return (summary, root.count)
+                    }
+                    .sorted { $0.rootLen > $1.rootLen }
+
+                for candidate in candidates {
+                    if let detail = try? await fetchSeriesDetail(id: candidate.summary.id),
+                       let resolved = Self.buildSeriesReadingContext(from: detail, comicId: comicId) {
+                        return (context: resolved, seriesId: detail.series.id)
+                    }
+                }
+            }
+
+            // 2. 回退匹配所属合集
+            if let groupMap = try? await fetchComicGroupMapFull(),
+               let groupIds = groupMap[comicId] {
+                for groupId in groupIds {
+                    if let detail = try? await fetchGroupDetail(id: groupId) {
+                        let unitIds = detail.readingUnits.map(\.id)
+                        if unitIds.count > 1, let index = unitIds.firstIndex(of: comicId) {
+                            return (
+                                context: ReadingGroupContext(
+                                    groupId: detail.id,
+                                    volumeIds: unitIds,
+                                    currentIndex: index
+                                ),
+                                seriesId: nil
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 离线模式或在线未命中时，尝试从离线元数据解析目录系列或合集上下文
+        return await Task.detached(priority: .utility) {
+            Self.resolveOfflineReadingGroupContext(for: comicId)
+        }.value
+    }
+
+    private nonisolated static func resolveOfflineReadingGroupContext(
+        for comicId: String
+    ) -> (context: ReadingGroupContext, seriesId: String?)? {
+        for detail in OfflineFileManager.shared.loadAllSeries() {
+            if let context = buildSeriesReadingContext(from: detail, comicId: comicId) {
+                return (context: context, seriesId: detail.series.id)
+            }
+        }
+        for group in OfflineFileManager.shared.loadGroups() {
+            if group.comicIds.count > 1,
+               let index = group.comicIds.firstIndex(of: comicId) {
+                return (
+                    context: ReadingGroupContext(
+                        groupId: group.id,
+                        volumeIds: group.comicIds,
+                        currentIndex: index
+                    ),
+                    seriesId: nil
+                )
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func buildSeriesReadingContext(
+        from detail: SeriesDetailResponse,
+        comicId: String
+    ) -> ReadingGroupContext? {
+        let items = (detail.unsectioned + detail.sections.flatMap(\.items))
+            .sorted { $0.sortIndex < $1.sortIndex }
+        guard items.count > 1 else { return nil }
+
+        var matchedIndex: Int?
+        var volumeIds: [String] = []
+        volumeIds.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            if item.comic.id == comicId {
+                matchedIndex = index
+                volumeIds.append(item.comic.id)
+            } else if item.resolvedEditions.contains(where: { $0.comicId == comicId }) {
+                matchedIndex = index
+                volumeIds.append(comicId)
+            } else {
+                volumeIds.append(item.comic.id)
+            }
+        }
+        guard let matchedIndex, volumeIds.count > 1 else { return nil }
+        return ReadingGroupContext(
+            groupId: 0,
+            volumeIds: volumeIds,
+            currentIndex: matchedIndex
+        )
+    }
+
     // MARK: - Libraries
 
     /// 获取用户可访问的书库列表

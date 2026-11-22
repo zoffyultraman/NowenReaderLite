@@ -266,7 +266,7 @@ final class DownloadManager {
                 title: comic.title,
                 pageCount: comic.pageCount,
                 fileSize: comic.fileSize,
-                isNovel: comic.type == "novel"
+                isNovel: comic.isNovel
             )
             if success { queued += 1 } else { skipped += 1 }
         }

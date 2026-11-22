@@ -66,6 +66,8 @@ struct ComicReaderView: View {
                         pageDisplayMode: pageDisplayMode,
                         upscaleMode: upscaleMode,
                         isOverlayPresented: showOverlay,
+                        hasNextVolume: viewModel.groupContext?.nextVolumeId != nil,
+                        hasPreviousVolume: viewModel.groupContext?.previousVolumeId != nil,
                         onToggleOverlay: { showOverlay.toggle() },
                         onPageChange: { page in viewModel.onPageChanged(page) },
                         onPageLoaded: { id, page in
@@ -73,7 +75,13 @@ struct ComicReaderView: View {
                         },
                         onReachEnd: {
                             guard let nextId = viewModel.groupContext?.nextVolumeId else { return }
-                            Task { await viewModel.loadVolume(comicId: nextId, initialPage: 0) }
+                            Task {
+                                await viewModel.loadVolume(
+                                    comicId: nextId,
+                                    initialPage: 0,
+                                    markCurrentVolumeFinished: true
+                                )
+                            }
                         },
                         onSwipeToPrev: {
                             guard let prevId = viewModel.groupContext?.previousVolumeId else { return }
@@ -89,6 +97,22 @@ struct ComicReaderView: View {
                     .id("\(viewModel.currentComicId)_\(isDoublePage ? "double" : "single")")
                     .ignoresSafeArea()
                 }
+            }
+
+            if let banner = viewModel.volumeTransitionBanner {
+                VStack {
+                    Spacer()
+                    Text(banner)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .environment(\.colorScheme, .dark)
+                        .padding(.bottom, 28)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
             }
 
             // 工具栏覆盖层
@@ -798,6 +822,8 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
     let pageDisplayMode: ComicPageDisplayMode
     let upscaleMode: UpscaleMode
     let isOverlayPresented: Bool
+    let hasNextVolume: Bool
+    let hasPreviousVolume: Bool
     let onToggleOverlay: () -> Void
     let onPageChange: (Int) -> Void
     let onPageLoaded: (String, Int) -> Void
@@ -816,6 +842,8 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
         )
         vc.onToggleOverlay = onToggleOverlay
         vc.isOverlayPresented = isOverlayPresented
+        vc.hasNextVolume = hasNextVolume
+        vc.hasPreviousVolume = hasPreviousVolume
         vc.onPageChange = { page in
             self.currentPage = page
             self.onPageChange(page)
@@ -830,6 +858,10 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UnifiedComicPagerImpl, context: Context) {
         uiViewController.isOverlayPresented = isOverlayPresented
+        uiViewController.hasNextVolume = hasNextVolume
+        uiViewController.hasPreviousVolume = hasPreviousVolume
+        uiViewController.onReachEnd = onReachEnd
+        uiViewController.onSwipeToPrev = onSwipeToPrev
         if uiViewController.basePageIndex != currentPage {
             uiViewController.goToPage(currentPage)
         }
@@ -871,6 +903,8 @@ struct UnifiedComicPager: UIViewControllerRepresentable {
 // MARK: - UIPageViewController 统一实现
 class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
     var isOverlayPresented = false
+    var hasNextVolume = false
+    var hasPreviousVolume = false
     let comicId: String
     let totalPages: Int
     var isDoublePageMode: Bool
@@ -885,6 +919,8 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     var onSwipeToPrev: (() -> Void)?
     
     var basePageIndex: Int = 0
+    private var tapGesture: UITapGestureRecognizer?
+    private var isVolumeTransitionPending = false
     private var preloadingTasks: [Int: Task<Void, Never>] = [:]
     private var upscalingTasks: [Int: Task<Void, Never>] = [:]
     private var preloadingTaskIDs: [Int: UUID] = [:]
@@ -930,13 +966,29 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         self.dataSource = self
         self.delegate = self
         self.view.backgroundColor = .black
-        
-        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        tapGesture.delegate = self
-        self.view.addGestureRecognizer(tapGesture)
+
+        // 禁用 UIPageViewController 内置单击手势，确保左右边缘点击始终走自定义翻页与自动切卷逻辑。
+        disableBuiltInPageTapGestures()
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.delegate = self
+        self.tapGesture = tap
+        self.view.addGestureRecognizer(tap)
         
         // Initial Load
         reloadPages()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        disableBuiltInPageTapGestures()
+    }
+
+    private func disableBuiltInPageTapGestures() {
+        for recognizer in view.gestureRecognizers ?? []
+        where recognizer is UITapGestureRecognizer && recognizer !== tapGesture {
+            recognizer.isEnabled = false
+        }
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -946,6 +998,17 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
             touchedView = view.superview
         }
         return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        guard gestureRecognizer === tapGesture,
+              let otherTap = otherGestureRecognizer as? UITapGestureRecognizer else {
+            return false
+        }
+        return otherTap.numberOfTapsRequired > 1
     }
 
     override func didReceiveMemoryWarning() {
@@ -994,6 +1057,7 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     }
     
     func reloadPages() {
+        isVolumeTransitionPending = false
         // Enforce even index for double page mode
         if isDoublePageMode && basePageIndex % 2 != 0 {
             basePageIndex -= 1
@@ -1022,6 +1086,22 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
     }
     
     // MARK: - Touch Handling
+    private func triggerReachEndIfNeeded() {
+        guard hasNextVolume, !isVolumeTransitionPending else { return }
+        isVolumeTransitionPending = true
+        DispatchQueue.main.async { [weak self] in
+            self?.onReachEnd?()
+        }
+    }
+
+    private func triggerSwipeToPrevIfNeeded() {
+        guard hasPreviousVolume, !isVolumeTransitionPending else { return }
+        isVolumeTransitionPending = true
+        DispatchQueue.main.async { [weak self] in
+            self?.onSwipeToPrev?()
+        }
+    }
+
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         if isOverlayPresented {
             onToggleOverlay?()
@@ -1036,19 +1116,19 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
                 // Next Page
                 if isDoublePageMode {
                     if basePageIndex + 2 < totalPages { goToPage(basePageIndex + 2) }
-                    else { onReachEnd?() }
+                    else { triggerReachEndIfNeeded() }
                 } else {
                     if basePageIndex + 1 < totalPages { goToPage(basePageIndex + 1) }
-                    else { onReachEnd?() }
+                    else { triggerReachEndIfNeeded() }
                 }
             } else {
                 // Prev Page
                 if isDoublePageMode {
                     if basePageIndex - 2 >= 0 { goToPage(basePageIndex - 2) }
-                    else { onSwipeToPrev?() }
+                    else { triggerSwipeToPrevIfNeeded() }
                 } else {
                     if basePageIndex - 1 >= 0 { goToPage(basePageIndex - 1) }
-                    else { onSwipeToPrev?() }
+                    else { triggerSwipeToPrevIfNeeded() }
                 }
             }
         } else if location.x > width * 0.7 {
@@ -1057,19 +1137,19 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
                 // Prev Page
                 if isDoublePageMode {
                     if basePageIndex - 2 >= 0 { goToPage(basePageIndex - 2) }
-                    else { onSwipeToPrev?() }
+                    else { triggerSwipeToPrevIfNeeded() }
                 } else {
                     if basePageIndex - 1 >= 0 { goToPage(basePageIndex - 1) }
-                    else { onSwipeToPrev?() }
+                    else { triggerSwipeToPrevIfNeeded() }
                 }
             } else {
                 // Next Page
                 if isDoublePageMode {
                     if basePageIndex + 2 < totalPages { goToPage(basePageIndex + 2) }
-                    else { onReachEnd?() }
+                    else { triggerReachEndIfNeeded() }
                 } else {
                     if basePageIndex + 1 < totalPages { goToPage(basePageIndex + 1) }
-                    else { onReachEnd?() }
+                    else { triggerReachEndIfNeeded() }
                 }
             }
         } else {
@@ -1141,11 +1221,24 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
             // But only if the base page index of that spread would be valid.
             // Actually, an easier way is to allow targetIndex == totalPages if the OTHER page in the spread is totalPages - 1.
             let targetBase = targetIndex - (targetIndex % 2)
-            if targetBase >= totalPages { return nil }
-            if targetIndex < 0 { return nil }
+            if targetBase >= totalPages {
+                triggerReachEndIfNeeded()
+                return nil
+            }
+            if targetIndex < 0 {
+                triggerSwipeToPrevIfNeeded()
+                return nil
+            }
             return makeSinglePage(for: targetIndex)
         } else {
-            if targetIndex < 0 || targetIndex >= totalPages { return nil }
+            if targetIndex >= totalPages {
+                triggerReachEndIfNeeded()
+                return nil
+            }
+            if targetIndex < 0 {
+                triggerSwipeToPrevIfNeeded()
+                return nil
+            }
             return makeSinglePage(for: targetIndex)
         }
     }
@@ -1164,11 +1257,24 @@ class UnifiedComicPagerImpl: UIPageViewController, UIPageViewControllerDataSourc
         
         if isDoublePageMode {
             let targetBase = targetIndex - (targetIndex % 2)
-            if targetBase >= totalPages { return nil }
-            if targetIndex < 0 { return nil }
+            if targetBase >= totalPages {
+                triggerReachEndIfNeeded()
+                return nil
+            }
+            if targetIndex < 0 {
+                triggerSwipeToPrevIfNeeded()
+                return nil
+            }
             return makeSinglePage(for: targetIndex)
         } else {
-            if targetIndex < 0 || targetIndex >= totalPages { return nil }
+            if targetIndex >= totalPages {
+                triggerReachEndIfNeeded()
+                return nil
+            }
+            if targetIndex < 0 {
+                triggerSwipeToPrevIfNeeded()
+                return nil
+            }
             return makeSinglePage(for: targetIndex)
         }
     }

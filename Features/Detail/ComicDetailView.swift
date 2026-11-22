@@ -19,7 +19,7 @@ extension ComicDetailPreview {
     init(comic: GroupComicItem) {
         self.init(
             id: comic.id, title: comic.title, pageCount: comic.pageCount,
-            isNovel: comic.type?.lowercased() == "novel", fileSize: comic.fileSize,
+            isNovel: comic.isNovel, fileSize: comic.fileSize,
             formatBadge: comic.formatBadge
         )
     }

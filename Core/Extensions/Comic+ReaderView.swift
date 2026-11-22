@@ -7,9 +7,7 @@ extension Comic {
     @MainActor
     @ViewBuilder
     func readerView(groupContext: ReadingGroupContext? = nil) -> some View {
-        if isPdf {
-            PDFReaderView(comicId: id, initialPage: lastReadPage)
-        } else if isNovel {
+        if isNovel {
             NovelReaderView(comicId: id, initialChapter: lastReadPage, groupContext: groupContext)
         } else {
             ComicReaderView(comicId: id, initialPage: lastReadPage, groupContext: groupContext)
@@ -22,9 +20,7 @@ extension ComicEditionInfo {
     @MainActor
     @ViewBuilder
     func readerView(isNovelLibrary: Bool, groupContext: ReadingGroupContext? = nil) -> some View {
-        if isPdf {
-            PDFReaderView(comicId: comicId, initialPage: lastReadPage)
-        } else if isNovelLibrary {
+        if isNovelLibrary && !isPdf {
             NovelReaderView(comicId: comicId, initialChapter: lastReadPage, groupContext: groupContext)
         } else {
             ComicReaderView(comicId: comicId, initialPage: lastReadPage, groupContext: groupContext)
@@ -34,7 +30,7 @@ extension ComicEditionInfo {
 
 extension GroupComicItem {
     var isPdf: Bool {
-        filename?.lowercased().hasSuffix(".pdf") == true
+        formatBadge.uppercased() == "PDF" || filename?.lowercased().hasSuffix(".pdf") == true
     }
 
     var isNovel: Bool {
@@ -45,9 +41,7 @@ extension GroupComicItem {
     @MainActor
     @ViewBuilder
     func readerView(groupContext: ReadingGroupContext? = nil) -> some View {
-        if isPdf {
-            PDFReaderView(comicId: id, initialPage: lastReadPage)
-        } else if isNovel {
+        if isNovel {
             NovelReaderView(comicId: id, initialChapter: lastReadPage, groupContext: groupContext)
         } else {
             ComicReaderView(comicId: id, initialPage: lastReadPage, groupContext: groupContext)
