@@ -66,7 +66,9 @@ struct LoginView: View {
                     .padding(14)
                     .background(.background)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1)
+                    }
 
                     HStack(spacing: 12) {
                         Image(systemName: "lock")
@@ -78,7 +80,9 @@ struct LoginView: View {
                     .padding(14)
                     .background(.background)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1)
+                    }
 
                     if isRegistering {
                         HStack(spacing: 12) {
@@ -91,7 +95,9 @@ struct LoginView: View {
                         .padding(14)
                         .background(.background)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1))
+                        .overlay {
+                        RoundedRectangle(cornerRadius: 12).strokeBorder(.gray.opacity(0.2), lineWidth: 1)
+                    }
                     }
                 }
                 .padding(.horizontal, 24)
@@ -138,7 +144,7 @@ struct LoginView: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 40)
             }
-            .background(Color(.systemGroupedBackground))
+            .background(Color(uiColor: .systemGroupedBackground))
             .toolbar(.hidden, for: .navigationBar)
             .alert("错误", isPresented: $showError) {
                 Button("确定", role: .cancel) {}

@@ -19,7 +19,9 @@ final class PendingReadingActivityManager: @unchecked Sendable {
 
     private let key = "pending_reading_activities"
     private let queue = DispatchQueue(label: "PendingReadingActivityManager")
+    private let persistQueue = DispatchQueue(label: "PendingReadingActivityManager.persist", qos: .utility)
     private var cache: [String: PendingActivity] = [:]
+    private var persistGeneration: UInt64 = 0
 
     private init() {
         cache = loadFromDisk()
@@ -69,7 +71,10 @@ final class PendingReadingActivityManager: @unchecked Sendable {
             }
 
             cache[activity.clientSessionId] = next
-            persist()
+            persistGeneration &+= 1
+            let snapshot = cache
+            let generation = persistGeneration
+            schedulePersist(snapshot: snapshot, generation: generation)
             didSave = true
         }
 
@@ -89,7 +94,10 @@ final class PendingReadingActivityManager: @unchecked Sendable {
             guard let current = cache[clientSessionId],
                   current.sequence <= sequence else { return }
             cache.removeValue(forKey: clientSessionId)
-            persist()
+            persistGeneration &+= 1
+            let snapshot = cache
+            let generation = persistGeneration
+            schedulePersist(snapshot: snapshot, generation: generation)
         }
     }
 
@@ -105,9 +113,15 @@ final class PendingReadingActivityManager: @unchecked Sendable {
         return records.filter { _, activity in activity.finalize || activity.activeSeconds > 0 }
     }
 
-    private func persist() {
-        if let data = try? JSONEncoder().encode(cache) {
-            UserDefaults.standard.set(data, forKey: key)
+    private func schedulePersist(snapshot: [String: PendingActivity], generation: UInt64) {
+        let storageKey = key
+        persistQueue.async { [weak self] in
+            guard let self else { return }
+            let isLatest = self.queue.sync { self.persistGeneration == generation }
+            guard isLatest, let data = try? JSONEncoder().encode(snapshot) else { return }
+            let stillLatest = self.queue.sync { self.persistGeneration == generation }
+            guard stillLatest else { return }
+            UserDefaults.standard.set(data, forKey: storageKey)
         }
     }
 }

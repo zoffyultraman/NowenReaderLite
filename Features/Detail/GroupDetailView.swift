@@ -1,6 +1,12 @@
 import SwiftUI
 import SwiftData
 
+private struct DownloadAllAlertSummary {
+    let unitCount: Int
+    let totalPages: Int
+    let alreadyCachedCount: Int
+}
+
 struct GroupDetailView: View {
     let groupId: Int
     let contentType: String?
@@ -8,6 +14,7 @@ struct GroupDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(APIClient.self) private var api
+    @State private var downloadAllAlertSummary: DownloadAllAlertSummary?
     @State private var showDownloadAllAlert = false
     @State private var showDownloadResult = false
     @State private var downloadQueued = 0
@@ -44,7 +51,7 @@ struct GroupDetailView: View {
                                         thumbnail: true
                                     )
                                 } else {
-                                    Color(.systemGray6)
+                                    Color(uiColor: .systemGray6)
                                 }
                             }
                             .aspectRatio(contentMode: .fill)
@@ -99,7 +106,7 @@ struct GroupDetailView: View {
                                 Task { await viewModel.toggleFavorite(context: modelContext) }
                             },
                             onTapCache: {
-                                showDownloadAllAlert = true
+                                presentDownloadAllAlert()
                             }
                         ) {
                             if let unit = viewModel.continueUnit {
@@ -112,7 +119,7 @@ struct GroupDetailView: View {
                         WorkDescriptionSection(text: detail.description)
                     }
 
-                    VStack(alignment: .leading, spacing: 20) {
+                    LazyVStack(alignment: .leading, spacing: 20) {
                         Text("作品 (\(readingUnits.count))")
                             .font(.headline)
                             .padding(.horizontal, 20)
@@ -165,7 +172,7 @@ struct GroupDetailView: View {
                 // 下载全部按钮
                 if let detail = viewModel.detail, !detail.readingUnits.isEmpty {
                     Button {
-                        showDownloadAllAlert = true
+                        presentDownloadAllAlert()
                     } label: {
                         Image(systemName: "arrow.down.circle")
                     }
@@ -177,11 +184,9 @@ struct GroupDetailView: View {
         }
         .task {
             DownloadManager.shared.setModelContext(modelContext)
-            await viewModel.load(groupId: groupId, contentType: contentType, context: modelContext)
-        }
-        .onAppear {
-            guard viewModel.detail != nil else { return }
-            Task {
+            if viewModel.detail == nil {
+                await viewModel.load(groupId: groupId, contentType: contentType, context: modelContext)
+            } else {
                 await viewModel.refreshSilently(
                     groupId: groupId,
                     contentType: contentType,
@@ -189,7 +194,11 @@ struct GroupDetailView: View {
                 )
             }
         }
-        .alert("离线缓存全部卷", isPresented: $showDownloadAllAlert) {
+        .alert(
+            "离线缓存全部卷",
+            isPresented: $showDownloadAllAlert,
+            presenting: downloadAllAlertSummary
+        ) { _ in
             Button("取消", role: .cancel) {}
             Button("开始缓存") {
                 guard let detail = viewModel.detail else { return }
@@ -198,12 +207,12 @@ struct GroupDetailView: View {
                 downloadSkipped = result.skipped
                 showDownloadResult = true
             }
-        } message: {
-            if let detail = viewModel.detail {
-                let units = detail.readingUnits
-                let totalPages = units.reduce(0) { $0 + $1.pageCount }
-                let alreadyDownloaded = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
-                Text("共 \(units.count) 个阅读单元、\(totalPages) 页。已缓存 \(alreadyDownloaded) 个，其余将加入离线队列。")
+        } message: { summary in
+            Text("共 \(summary.unitCount) 个阅读单元、\(summary.totalPages) 页。已缓存 \(summary.alreadyCachedCount) 个，其余将加入离线队列。")
+        }
+        .onChange(of: showDownloadAllAlert) { _, isPresented in
+            if !isPresented {
+                downloadAllAlertSummary = nil
             }
         }
         .alert("离线缓存结果", isPresented: $showDownloadResult) {
@@ -211,6 +220,19 @@ struct GroupDetailView: View {
         } message: {
             Text("已加入 \(downloadQueued) 卷到缓存队列，跳过 \(downloadSkipped) 卷（已缓存或空间不足）。")
         }
+    }
+
+    private func presentDownloadAllAlert() {
+        guard let detail = viewModel.detail else { return }
+        let units = detail.readingUnits
+        let totalPages = units.reduce(0) { $0 + $1.pageCount }
+        let alreadyDownloaded = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
+        downloadAllAlertSummary = DownloadAllAlertSummary(
+            unitCount: units.count,
+            totalPages: totalPages,
+            alreadyCachedCount: alreadyDownloaded
+        )
+        showDownloadAllAlert = true
     }
 
 }
@@ -238,7 +260,7 @@ struct GroupSeriesSectionView: View {
                             } else if let coverComicId = series.coverComicId, !coverComicId.isEmpty {
                                 AuthenticatedImage(serverURL: serverURL, comicId: coverComicId, thumbnail: true)
                             } else {
-                                Color(.systemGray6)
+                                Color(uiColor: .systemGray6)
                                     .overlay {
                                         Image(systemName: "books.vertical")
                                             .font(.caption)
@@ -356,10 +378,10 @@ struct VolumeCardView: View {
                     .frame(width: 112, height: 150)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .bookCoverSource(id: "comic-\(comic.id)")
-                    .overlay(
+                    .overlay {
                         RoundedRectangle(cornerRadius: 10)
                             .stroke(.gray.opacity(0.15), lineWidth: 0.5)
-                    )
+                    }
 
                 if comic.progress > 0 {
                     VStack {
@@ -512,10 +534,8 @@ final class GroupDetailViewModel {
                 isFavorite = hasAnyFavoritedUnitInCache(unitIds: loadedDetail.readingUnits.map(\.id), context: context)
             }
         } catch {
-            if OfflineFileManager.shared.loadGroupDetail(groupId: groupId) != nil {
-                await loadOfflineGroup(groupId: groupId, contentType: contentType, context: context)
-            } else {
-                updateDetail(nil)
+            await loadOfflineGroup(groupId: groupId, contentType: contentType, context: context)
+            if detail == nil {
                 errorMessage = error.localizedDescription
             }
         }
@@ -701,12 +721,14 @@ final class GroupDetailViewModel {
 
     private func updateDetail(_ newDetail: GroupDetailResponse?) {
         detail = newDetail
-        readingUnitIds = newDetail?.readingUnits.map { $0.id } ?? []
-        readingUnitIndexById = [:]
-        for (index, comicId) in readingUnitIds.enumerated()
-        where readingUnitIndexById[comicId] == nil {
-            readingUnitIndexById[comicId] = index
+        let ids = newDetail?.readingUnits.map { $0.id } ?? []
+        var indexById: [String: Int] = [:]
+        indexById.reserveCapacity(ids.count)
+        for (index, comicId) in ids.enumerated() where indexById[comicId] == nil {
+            indexById[comicId] = index
         }
+        readingUnitIds = ids
+        readingUnitIndexById = indexById
     }
 }
 
@@ -778,7 +800,7 @@ private struct BatchOfflineCacheButton: View {
                     .font(.subheadline.weight(.medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(Color(.systemGray6))
+                    .background(Color(uiColor: .systemGray6))
                     .foregroundStyle(.primary)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             }
@@ -815,7 +837,7 @@ private struct WorkActionBarSection<ContinueDestination: View>: View {
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
-                .background(isFavorite ? Color.red.opacity(0.1) : Color(.systemGray6))
+                .background(isFavorite ? Color.red.opacity(0.1) : Color(uiColor: .systemGray6))
                 .foregroundStyle(isFavorite ? .red : .primary)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
@@ -846,6 +868,12 @@ private struct WorkActionBarSection<ContinueDestination: View>: View {
 
 // MARK: - 目录作品详情
 
+private struct SeriesItemRoute: Hashable {
+    let itemId: String
+    let comicId: String
+    let coverSourceId: String
+}
+
 struct SeriesDetailView: View {
     let seriesId: String
     @State private var viewModel = SeriesDetailViewModel()
@@ -856,6 +884,7 @@ struct SeriesDetailView: View {
     @State private var isGrid = true
     @State private var deletingSeries: SeriesSummary?
     @State private var shouldDismissAfterDelete = false
+    @State private var downloadAllAlertSummary: DownloadAllAlertSummary?
     @State private var showDownloadAllAlert = false
     @State private var showDownloadResult = false
     @State private var downloadQueued = 0
@@ -889,7 +918,7 @@ struct SeriesDetailView: View {
                                 Task { await viewModel.toggleFavorite() }
                             },
                             onTapCache: {
-                                showDownloadAllAlert = true
+                                presentDownloadAllAlert()
                             },
                             onSelectTag: { tagName in
                                 api.activateTagFilter(tagName)
@@ -939,14 +968,13 @@ struct SeriesDetailView: View {
                             LazyVGrid(columns: cols, spacing: 16) {
                                 ForEach(viewModel.visibleItems) { item in
                                     let targetComicId = viewModel.activeComicId(for: item)
-                                    NavigationLink {
-                                        ComicDetailView(
+                                    NavigationLink(
+                                        value: SeriesItemRoute(
+                                            itemId: item.id,
                                             comicId: targetComicId,
-                                            groupContext: viewModel.readingContext(for: item),
-                                            initialPreview: ComicDetailPreview(comic: item.comic)
+                                            coverSourceId: "comic-\(item.comic.id)"
                                         )
-                                        .bookCoverDestination(id: "comic-\(item.comic.id)")
-                                    } label: {
+                                    ) {
                                         SeriesUnitCardView(item: item, serverURL: api.serverURL)
                                     }
                                     .buttonStyle(.plain)
@@ -960,14 +988,13 @@ struct SeriesDetailView: View {
                                     let targetComicId = viewModel.activeComicId(for: item)
                                     let editions = item.resolvedEditions
                                     VStack(alignment: .leading, spacing: 0) {
-                                        NavigationLink {
-                                            ComicDetailView(
+                                        NavigationLink(
+                                            value: SeriesItemRoute(
+                                                itemId: item.id,
                                                 comicId: targetComicId,
-                                                groupContext: viewModel.readingContext(for: item),
-                                                initialPreview: ComicDetailPreview(comic: item.comic)
+                                                coverSourceId: "comic-\(item.comic.id)"
                                             )
-                                            .bookCoverDestination(id: "comic-\(item.comic.id)")
-                                        } label: {
+                                        ) {
                                             SeriesUnitListRowView(item: item, serverURL: api.serverURL)
                                                 .padding(.horizontal, 20)
                                         }
@@ -1053,21 +1080,32 @@ struct SeriesDetailView: View {
                 }
             )
         }
+        .navigationDestination(for: SeriesItemRoute.self) { route in
+            let item = viewModel.item(for: route.itemId)
+            ComicDetailView(
+                comicId: route.comicId,
+                groupContext: item.flatMap { viewModel.readingContext(for: $0) },
+                initialPreview: item.map { ComicDetailPreview(comic: $0.comic) }
+            )
+            .bookCoverDestination(id: route.coverSourceId)
+        }
         .onChange(of: api.tagFilterNavigationRevision) { _, _ in
             dismiss()
         }
         .task {
             viewModel.setModelContext(modelContext)
             DownloadManager.shared.setModelContext(modelContext)
-            await viewModel.load(seriesId: seriesId)
-        }
-        .onAppear {
-            guard viewModel.detail != nil else { return }
-            Task {
+            if viewModel.detail == nil {
+                await viewModel.load(seriesId: seriesId)
+            } else {
                 await viewModel.refreshSilently(seriesId: seriesId)
             }
         }
-        .alert("离线缓存全部卷", isPresented: $showDownloadAllAlert) {
+        .alert(
+            "离线缓存全部卷",
+            isPresented: $showDownloadAllAlert,
+            presenting: downloadAllAlertSummary
+        ) { _ in
             Button("取消", role: .cancel) {}
             Button("开始缓存") {
                 let result = viewModel.downloadAllVolumes()
@@ -1075,17 +1113,31 @@ struct SeriesDetailView: View {
                 downloadSkipped = result.skipped
                 showDownloadResult = true
             }
-        } message: {
-            let units = viewModel.downloadableUnits
-            let totalPages = units.reduce(0) { $0 + $1.pageCount }
-            let alreadyCached = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
-            Text("共 \(units.count) 个阅读单元、\(totalPages) 页。已缓存 \(alreadyCached) 个，其余将加入离线队列。")
+        } message: { summary in
+            Text("共 \(summary.unitCount) 个阅读单元、\(summary.totalPages) 页。已缓存 \(summary.alreadyCachedCount) 个，其余将加入离线队列。")
+        }
+        .onChange(of: showDownloadAllAlert) { _, isPresented in
+            if !isPresented {
+                downloadAllAlertSummary = nil
+            }
         }
         .alert("离线缓存结果", isPresented: $showDownloadResult) {
             Button("确定") {}
         } message: {
             Text("已加入 \(downloadQueued) 卷到缓存队列，跳过 \(downloadSkipped) 卷（已缓存或空间不足）。")
         }
+    }
+
+    private func presentDownloadAllAlert() {
+        let units = viewModel.downloadableUnits
+        let totalPages = units.reduce(0) { $0 + $1.pageCount }
+        let alreadyCached = units.filter { DownloadManager.shared.isDownloaded(comicId: $0.id) }.count
+        downloadAllAlertSummary = DownloadAllAlertSummary(
+            unitCount: units.count,
+            totalPages: totalPages,
+            alreadyCachedCount: alreadyCached
+        )
+        showDownloadAllAlert = true
     }
 }
 
@@ -1127,7 +1179,7 @@ struct SeriesHeaderView: View {
                     } else if let coverComicId = series.coverComicId, !coverComicId.isEmpty {
                         AuthenticatedImage(serverURL: serverURL, comicId: coverComicId, thumbnail: true)
                     } else {
-                        Color(.systemGray6)
+                        Color(uiColor: .systemGray6)
                             .overlay {
                                 Image(systemName: "books.vertical")
                                     .font(.title)
@@ -1285,7 +1337,7 @@ struct WorkMetadataSection: View {
                                     .font(.caption)
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 6)
-                                    .background(Color(.secondarySystemBackground), in: Capsule())
+                                    .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -1357,7 +1409,7 @@ struct SeriesFilterButton: View {
                 .foregroundStyle(isSelected ? .white : .primary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                .background(isSelected ? Color.accentColor : Color(uiColor: .systemGray6))
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -1382,7 +1434,7 @@ struct SeriesItemEditionBar: View {
                             .foregroundStyle(isSelected ? .white : .primary)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 4)
-                            .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                            .background(isSelected ? Color.accentColor : Color(uiColor: .systemGray6))
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -1405,10 +1457,10 @@ struct SeriesUnitCardView: View {
                     .frame(height: 180)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .bookCoverSource(id: "comic-\(item.comic.id)")
-                    .overlay(
+                    .overlay {
                         RoundedRectangle(cornerRadius: 10)
                             .stroke(.gray.opacity(0.15), lineWidth: 0.5)
-                    )
+                    }
 
                 if item.comic.progress > 0 {
                     VStack {
@@ -1530,6 +1582,7 @@ final class SeriesDetailViewModel {
     private(set) var visibleItems: [SeriesItem] = []
     private(set) var selectedSectionId: String?
     private var allItemIds: [String] = []
+    private var cachedVolumeIds: [String] = []
     private var allItemIndexById: [String: Int] = [:]
     private var sectionItemsById: [String: [SeriesItem]] = [:]
     private var modelContext: ModelContext?
@@ -1844,12 +1897,19 @@ final class SeriesDetailViewModel {
 
     func switchEdition(itemId: String, to targetComicId: String) {
         selectedEditionIdByItemId[itemId] = targetComicId
+        if let idx = allItems.firstIndex(where: { $0.id == itemId }),
+           cachedVolumeIds.indices.contains(idx) {
+            cachedVolumeIds[idx] = targetComicId
+        }
+    }
+
+    func item(for id: String) -> SeriesItem? {
+        allItems.first { $0.id == id }
     }
 
     func readingContext(for item: SeriesItem) -> ReadingGroupContext? {
         guard let index = allItemIndexById[item.comic.id] else { return nil }
-        let volumeIds = allItems.map { activeComicId(for: $0) }
-        return ReadingGroupContext(groupId: 0, volumeIds: volumeIds, currentIndex: index)
+        return ReadingGroupContext(groupId: 0, volumeIds: cachedVolumeIds, currentIndex: index)
     }
 
     func selectSection(_ sectionId: String?) {
@@ -1871,6 +1931,7 @@ final class SeriesDetailViewModel {
             sectionItemsById = [:]
             allItemIds = []
             allItemIndexById = [:]
+            cachedVolumeIds = []
             return
         }
 
@@ -1878,19 +1939,32 @@ final class SeriesDetailViewModel {
         let sortedSectionItems = newDetail.sections.map { section in
             (section.id, section.items.sorted { $0.sortIndex < $1.sortIndex })
         }
-        sectionItemsById = Dictionary(
+        var nextSectionItems = Dictionary(
             uniqueKeysWithValues: sortedSectionItems
         )
-        sectionItemsById[Self.unsectionedSectionId] = unsectioned
-        allItems = (unsectioned + sortedSectionItems.flatMap(\.1))
+        nextSectionItems[Self.unsectionedSectionId] = unsectioned
+        let nextAllItems = (unsectioned + sortedSectionItems.flatMap(\.1))
             .sorted { $0.sortIndex < $1.sortIndex }
-        selectedSectionId = nil
-        visibleItems = allItems
-        allItemIds = allItems.map { $0.comic.id }
-        allItemIndexById = [:]
-        for (index, comicId) in allItemIds.enumerated()
-        where allItemIndexById[comicId] == nil {
-            allItemIndexById[comicId] = index
+
+        let nextIds = nextAllItems.map { $0.comic.id }
+        var nextIndexById: [String: Int] = [:]
+        nextIndexById.reserveCapacity(nextIds.count)
+        for (index, comicId) in nextIds.enumerated() where nextIndexById[comicId] == nil {
+            nextIndexById[comicId] = index
+        }
+
+        sectionItemsById = nextSectionItems
+        allItems = nextAllItems
+        allItemIds = nextIds
+        allItemIndexById = nextIndexById
+        cachedVolumeIds = nextAllItems.map { activeComicId(for: $0) }
+
+        if let currentSection = selectedSectionId,
+           let sectionItems = nextSectionItems[currentSection] {
+            visibleItems = sectionItems
+        } else {
+            selectedSectionId = nil
+            visibleItems = nextAllItems
         }
     }
 

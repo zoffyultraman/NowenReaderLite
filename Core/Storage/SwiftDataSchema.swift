@@ -62,13 +62,31 @@ extension ModelContext {
     }
 }
 
+private final class SharedISO8601Formatter: @unchecked Sendable {
+    static let shared = SharedISO8601Formatter()
+    private let lock = NSLock()
+    private let formatter = ISO8601DateFormatter()
+
+    func string(from date: Date) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter.string(from: date)
+    }
+
+    func date(from string: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter.date(from: string)
+    }
+}
+
 extension Date {
     var iso8601String: String {
-        ISO8601DateFormatter().string(from: self)
+        SharedISO8601Formatter.shared.string(from: self)
     }
 
     static func fromISO8601(_ string: String) -> Date? {
-        ISO8601DateFormatter().date(from: string)
+        SharedISO8601Formatter.shared.date(from: string)
     }
 }
 
@@ -150,7 +168,6 @@ final class CachedComic {
 
 @Model
 final class ServerRecord: Identifiable {
-    var id: String { url }
     @Attribute(.unique) var url: String
     var username: String?
     var lastUsed: Date

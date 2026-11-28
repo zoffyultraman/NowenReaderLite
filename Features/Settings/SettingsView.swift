@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var novelCacheSize: Int = 0
     @AppStorage("upscaleMode") private var upscaleMode: UpscaleMode = .off
     @AppStorage("keepOriginalSize") private var keepOriginalSize: Bool = false
+    @AppStorage("upscaleSkipMinDimension") private var upscaleSkipThreshold: UpscaleSkipThreshold = .p1600
     @AppStorage("offlineStorageLimitMB") private var storageLimitMB: Int = 0  // 0 = 无限制
 
     private var userDisplayName: String {
@@ -42,7 +43,8 @@ struct SettingsView: View {
             )
             ImageEnhancementSettingsSection(
                 upscaleMode: $upscaleMode,
-                keepOriginalSize: $keepOriginalSize
+                keepOriginalSize: $keepOriginalSize,
+                upscaleSkipThreshold: $upscaleSkipThreshold
             )
             CacheSettingsSection(
                 coverCacheSize: coverCacheSize,
@@ -67,7 +69,7 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
             Button("退出", role: .destructive) {
                 Task {
-                    clearCache()
+                    await clearCache()
                     await APIClient.shared.logout()
                 }
             }
@@ -77,7 +79,9 @@ struct SettingsView: View {
         .alert("清空缓存", isPresented: $showClearCacheAlert) {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) {
-                clearCache()
+                Task {
+                    await clearCache()
+                }
             }
         } message: {
             Text("将释放 \(formatFileSize(Int64(coverCacheSize + metaCacheSize + novelCacheSize))) 空间，不影响服务器数据。")
@@ -109,25 +113,25 @@ struct SettingsView: View {
         }
         let novelBytes = ChapterCache.totalNovelCacheBytes
         async let coverBytes = ImageCache.shared.diskSize()
-        async let storageRefresh: Void = downloadManager.refreshStorageUsage()
+        let needsStorageRefresh = !downloadManager.isStorageUsageLoaded
+        if needsStorageRefresh {
+            await downloadManager.refreshStorageUsage()
+        }
 
         metaCacheSize = metaBytes
         coverCacheSize = Int(await coverBytes)
         novelCacheSize = novelBytes
-        await storageRefresh
     }
 
-    private func clearCache() {
+    private func clearCache() async {
         try? modelContext.delete(model: CachedComic.self)
         modelContext.saveOrLog()
         metaCacheSize = 0
         coverCacheSize = 0
-        Task {
-            await ImageCache.shared.clear()
-        }
         novelCacheSize = 0
         ChapterCache.totalNovelCacheBytes = 0
         NotificationCenter.default.post(name: .novelChapterCacheClear, object: nil)
+        await ImageCache.shared.clear()
     }
 }
 
@@ -400,6 +404,7 @@ private struct ServerSettingsSection: View {
 private struct ImageEnhancementSettingsSection: View {
     @Binding var upscaleMode: UpscaleMode
     @Binding var keepOriginalSize: Bool
+    @Binding var upscaleSkipThreshold: UpscaleSkipThreshold
 
     var body: some View {
         Section("AI 图像增强") {
@@ -423,8 +428,27 @@ private struct ImageEnhancementSettingsSection: View {
             }
             .tint(.accentColor)
 
+            HStack {
+                Label("高清原图跳过", systemImage: "forward.end")
+                Spacer()
+                Menu {
+                    ForEach(UpscaleSkipThreshold.allCases) { threshold in
+                        Button(threshold.menuTitle) {
+                            upscaleSkipThreshold = threshold
+                        }
+                    }
+                } label: {
+                    SettingsMenuLabel(title: upscaleSkipThreshold.shortTitle)
+                        .animation(nil, value: upscaleSkipThreshold)
+                }
+            }
+
+            let sizeNote = keepOriginalSize ? "增强细节但不放大图片，节省内存" : "超分放大图片，可能增加内存占用"
+            let skipNote = upscaleSkipThreshold == .off
+                ? ""
+                : "；原图短边 ≥ \(upscaleSkipThreshold.rawValue) px 时自动跳过"
             Label {
-                Text(keepOriginalSize ? "增强细节但不放大图片，节省内存" : "超分放大图片，可能增加内存占用")
+                Text(sizeNote + skipNote)
                     .font(.caption2)
             } icon: {
                 Image(systemName: "info.circle")
@@ -523,7 +547,7 @@ private struct OfflineDownloadsSettingsSection: View {
 
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(Color(.systemGray5))
+                            Capsule().fill(Color(uiColor: .systemGray5))
                             Capsule()
                                 .fill(storageRatio > 0.9 ? Color.red : Color.accentColor)
                                 .frame(width: geometry.size.width * CGFloat(min(storageRatio, 1)))
@@ -575,7 +599,7 @@ private struct SettingsMenuLabel: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color(.systemGray6))
+        .background(Color(uiColor: .systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

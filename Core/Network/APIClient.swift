@@ -26,9 +26,11 @@ final class APIClient: ReaderWarmupClient {
     @ObservationIgnored private var apiKey: String?
     @ObservationIgnored private var cookiePreferredRoutes: Set<String>
     @ObservationIgnored private var routeIdentityCache: ServerRouteIdentityCache
-    @ObservationIgnored private var routeSelectionTask: Task<ServerRouteSelection, Never>?
+    @ObservationIgnored private var routeSelectionHandle: RouteSelectionHandle?
     @ObservationIgnored private var routeSelectionID = UUID()
     @ObservationIgnored private var lastRouteSwitch: ContinuousClock.Instant?
+    @ObservationIgnored private var siteIconLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingActivitySyncTask: Task<Void, Never>?
     var isLoggedIn: Bool = false
     var currentUser: AuthUser?
     /// 断网离线模式：有历史登录记录但服务器不可达
@@ -46,11 +48,17 @@ final class APIClient: ReaderWarmupClient {
         }
     }
     /// 离线可用的本地站点图标数据（按 primaryServerURL 隔离存储）
-    private(set) var siteIconData: Data? {
-        didSet { siteIconImage = siteIconData.flatMap(UIImage.init(data:)) }
-    }
+    private(set) var siteIconData: Data?
     /// 缓存解码后的站点图标实例（避免视图 body 重复解码 Data）
     private(set) var siteIconImage: UIImage?
+
+    private func applySiteIcon(data: Data?, image: UIImage?, bumpRevision: Bool = false) {
+        siteIconData = data
+        siteIconImage = image
+        if bumpRevision {
+            siteBrandingRevision += 1
+        }
+    }
     /// 站点品牌刷新版本号（用于在名称/图标刷新时触发视图更新）
     private(set) var siteBrandingRevision: Int = 0
     /// 站点图标 URL（固定端点 /api/site-settings/icon）
@@ -137,10 +145,10 @@ final class APIClient: ReaderWarmupClient {
         }
     }
 
-    private var session: URLSession
+    @ObservationIgnored private var session: URLSession
     private let cookieStorage = HTTPCookieStorage.shared
     private let pathMonitor = NWPathMonitor()
-    private var recoveryMonitorStarted = false
+    @ObservationIgnored private var recoveryMonitorStarted = false
 
     private init() {
         let defaults = UserDefaults.standard
@@ -193,9 +201,9 @@ final class APIClient: ReaderWarmupClient {
         config.timeoutIntervalForResource = 120
         self.session = URLSession(configuration: config)
         self.selectedLibraryId = UserDefaults.standard.string(forKey: "selectedLibraryId")
-        let initialIconData = Self.readCachedSiteIcon(for: primary)
-        self.siteIconData = initialIconData
-        self.siteIconImage = initialIconData.flatMap(UIImage.init(data:))
+        self.siteIconData = nil
+        self.siteIconImage = nil
+        loadCachedSiteIconAsync(for: primary)
 
         guard !serverURL.isEmpty else { return }
 
@@ -204,36 +212,7 @@ final class APIClient: ReaderWarmupClient {
             isLoggedIn = true
         }
 
-        // 先用 NWPathMonitor 快速判断网络状态（无网络时立即进入离线模式）
-        let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] path in
-            monitor.cancel()  // 只需要首次回调
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if path.status == .satisfied {
-                    // 有网络，测试服务器是否可达
-                    let reachable = await self.testServerReachable()
-                    self.isNetworkReachable = reachable
-                    if reachable {
-                        await self.checkAuth()
-                        // 启动时从离线切换到在线，通知 UI 刷新内容
-                        self.networkRecovered = true
-                    } else if self.hasLocalAuthentication {
-                        self.networkRecovered = false
-                        self.isOfflineMode = true
-                    }
-                } else {
-                    // 无网络，立即进入离线模式
-                    self.markRoutesUnavailable()
-                    self.isNetworkReachable = false
-                    self.networkRecovered = false
-                    if self.hasLocalAuthentication {
-                        self.isOfflineMode = true
-                    }
-                }
-            }
-        }
-        monitor.start(queue: DispatchQueue(label: "StartupNetworkCheck"))
+        startNetworkRecovery()
     }
 
     // MARK: - Server
@@ -294,7 +273,12 @@ final class APIClient: ReaderWarmupClient {
         UserDefaults.standard.set(primary, forKey: UserDefaultsKey.serverURL)
         UserDefaults.standard.set(normalizedBackup, forKey: UserDefaultsKey.backupServerURL)
         UserDefaults.standard.set(effectiveMode.rawValue, forKey: UserDefaultsKey.serverRouteMode)
-        siteIconData = Self.readCachedSiteIcon(for: primary)
+        if !isSameProfile {
+            applySiteIcon(data: nil, image: nil)
+            loadCachedSiteIconAsync(for: primary)
+        } else if siteIconData == nil {
+            loadCachedSiteIconAsync(for: primary)
+        }
         siteBrandingRevision += 1
         activateRoute(targetURL, copyAuthentication: isSameProfile)
         lastRouteSwitch = nil
@@ -431,6 +415,29 @@ final class APIClient: ReaderWarmupClient {
         await refreshSiteIconCache(for: targetPrimary)
     }
 
+    private func loadCachedSiteIconAsync(for primaryURL: String) {
+        siteIconLoadTask?.cancel()
+        guard !primaryURL.isEmpty else {
+            siteIconLoadTask = nil
+            applySiteIcon(data: nil, image: nil)
+            return
+        }
+        siteIconLoadTask = Task { @MainActor [weak self] in
+            let loaded = await Task.detached(priority: .utility) {
+                Self.readCachedSiteIcon(for: primaryURL)
+            }.value
+            guard let self, !Task.isCancelled, self.primaryServerURL == primaryURL else { return }
+            self.siteIconLoadTask = nil
+            if let loaded {
+                if self.siteIconData != loaded.data || self.siteIconImage == nil {
+                    self.applySiteIcon(data: loaded.data, image: loaded.image, bumpRevision: true)
+                }
+            } else if self.siteIconData != nil || self.siteIconImage != nil {
+                self.applySiteIcon(data: nil, image: nil, bumpRevision: true)
+            }
+        }
+    }
+
     private func refreshSiteIconCache(for targetPrimary: String) async {
         guard !serverURL.isEmpty, isNetworkReachable, !targetPrimary.isEmpty else { return }
         do {
@@ -450,30 +457,40 @@ final class APIClient: ReaderWarmupClient {
             }
 
             if http.statusCode == 404 {
-                Self.removeCachedSiteIcon(for: targetPrimary)
-                siteIconData = nil
-                siteBrandingRevision += 1
+                Task.detached(priority: .utility) {
+                    Self.removeCachedSiteIcon(for: targetPrimary)
+                }
+                if siteIconData != nil || siteIconImage != nil {
+                    applySiteIcon(data: nil, image: nil, bumpRevision: true)
+                }
                 return
             }
 
             guard (200..<300).contains(http.statusCode),
                   !data.isEmpty,
-                  data.count <= 2 * 1024 * 1024,
-                  UIImage(data: data) != nil else {
+                  data.count <= 2 * 1024 * 1024 else {
                 return
             }
 
-            Self.writeCachedSiteIcon(data, for: targetPrimary)
-            if siteIconData != data {
-                siteIconData = data
-                siteBrandingRevision += 1
+            if siteIconData == data, siteIconImage != nil {
+                return
+            }
+
+            let decoded = await Task.detached(priority: .utility) {
+                UIImage(data: data)
+            }.value
+            guard let decoded, targetPrimary == primaryServerURL else { return }
+
+            applySiteIcon(data: data, image: decoded, bumpRevision: true)
+            Task.detached(priority: .utility) {
+                Self.writeCachedSiteIcon(data, for: targetPrimary)
             }
         } catch {
             // 静默保留本地离线图标缓存
         }
     }
 
-    private static func siteBrandingDirectory(for primaryURL: String) -> URL? {
+    private nonisolated static func siteBrandingDirectory(for primaryURL: String) -> URL? {
         let trimmed = primaryURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -487,21 +504,21 @@ final class APIClient: ReaderWarmupClient {
             .appendingPathComponent(digest, isDirectory: true)
     }
 
-    private static func siteIconFileURL(for primaryURL: String) -> URL? {
+    private nonisolated static func siteIconFileURL(for primaryURL: String) -> URL? {
         siteBrandingDirectory(for: primaryURL)?.appendingPathComponent("icon.bin", isDirectory: false)
     }
 
-    private static func readCachedSiteIcon(for primaryURL: String) -> Data? {
+    private nonisolated static func readCachedSiteIcon(for primaryURL: String) -> (data: Data, image: UIImage)? {
         guard let url = siteIconFileURL(for: primaryURL),
               let data = try? Data(contentsOf: url),
               !data.isEmpty,
-              UIImage(data: data) != nil else {
+              let image = UIImage(data: data) else {
             return nil
         }
-        return data
+        return (data, image)
     }
 
-    private static func writeCachedSiteIcon(_ data: Data, for primaryURL: String) {
+    private nonisolated static func writeCachedSiteIcon(_ data: Data, for primaryURL: String) {
         guard let dir = siteBrandingDirectory(for: primaryURL),
               let fileURL = siteIconFileURL(for: primaryURL) else {
             return
@@ -514,19 +531,22 @@ final class APIClient: ReaderWarmupClient {
         }
     }
 
-    private static func removeCachedSiteIcon(for primaryURL: String) {
+    private nonisolated static func removeCachedSiteIcon(for primaryURL: String) {
         guard let fileURL = siteIconFileURL(for: primaryURL) else { return }
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    private static func migrateCachedSiteIcon(from oldPrimary: String, to newPrimary: String) {
-        guard let data = readCachedSiteIcon(for: oldPrimary) else { return }
+    private nonisolated static func migrateCachedSiteIcon(from oldPrimary: String, to newPrimary: String) {
+        guard let oldURL = siteIconFileURL(for: oldPrimary),
+              let data = try? Data(contentsOf: oldURL),
+              !data.isEmpty else { return }
         writeCachedSiteIcon(data, for: newPrimary)
     }
 
     func testConnection(_ url: String) async -> Bool {
         guard let trimmed = Self.normalizedServerURL(url) else { return false }
-        return await ServerRouteProbe.measure(trimmed).milliseconds != nil
+        let probeSession = self.session
+        return await ServerRouteProbe.measure(trimmed, session: probeSession).milliseconds != nil
     }
 
     /// 使用同一份现有凭据比较两条线路返回的用户与书库身份。
@@ -642,7 +662,7 @@ final class APIClient: ReaderWarmupClient {
             let trimmed = apiKeyOverride.trimmingCharacters(in: .whitespacesAndNewlines)
             candidateKey = trimmed.isEmpty ? nil : trimmed
         } else {
-            candidateKey = KeychainHelper.readAPIKey(for: primaryURL)
+            candidateKey = primaryURL == primaryServerURL ? self.apiKey : KeychainHelper.readAPIKey(for: primaryURL)
         }
         if let candidateKey {
             credentials.append(.bearer(candidateKey))
@@ -854,32 +874,64 @@ final class APIClient: ReaderWarmupClient {
         }
     }
 
+    private final class RouteSelectionHandle: @unchecked Sendable {
+        let id: UUID
+        let task: Task<ServerRouteSelection, Never>
+        private let lock = NSLock()
+        private var activeWaiterIDs: Set<UUID> = []
+
+        init(id: UUID, task: Task<ServerRouteSelection, Never>) {
+            self.id = id
+            self.task = task
+        }
+
+        func registerWaiter(_ waiterID: UUID) {
+            lock.withLock { _ = activeWaiterIDs.insert(waiterID) }
+        }
+
+        func unregisterWaiter(_ waiterID: UUID, cancelIfEmpty: Bool) {
+            let shouldCancel: Bool = lock.withLock {
+                guard activeWaiterIDs.remove(waiterID) != nil else { return false }
+                return cancelIfEmpty && activeWaiterIDs.isEmpty
+            }
+            if shouldCancel {
+                task.cancel()
+            }
+        }
+
+        func cancel() {
+            task.cancel()
+        }
+    }
+
     /// 自动模式并发测速，身份一致时选择明显更快的线路；手动模式只更新测速结果。
     @discardableResult
     func selectReachableRoute() async -> Bool {
+        guard !Task.isCancelled else { return false }
         let primaryURL = primaryServerURL
         let backupURL = backupServerURL
         let mode = routeMode
         let selectionID: UUID
-        let task: Task<ServerRouteSelection, Never>
-        if let pendingTask = routeSelectionTask {
+        let handle: RouteSelectionHandle
+        if let pendingHandle = routeSelectionHandle {
             selectionID = routeSelectionID
-            task = pendingTask
+            handle = pendingHandle
         } else {
             selectionID = UUID()
             routeSelectionID = selectionID
             let currentURL = serverURL
             let verification = routeVerification
+            let probeSession = self.session
             let allowsLatencySwitch = lastRouteSwitch.map {
                 $0.duration(to: .now) >= ServerRouteSelector.reevaluationInterval
             } ?? true
-            task = Task { @MainActor [self] in
+            let task = Task { @MainActor [self] in
                 switch mode {
                 case .automatic:
                     return await ServerRouteSelector.selectAutomaticRoute(
                         primaryURL: primaryURL, backupURL: backupURL, currentURL: currentURL,
                         verification: verification, allowsLatencySwitch: allowsLatencySwitch,
-                        measureLatency: { await ServerRouteProbe.measure($0) },
+                        measureLatency: { await ServerRouteProbe.measure($0, session: probeSession) },
                         verifyPair: {
                             guard self.routeSelectionID == selectionID, !Task.isCancelled else {
                                 return .unverified
@@ -890,7 +942,7 @@ final class APIClient: ReaderWarmupClient {
                 case .primary, .backup:
                     let latencies = await ServerRouteSelector.measureRoutes(
                         primaryURL: primaryURL, backupURL: backupURL,
-                        measureLatency: { await ServerRouteProbe.measure($0) }
+                        measureLatency: { await ServerRouteProbe.measure($0, session: probeSession) }
                     )
                     let target = mode == .primary ? primaryURL : backupURL
                     return ServerRouteSelection(
@@ -899,17 +951,34 @@ final class APIClient: ReaderWarmupClient {
                     )
                 }
             }
-            routeSelectionTask = task
+            handle = RouteSelectionHandle(id: selectionID, task: task)
+            routeSelectionHandle = handle
             isMeasuringRouteLatencies = true
         }
 
-        let result = await task.value
+        let waiterID = UUID()
+        handle.registerWaiter(waiterID)
+        let result = await withTaskCancellationHandler {
+            defer { handle.unregisterWaiter(waiterID, cancelIfEmpty: false) }
+            return await handle.task.value
+        } onCancel: {
+            handle.unregisterWaiter(waiterID, cancelIfEmpty: true)
+        }
+
+        if Task.isCancelled || handle.task.isCancelled {
+            if routeSelectionID == selectionID && handle.task.isCancelled {
+                routeSelectionHandle = nil
+                isMeasuringRouteLatencies = false
+            }
+            return false
+        }
+
         // 同一配置的并发请求共享测速；旧配置、断网前或故障切换前的结果不可覆盖新状态。
         guard routeSelectionID == selectionID,
               primaryServerURL == primaryURL, backupServerURL == backupURL, routeMode == mode else {
             return isNetworkReachable
         }
-        routeSelectionTask = nil
+        routeSelectionHandle = nil
         isMeasuringRouteLatencies = false
         routeLatencies = result.latencies
         routeLatenciesMeasuredAt = Date()
@@ -930,8 +999,8 @@ final class APIClient: ReaderWarmupClient {
     }
 
     private func cancelRouteSelection() {
-        routeSelectionTask?.cancel()
-        routeSelectionTask = nil
+        routeSelectionHandle?.cancel()
+        routeSelectionHandle = nil
         routeSelectionID = UUID()
         isMeasuringRouteLatencies = false
     }
@@ -946,11 +1015,11 @@ final class APIClient: ReaderWarmupClient {
     }
 
     private func activateRoute(_ newURL: String, copyAuthentication: Bool) {
+        let key = UserDefaultsKey.activeServerRoute(for: primaryServerURL)
         guard serverURL != newURL else {
-            UserDefaults.standard.set(
-                newURL,
-                forKey: UserDefaultsKey.activeServerRoute(for: primaryServerURL)
-            )
+            if UserDefaults.standard.string(forKey: key) != newURL {
+                UserDefaults.standard.set(newURL, forKey: key)
+            }
             return
         }
         let previousURL = serverURL
@@ -959,10 +1028,7 @@ final class APIClient: ReaderWarmupClient {
         }
         serverURL = newURL
         lastRouteSwitch = .now
-        UserDefaults.standard.set(
-            newURL,
-            forKey: UserDefaultsKey.activeServerRoute(for: primaryServerURL)
-        )
+        UserDefaults.standard.set(newURL, forKey: key)
         NotificationCenter.default.post(name: .serverRouteDidChange, object: nil)
     }
 
@@ -995,7 +1061,8 @@ final class APIClient: ReaderWarmupClient {
         }
         let alternate = failedURL == primaryServerURL ? backupServerURL : primaryServerURL
         let primaryURL = primaryServerURL
-        let latency = await ServerRouteProbe.measure(alternate)
+        let probeSession = self.session
+        let latency = await ServerRouteProbe.measure(alternate, session: probeSession)
         guard latency.milliseconds != nil,
               primaryServerURL == primaryURL, self.backupServerURL == backupServerURL,
               routeMode == .automatic, routeVerification != .mismatch else { return nil }
@@ -1174,7 +1241,7 @@ final class APIClient: ReaderWarmupClient {
         recoveryMonitorStarted = true
         pathMonitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, !self.serverURL.isEmpty else { return }
                 if path.status == .satisfied {
                     let reachable = await self.testServerReachable()
                     self.isNetworkReachable = reachable
@@ -1806,31 +1873,42 @@ final class APIClient: ReaderWarmupClient {
     }
 
     func syncPendingReadingActivities() async {
+        if let existing = pendingActivitySyncTask {
+            await existing.value
+            return
+        }
         guard !isOfflineMode, isNetworkReachable, PendingReadingActivityManager.shared.hasPending else { return }
-        let pending = PendingReadingActivityManager.shared.loadAll()
-        AppLogger.log("同步离线阅读活动: \(pending.count) 个会话")
-        for activity in pending {
-            do {
-                try await recordReadingActivity(
-                    comicId: activity.comicId,
-                    clientSessionId: activity.clientSessionId,
-                    page: activity.page,
-                    totalPages: activity.totalPages,
-                    positionRatio: activity.positionRatio,
-                    activeSeconds: activity.activeSeconds,
-                    sequence: activity.sequence,
-                    finalize: activity.finalize,
-                    trackProgress: activity.trackProgress
-                )
-                PendingReadingActivityManager.shared.removeIfSynced(
-                    clientSessionId: activity.clientSessionId,
-                    sequence: activity.sequence
-                )
-                AppLogger.log("离线阅读活动已同步: \(activity.comicId) seq=\(activity.sequence)")
-            } catch {
-                AppLogger.log("离线阅读活动同步失败: \(activity.comicId) \(error.localizedDescription)")
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let pending = PendingReadingActivityManager.shared.loadAll()
+            AppLogger.log("同步离线阅读活动: \(pending.count) 个会话")
+            for activity in pending {
+                guard !Task.isCancelled else { break }
+                do {
+                    try await self.recordReadingActivity(
+                        comicId: activity.comicId,
+                        clientSessionId: activity.clientSessionId,
+                        page: activity.page,
+                        totalPages: activity.totalPages,
+                        positionRatio: activity.positionRatio,
+                        activeSeconds: activity.activeSeconds,
+                        sequence: activity.sequence,
+                        finalize: activity.finalize,
+                        trackProgress: activity.trackProgress
+                    )
+                    PendingReadingActivityManager.shared.removeIfSynced(
+                        clientSessionId: activity.clientSessionId,
+                        sequence: activity.sequence
+                    )
+                    AppLogger.log("离线阅读活动已同步: \(activity.comicId) seq=\(activity.sequence)")
+                } catch {
+                    AppLogger.log("离线阅读活动同步失败: \(activity.comicId) \(error.localizedDescription)")
+                }
             }
         }
+        pendingActivitySyncTask = task
+        defer { pendingActivitySyncTask = nil }
+        await task.value
     }
 
     // MARK: - Bookmarks & Highlights (Phase 2)

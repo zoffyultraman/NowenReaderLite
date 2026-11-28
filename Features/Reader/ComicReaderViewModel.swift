@@ -47,9 +47,17 @@ final class ComicReaderViewModel {
     @ObservationIgnored private var prefSaveTask: Task<Void, Never>?
     @ObservationIgnored private var cloudLoadTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
+    @ObservationIgnored private var progressSaveTask: Task<Void, Never>?
 
     init() {
         self.currentComicId = ""
+    }
+
+    deinit {
+        prefSaveTask?.cancel()
+        cloudLoadTask?.cancel()
+        bannerTask?.cancel()
+        progressSaveTask?.cancel()
     }
 
     var isCurrentPageBookmarked: Bool {
@@ -98,7 +106,11 @@ final class ComicReaderViewModel {
             guard !Task.isCancelled else { return }
             AppLogger.log("fetchPages 失败: \(error.localizedDescription)")
             // 离线 fallback：从本地元数据读取页数
-            if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
+            let meta = await Task.detached(priority: .utility) {
+                OfflineFileManager.shared.loadMeta(comicId: comicId)
+            }.value
+            guard !Task.isCancelled else { return }
+            if let meta, meta.pageCount > 0 {
                 totalPages = meta.pageCount
                 currentPage = min(max(initialPage, 0), totalPages - 1)
                 AppLogger.log("离线 fallback 成功: \(comicId), \(meta.pageCount) 页")
@@ -141,7 +153,6 @@ final class ComicReaderViewModel {
             currentPage = totalPages - 1
         }
 
-        await saveProgressAndWait()
         await endSessionAndWait()
         isLoading = true
         bannerTask?.cancel()
@@ -186,7 +197,10 @@ final class ComicReaderViewModel {
         } catch {
             AppLogger.error("加载卷失败: \(error)")
             // 离线 fallback：从本地元数据读取页数
-            if let meta = OfflineFileManager.shared.loadMeta(comicId: comicId), meta.pageCount > 0 {
+            let meta = await Task.detached(priority: .utility) {
+                OfflineFileManager.shared.loadMeta(comicId: comicId)
+            }.value
+            if let meta, meta.pageCount > 0 {
                 totalPages = meta.pageCount
                 currentPage = min(max(initialPage, 0), max(totalPages - 1, 0))
                 AppLogger.log("离线模式：使用本地元数据，共 \(meta.pageCount) 页")
@@ -239,13 +253,23 @@ final class ComicReaderViewModel {
             totalPages: resolvedTotalPages,
             positionRatio: ratio
         )
-        updateCachedProgress(comicId: comicId, page: page)
+        scheduleUpdateCachedProgress(comicId: comicId, page: page)
+    }
+
+    private func scheduleUpdateCachedProgress(comicId: String, page: Int) {
+        progressSaveTask?.cancel()
+        progressSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard let self, !Task.isCancelled else { return }
+            self.updateCachedProgress(comicId: comicId, page: page)
+        }
     }
 
     private func updateCachedProgress(comicId: String, page: Int) {
         guard let context = modelContext else { return }
         let id = comicId
-        let descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        var descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
         let cached = context.fetchOrLog(descriptor, label: "更新阅读进度")
         if let first = cached.first {
             first.lastReadPage = page
@@ -270,6 +294,8 @@ final class ComicReaderViewModel {
 
     /// 等待完成版本，退出时调用
     func saveProgressAndWait() async {
+        progressSaveTask?.cancel()
+        progressSaveTask = nil
         activityTracker?.updatePage(
             page: currentPage,
             totalPages: totalPages,
@@ -280,6 +306,12 @@ final class ComicReaderViewModel {
     }
 
     func endSessionAndWait() async {
+        progressSaveTask?.cancel()
+        progressSaveTask = nil
+        cloudLoadTask?.cancel()
+        cloudLoadTask = nil
+        bannerTask?.cancel()
+        bannerTask = nil
         activityTracker?.updatePage(
             page: currentPage,
             totalPages: totalPages,
@@ -651,15 +683,17 @@ final class ReadingActivityTracker {
     private var totalPages = 0
     private var positionRatio: Double?
     private var activeSeconds = 0
+    private var accumulatedActiveDuration: Duration = .zero
+    private var activeSegmentStart: ContinuousClock.Instant?
     private var sequence = 0
     private var trackProgress = true
     private var isActive = true
     private var isStarted = false
     private var isFinalized = false
-    private var activeTimer: Task<Void, Never>?
     private var heartbeatTimer: Task<Void, Never>?
     private var pageFlushTask: Task<Void, Never>?
     private var isFlushing = false
+    private var flushWaiters: [CheckedContinuation<Void, Never>] = []
     private var pendingFlushRequested = false
     private var pendingFinalizeRequested = false
     private let warmupSession = ReaderWarmupSession(client: APIClient.shared)
@@ -667,6 +701,24 @@ final class ReadingActivityTracker {
     init(comicId: String) {
         self.comicId = comicId
         self.clientSessionId = "ios-\(UUID().uuidString)"
+    }
+
+    deinit {
+        heartbeatTimer?.cancel()
+        pageFlushTask?.cancel()
+    }
+
+    private func accumulateActiveTime() {
+        guard isStarted, !isFinalized else { return }
+        let now = ContinuousClock.now
+        if let start = activeSegmentStart {
+            accumulatedActiveDuration += start.duration(to: now)
+            activeSegmentStart = isActive ? now : nil
+        } else if isActive {
+            activeSegmentStart = now
+        }
+        let comps = accumulatedActiveDuration.components
+        activeSeconds = max(activeSeconds, Int(comps.seconds))
     }
 
     func start(
@@ -684,6 +736,7 @@ final class ReadingActivityTracker {
         self.positionRatio = positionRatio.map { min(max($0, 0.0), 1.0) }
         self.trackProgress = trackProgress
         self.isActive = isActive
+        self.activeSegmentStart = isActive ? .now : nil
         warmupSession.start(
             comicId: comicId,
             page: page,
@@ -692,17 +745,9 @@ final class ReadingActivityTracker {
             isActive: isActive
         )
 
-        activeTimer = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self, !self.isFinalized else { return }
-                if self.isActive { self.activeSeconds += 1 }
-            }
-        }
-
         heartbeatTimer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(for: .seconds(15))
                 guard let self, !self.isFinalized else { return }
                 try? await self.flush(finalize: false)
             }
@@ -718,6 +763,7 @@ final class ReadingActivityTracker {
         trackProgress: Bool = true
     ) {
         guard isStarted, !isFinalized else { return }
+        accumulateActiveTime()
         self.page = page
         if totalPages > 0 { self.totalPages = totalPages }
         if let positionRatio {
@@ -737,7 +783,9 @@ final class ReadingActivityTracker {
 
     func setActive(_ active: Bool) {
         guard isStarted, !isFinalized else { return }
+        accumulateActiveTime()
         isActive = active
+        activeSegmentStart = active ? .now : nil
         warmupSession.setActive(active)
         if !active {
             Task { try? await flush(finalize: false) }
@@ -751,14 +799,15 @@ final class ReadingActivityTracker {
 
     func flush(finalize: Bool) async throws {
         if finalize { warmupSession.stop() }
+        accumulateActiveTime()
         guard isStarted, !isFinalized, totalPages > 0 else { return }
         guard finalize || activeSeconds > 0 else { return }
 
         if isFlushing {
             pendingFlushRequested = true
             pendingFinalizeRequested = pendingFinalizeRequested || finalize
-            while isFlushing {
-                try? await Task.sleep(nanoseconds: 50_000_000)
+            await withCheckedContinuation { continuation in
+                flushWaiters.append(continuation)
             }
             if finalize, !isFinalized {
                 try await flush(finalize: true)
@@ -767,7 +816,12 @@ final class ReadingActivityTracker {
         }
 
         isFlushing = true
-        defer { isFlushing = false }
+        defer {
+            isFlushing = false
+            let waiters = flushWaiters
+            flushWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
 
         try await performFlush(finalize: finalize)
 
@@ -775,6 +829,7 @@ final class ReadingActivityTracker {
             let nextFinalize = pendingFinalizeRequested
             pendingFlushRequested = false
             pendingFinalizeRequested = false
+            accumulateActiveTime()
             if nextFinalize || activeSeconds > 0 {
                 try await performFlush(finalize: nextFinalize)
             }
@@ -840,10 +895,8 @@ final class ReadingActivityTracker {
     }
 
     private func cancelTimers() {
-        activeTimer?.cancel()
         heartbeatTimer?.cancel()
         pageFlushTask?.cancel()
-        activeTimer = nil
         heartbeatTimer = nil
         pageFlushTask = nil
     }

@@ -1,6 +1,6 @@
 import Foundation
 
-struct AuthUser: Codable, Identifiable, Sendable {
+struct AuthUser: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let username: String
     let nickname: String?

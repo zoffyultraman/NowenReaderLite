@@ -1,37 +1,29 @@
 import SwiftUI
 import SwiftData
 
-extension Notification.Name {
-    static let networkRecovered = Notification.Name("networkRecovered")
-}
-
 struct HomeView: View {
     @State private var continueReadingVM = ContinueReadingViewModel()
     @State private var searchVM = SearchViewModel()
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
     @Environment(\.bookCoverNamespace) private var coverNamespace
+    @Namespace private var inactiveCoverNamespace
     @FocusState private var isSearchFocused: Bool
     @State private var isSearchPresented = false
 
     /// 是否处于搜索状态
     private var isSearching: Bool {
         isSearchPresented
-            || !searchVM.query.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
         @Bindable var searchVM = searchVM
         ZStack {
-            HomeMainContent(
-                continueReadingVM: continueReadingVM,
-                searchVM: searchVM,
-                isSearchFocused: $isSearchFocused
-            )
+            HomeMainContent(continueReadingVM: continueReadingVM)
             .opacity(isSearching ? 0 : 1)
             .allowsHitTesting(!isSearching)
             .accessibilityHidden(isSearching)
-            .environment(\.bookCoverNamespace, isSearching ? nil : coverNamespace)
+            .environment(\.bookCoverNamespace, isSearching ? inactiveCoverNamespace : coverNamespace)
 
             if isSearching {
                 HomeSearchResults(
@@ -85,11 +77,6 @@ struct HomeView: View {
         )) {
             continueReadingVM.setModelContext(modelContext)
             await continueReadingVM.load()
-        }
-        .onChange(of: api.networkRecovered) { _, recovered in
-            if recovered {
-                NotificationCenter.default.post(name: .networkRecovered, object: nil)
-            }
         }
     }
 }
@@ -219,7 +206,7 @@ struct HomeSearchBar: View {
             }
         }
         .padding(12)
-        .background(Color(.secondarySystemBackground))
+        .background(Color(uiColor: .secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 16)
     }
@@ -295,7 +282,7 @@ private struct LibraryPickerLabel: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color(.tertiarySystemFill))
+                    .background(Color(uiColor: .tertiarySystemFill))
                     .clipShape(Capsule())
             }
             Spacer(minLength: 4)
@@ -307,7 +294,7 @@ private struct LibraryPickerLabel: View {
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 44)
-        .background(Color(.secondarySystemBackground))
+        .background(Color(uiColor: .secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -377,8 +364,6 @@ struct HomeSearchResults: View {
 
 struct HomeMainContent: View {
     let continueReadingVM: ContinueReadingViewModel
-    @Bindable var searchVM: SearchViewModel
-    @FocusState.Binding var isSearchFocused: Bool
     @Environment(APIClient.self) private var api
     @State private var viewMode: HomeViewMode = .grid
     @State private var librarySortOption: LibrarySortOption = .addedAt
@@ -493,7 +478,7 @@ private struct HomeLibraryControlBar: View {
                     .font(.subheadline.weight(.medium))
                     .padding(.horizontal, 10)
                     .frame(minHeight: 44)
-                    .background(Color(.secondarySystemBackground))
+                    .background(Color(uiColor: .secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .accessibilityLabel("排序：\(sortOption.label)")
@@ -506,7 +491,7 @@ private struct HomeLibraryControlBar: View {
                 Image(systemName: viewMode == .grid ? "list.bullet" : "square.grid.2x2")
                     .font(.body.weight(.medium))
                     .frame(width: 44, height: 44)
-                    .background(Color(.secondarySystemBackground))
+                    .background(Color(uiColor: .secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .accessibilityLabel(viewMode == .grid ? "切换到列表" : "切换到网格")
@@ -675,7 +660,7 @@ struct ContinueReadingCard: View {
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(Color(.systemGray5))
+                            .fill(Color(uiColor: .systemGray5))
                         Capsule()
                             .fill(.tint)
                             .frame(
@@ -702,11 +687,11 @@ struct ContinueReadingCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 178, maxHeight: 178)
-        .background(Color(.secondarySystemBackground))
+        .background(Color(uiColor: .secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
         }
     }
 }
@@ -724,8 +709,10 @@ private struct LibraryContentView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.modelContext) private var modelContext
     @Environment(APIClient.self) private var api
+    @State private var cachedEntries: [LibraryShelfEntry] = []
+    @State private var lastRefreshNonce: Int = 0
 
-    private var entries: [LibraryShelfEntry] {
+    private func computeEntries() -> [LibraryShelfEntry] {
         let trimmedDir = directoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let groups = trimmedDir.isEmpty
             ? collectionViewModel.groups.map(LibraryShelfEntry.group)
@@ -746,6 +733,13 @@ private struct LibraryContentView: View {
         }
     }
 
+    private func rebuildEntries() {
+        let next = computeEntries()
+        if next != cachedEntries {
+            cachedEntries = next
+        }
+    }
+
     private var isLoading: Bool {
         viewModel.isLoading || (directoryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && collectionViewModel.isLoading)
     }
@@ -755,7 +749,7 @@ private struct LibraryContentView: View {
     }
 
     var body: some View {
-        let shelfEntries = entries
+        let shelfEntries = cachedEntries
         let loading = isLoading
         let dirLibrary = api.activeDirectoryLibrary
 
@@ -790,7 +784,8 @@ private struct LibraryContentView: View {
                         serverURL: api.serverURL,
                         contentType: contentType,
                         isLoading: loading,
-                        loadMore: { await viewModel.loadMore() }
+                        hasMore: viewModel.hasMore,
+                        loadMore: { viewModel.requestLoadMore() }
                     )
                 } else {
                     LibraryShelfListView(
@@ -798,11 +793,21 @@ private struct LibraryContentView: View {
                         serverURL: api.serverURL,
                         contentType: contentType,
                         isLoading: loading,
-                        loadMore: { await viewModel.loadMore() }
+                        hasMore: viewModel.hasMore,
+                        loadMore: { viewModel.requestLoadMore() }
                     )
                 }
             }
         }
+        .onAppear {
+            rebuildEntries()
+        }
+        .onChange(of: viewModel.comics) { _, _ in rebuildEntries() }
+        .onChange(of: collectionViewModel.groups) { _, _ in rebuildEntries() }
+        .onChange(of: collectionViewModel.groupedComicIds) { _, _ in rebuildEntries() }
+        .onChange(of: collectionViewModel.groupedSeriesIds) { _, _ in rebuildEntries() }
+        .onChange(of: directoryPath) { _, _ in rebuildEntries() }
+        .onChange(of: sortOption) { _, _ in rebuildEntries() }
         .refreshable {
             async let comics: Void = viewModel.loadAll(refresh: true)
             async let directories: Void = viewModel.loadDirectories(library: dirLibrary, page: viewModel.directoryPage)
@@ -824,6 +829,8 @@ private struct LibraryContentView: View {
         )) {
             viewModel.setModelContext(modelContext)
             collectionViewModel.setModelContext(modelContext)
+            let forceGroupRefresh = refreshNonce != lastRefreshNonce
+            lastRefreshNonce = refreshNonce
             let effectiveDir = (dirLibrary?.supportsDirectoryCategories == true) ? directoryPath : ""
             async let comics: Void = viewModel.configure(
                 contentType: contentType,
@@ -838,7 +845,10 @@ private struct LibraryContentView: View {
                     contentType: contentType,
                     sortBy: sortOption == .title ? "title" : "defaultOrder",
                     sortOrder: "asc",
-                    tag: api.activeTagFilter
+                    tag: api.activeTagFilter,
+                    contentMutationRevision: api.contentMutationRevision,
+                    networkRecovered: api.networkRecovered,
+                    refresh: forceGroupRefresh
                 )
                 _ = await (comics, groups)
             } else {
@@ -877,7 +887,7 @@ private struct ActiveTagFilterBar: View {
     }
 }
 
-private enum LibraryShelfEntry: Identifiable {
+private enum LibraryShelfEntry: Identifiable, Equatable {
     case group(ComicGroup)
     case comic(Comic)
 
@@ -896,51 +906,68 @@ private enum LibraryShelfEntry: Identifiable {
     }
 }
 
+private struct LibraryShelfGridCell: View {
+    let entry: LibraryShelfEntry
+    let serverURL: String
+    let contentType: String?
+
+    var body: some View {
+        switch entry {
+        case .group(let group):
+            NavigationLink(value: groupRoute(group.id, contentType: contentType)) {
+                GroupCardView(group: group, serverURL: serverURL)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        case .comic(let comic):
+            NavigationLink(value: ComicDetailRoute(comic: comic)) {
+                if comic.isSeriesShelfItem {
+                    SeriesShelfCardView(comic: comic, serverURL: serverURL)
+                } else {
+                    ComicCardView(
+                        id: comic.id,
+                        title: comic.title,
+                        isFavorite: comic.isFavorite,
+                        isNovel: comic.isNovel,
+                        progress: comic.progress,
+                        serverURL: serverURL,
+                        readingStatus: comic.readingStatus,
+                        rating: comic.rating,
+                        formatBadge: comic.formatBadge
+                    )
+                }
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        }
+    }
+}
+
 private struct LibraryShelfGridView: View {
     let entries: [LibraryShelfEntry]
     let columns: [GridItem]
     let serverURL: String
     let contentType: String?
     let isLoading: Bool
-    let loadMore: () async -> Void
+    let hasMore: Bool
+    let loadMore: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(entries) { entry in
-                    switch entry {
-                    case .group(let group):
-                        NavigationLink(value: groupRoute(group.id, contentType: contentType)) {
-                            GroupCardView(group: group, serverURL: serverURL)
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                    case .comic(let comic):
-                        NavigationLink(value: ComicDetailRoute(comic: comic)) {
-                            if comic.isSeriesShelfItem {
-                                SeriesShelfCardView(comic: comic, serverURL: serverURL)
-                            } else {
-                                ComicCardView(
-                                    id: comic.id,
-                                    title: comic.title,
-                                    isFavorite: comic.isFavorite,
-                                    isNovel: comic.isNovel,
-                                    progress: comic.progress,
-                                    serverURL: serverURL,
-                                    readingStatus: comic.readingStatus,
-                                    rating: comic.rating,
-                                    formatBadge: comic.formatBadge
-                                )
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                    }
+                    LibraryShelfGridCell(
+                        entry: entry,
+                        serverURL: serverURL,
+                        contentType: contentType
+                    )
                 }
+            }
 
-                if !isLoading {
-                    Color.clear.task { await loadMore() }
-                }
+            if hasMore {
+                Color.clear
+                    .frame(height: 1)
+                    .onAppear { loadMore() }
             }
 
             if isLoading {
@@ -959,7 +986,8 @@ private struct LibraryShelfListView: View {
     let serverURL: String
     let contentType: String?
     let isLoading: Bool
-    let loadMore: () async -> Void
+    let hasMore: Bool
+    let loadMore: () -> Void
 
     var body: some View {
         LazyVStack(spacing: 0) {
@@ -1002,8 +1030,10 @@ private struct LibraryShelfListView: View {
                 }
             }
 
-            if !isLoading {
-                Color.clear.task { await loadMore() }
+            if hasMore {
+                Color.clear
+                    .frame(height: 1)
+                    .onAppear { loadMore() }
             }
 
             if isLoading {
@@ -1064,7 +1094,7 @@ struct GroupCardView: View {
                 if let url = coverImageURL {
                     AuthenticatedImage(url: url)
                 } else {
-                    Color(.systemGray5)
+                    Color(uiColor: .systemGray5)
                         .overlay {
                             Image(systemName: "rectangle.stack")
                                 .font(.title2)
@@ -1106,7 +1136,7 @@ struct GroupCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(group.name)
@@ -1131,7 +1161,7 @@ struct SeriesShelfCardView: View {
                 if let url = coverImageURL {
                     AuthenticatedImage(url: url)
                 } else {
-                    Color(.systemGray5)
+                    Color(uiColor: .systemGray5)
                         .overlay {
                             Image(systemName: "books.vertical")
                                 .font(.title2)
@@ -1202,7 +1232,7 @@ struct SeriesShelfCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(comic.title)
@@ -1230,7 +1260,7 @@ struct SeriesShelfListRowView: View {
                     AuthenticatedImage(url: url)
                 } else {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(.systemGray5))
+                        .fill(Color(uiColor: .systemGray5))
                         .overlay {
                             Image(systemName: "books.vertical")
                                 .font(.caption)
@@ -1312,7 +1342,7 @@ struct GroupListRowView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.systemGray5))
+                    .fill(Color(uiColor: .systemGray5))
                     .frame(width: 56, height: 75)
                     .overlay {
                         Image(systemName: "rectangle.stack")

@@ -1,6 +1,23 @@
 import Foundation
 import Observation
 
+private final class SearchTaskStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func replace(with newTask: Task<Void, Never>?) {
+        lock.lock()
+        let previous = task
+        task = newTask
+        lock.unlock()
+        previous?.cancel()
+    }
+
+    func cancel() {
+        replace(with: nil)
+    }
+}
+
 @MainActor
 @Observable
 final class SearchViewModel {
@@ -11,7 +28,7 @@ final class SearchViewModel {
 
     private let isSearchAvailable: @MainActor () -> Bool
     private let fetchComics: @MainActor (String) async throws -> [Comic]
-    private var searchTask: Task<Void, Never>?
+    private let taskStore = SearchTaskStore()
 
     init(
         isSearchAvailable: @escaping @MainActor () -> Bool,
@@ -21,9 +38,12 @@ final class SearchViewModel {
         self.fetchComics = fetchComics
     }
 
+    deinit {
+        taskStore.cancel()
+    }
+
     func search(immediately: Bool = false) {
-        searchTask?.cancel()
-        searchTask = nil
+        taskStore.cancel()
         errorMessage = nil
         results = []
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -42,31 +62,32 @@ final class SearchViewModel {
         // 包含输入防抖期间，避免短暂闪出“没有找到结果”。
         isLoading = true
 
-        searchTask = Task {
+        let task = Task { [weak self] in
             if !immediately {
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
             }
+            guard let self else { return }
             do {
-                let comics = try await fetchComics(q)
+                let comics = try await self.fetchComics(q)
                 if !Task.isCancelled {
-                    results = comics
+                    self.results = comics
                 }
             } catch {
                 if !Task.isCancelled {
                     AppLogger.error("搜索失败: \(error)")
-                    errorMessage = "无法连接服务器，请检查网络后重试。"
+                    self.errorMessage = "无法连接服务器，请检查网络后重试。"
                 }
             }
             if !Task.isCancelled {
-                isLoading = false
+                self.isLoading = false
             }
         }
+        taskStore.replace(with: task)
     }
 
     func clear() {
-        searchTask?.cancel()
-        searchTask = nil
+        taskStore.cancel()
         query = ""
         results = []
         isLoading = false

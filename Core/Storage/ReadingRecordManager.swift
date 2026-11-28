@@ -54,6 +54,7 @@ final class ReadingRecordManager {
     private var cache: [String: Record]?
     // 节流写入
     private var flushTask: Task<Void, Never>?
+    private var writeTask: Task<Void, Never>?
     private let flushDelay: UInt64 = 1_000_000_000 // 1 秒
 
     private init() {}
@@ -65,48 +66,54 @@ final class ReadingRecordManager {
         totalPages: Int? = nil,
         positionRatio: Double? = nil
     ) {
-        var records = loadAll()
-        records[comicId] = Record(
+        ensureCacheLoaded()
+        cache?[comicId] = Record(
             chapter: chapter,
             page: page,
             totalPages: totalPages,
             positionRatio: positionRatio,
             timestamp: Date()
         )
-        cache = records
         scheduleFlush()
     }
 
     func load(comicId: String) -> Record? {
-        loadAll()[comicId]
+        ensureCacheLoaded()
+        return cache?[comicId]
     }
 
     func remove(comicId: String) {
-        var records = loadAll()
-        records.removeValue(forKey: comicId)
-        cache = records
+        ensureCacheLoaded()
+        guard cache?.removeValue(forKey: comicId) != nil else { return }
         scheduleFlush()
     }
 
     /// 清除超过 30 天的过期记录
     func cleanup(olderThan days: Int = 30) {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
-        var records = loadAll()
-        records = records.filter { $0.value.timestamp >= cutoff }
-        cache = records
+        ensureCacheLoaded()
+        guard let current = cache else { return }
+        let filtered = current.filter { $0.value.timestamp >= cutoff }
+        guard filtered.count != current.count else { return }
+        cache = filtered
         flush()
     }
 
     // MARK: - Private
 
-    private func loadAll() -> [String: Record] {
-        if let cache { return cache }
+    private func ensureCacheLoaded() {
+        if cache != nil { return }
         guard let data = defaults.data(forKey: UserDefaultsKey.readingRecords),
               let records = try? JSONDecoder().decode([String: Record].self, from: data) else {
-            return [:]
+            cache = [:]
+            return
         }
-        cache = records
-        return records
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let filtered = records.filter { $0.value.timestamp >= cutoff }
+        cache = filtered
+        if filtered.count != records.count {
+            scheduleFlush()
+        }
     }
 
     /// 节流：1 秒内的多次 save 只触发一次磁盘写入
@@ -119,11 +126,17 @@ final class ReadingRecordManager {
         }
     }
 
-    /// 立即写入磁盘
+    /// 立即在后台序列化并写入磁盘
     private func flush() {
-        guard let cache else { return }
-        if let data = try? JSONEncoder().encode(cache) {
-            defaults.set(data, forKey: UserDefaultsKey.readingRecords)
+        guard let snapshot = cache else { return }
+        writeTask?.cancel()
+        writeTask = Task.detached(priority: .utility) {
+            guard !Task.isCancelled,
+                  let data = try? JSONEncoder().encode(snapshot),
+                  !Task.isCancelled else {
+                return
+            }
+            UserDefaults.standard.set(data, forKey: UserDefaultsKey.readingRecords)
         }
     }
 }

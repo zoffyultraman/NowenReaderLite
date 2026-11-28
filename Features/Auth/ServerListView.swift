@@ -8,12 +8,12 @@ struct ServerListView: View {
     private var accounts: [SavedAccount]
 
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
     @Environment(APIClient.self) private var api
 
     @State private var showAddServer = false
     @State private var isSwitching = false
     @State private var switchingServerId: String? = nil
+    @State private var switchTask: Task<Void, Never>? = nil
     @State private var showTimeoutAlert = false
     @State private var timeoutServerURL = ""
     @State private var editingServer: ServerRecord? = nil
@@ -41,93 +41,26 @@ struct ServerListView: View {
             } else {
                 Section {
                     ForEach(servers) { server in
-                        Button {
-                            if api.matchesServerProfile(server.url) {
-                                routeEditingServer = server
-                            } else {
-                                switchToServer(server)
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                let securityURL = api.matchesServerProfile(server.url)
-                                    ? api.serverURL
-                                    : server.url
-                                let isHTTPS = securityURL.lowercased().hasPrefix("https://")
-                                Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(isHTTPS ? .green : .red)
-                                Image(systemName: "server.rack")
-                                    .font(.title3)
-                                    .foregroundStyle(api.matchesServerProfile(server.url) ? Color.accentColor : .secondary)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(server.url)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-
-                                    if let account = server.boundAccount {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "person.fill")
-                                                .font(.caption2)
-                                            Text(account.alias)
-                                                .font(.caption)
-                                        }
-                                        .foregroundStyle(.secondary)
-                                    } else if let username = server.username, !username.isEmpty {
-                                        Text(username)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    if let backupURL = server.backupURL, !backupURL.isEmpty {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "point.3.connected.trianglepath.dotted")
-                                            Text(server.routeMode.title)
-                                            if api.matchesServerProfile(server.url) {
-                                                Text("· \(api.activeRouteTitle)")
-                                                if api.activeRouteIsLocal {
-                                                    Text("· 内网")
-                                                }
-                                            }
-                                        }
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                    }
-
-                                    if api.matchesServerProfile(server.url),
-                                       api.hasConfiguredAPIKey {
-                                        Label("API Key", systemImage: "key.horizontal")
-                                            .font(.caption2)
-                                            .foregroundStyle(.tertiary)
-                                    }
+                        let isCurrent = api.matchesServerProfile(server.url)
+                        ServerRowView(
+                            server: server,
+                            isCurrent: isCurrent,
+                            activeServerURL: api.serverURL,
+                            activeRouteTitle: api.activeRouteTitle,
+                            activeRouteIsLocal: api.activeRouteIsLocal,
+                            hasConfiguredAPIKey: api.hasConfiguredAPIKey,
+                            isSwitching: isSwitching,
+                            isSwitchingThisServer: isSwitching && switchingServerId == server.url,
+                            onTap: {
+                                if isCurrent {
+                                    routeEditingServer = server
+                                } else {
+                                    switchToServer(server)
                                 }
-
-                                Spacer()
-
-                                if isSwitching && switchingServerId == server.url {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else if api.matchesServerProfile(server.url) {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(Color.accentColor)
-                                }
-                            }
-                            .padding(.vertical, 2)
-                        }
-                        .disabled(isSwitching)
-                        .contextMenu {
-                            Button {
-                                routeEditingServer = server
-                            } label: {
-                                Label("连接设置", systemImage: "point.3.connected.trianglepath.dotted")
-                            }
-                            Button {
-                                editingServer = server
-                            } label: {
-                                Label("绑定账号", systemImage: "person.badge.key")
-                            }
-                        }
+                            },
+                            onRouteSettings: { routeEditingServer = server },
+                            onBindAccount: { editingServer = server }
+                        )
                     }
                     .onDelete(perform: deleteServers)
                 }
@@ -151,6 +84,10 @@ struct ServerListView: View {
             Button("确定", role: .cancel) {}
         } message: {
             Text("无法连接到 \(timeoutServerURL)，已自动切回之前的服务器")
+        }
+        .onDisappear {
+            switchTask?.cancel()
+            switchTask = nil
         }
         .sheet(item: $editingServer) { server in
             ServerBindAccountSheet(
@@ -218,7 +155,12 @@ struct ServerListView: View {
 
     private func switchToServer(_ record: ServerRecord) {
         guard !isSwitching else { return }
-        guard !APIClient.shared.matchesServerProfile(record.url) else { return }
+        let targetURL = record.url
+        let targetBackupURL = record.backupURL
+        let targetRouteMode = record.routeMode
+        let boundAccount = record.boundAccount
+        let boundAccountUsername = boundAccount?.username
+        guard !APIClient.shared.matchesServerProfile(targetURL) else { return }
 
         let previousRecord = servers.first {
             APIClient.shared.matchesServerProfile($0.url)
@@ -230,7 +172,7 @@ struct ServerListView: View {
         let previousIsLoggedIn = APIClient.shared.isLoggedIn
 
         isSwitching = true
-        switchingServerId = record.url
+        switchingServerId = targetURL
         record.lastUsed = Date()
 
         // 清除旧服务器的 cookie 和本地缓存
@@ -239,32 +181,33 @@ struct ServerListView: View {
         modelContext.saveOrLog()
 
         APIClient.shared.configureServerRoutes(
-            primaryURL: record.url,
-            backupURL: record.backupURL,
-            mode: record.routeMode
+            primaryURL: targetURL,
+            backupURL: targetBackupURL,
+            mode: targetRouteMode
         )
 
-        Task {
+        switchTask?.cancel()
+        switchTask = Task { @MainActor in
+            defer { switchTask = nil }
+
             // 带超时的切换逻辑
             let result = await withTimeout(switchTimeout) {
-                guard await APIClient.shared.selectReachableRoute() else {
+                guard !Task.isCancelled, await APIClient.shared.selectReachableRoute() else {
                     return false
                 }
                 if APIClient.shared.hasConfiguredAPIKey {
                     await APIClient.shared.checkAuth()
-                    await MainActor.run {
-                        record.username = APIClient.shared.currentUser?.username
-                    }
+                    guard !Task.isCancelled else { return false }
+                    record.username = APIClient.shared.currentUser?.username
                     self.modelContext.saveOrLog(label: "API Key 登录后保存")
                     return APIClient.shared.isLoggedIn
                 }
                 // 如果有绑定账号，尝试用它自动登录
-                if let account = record.boundAccount {
+                if let account = boundAccount {
                     do {
                         _ = try await APIClient.shared.quickLogin(account: account)
-                        await MainActor.run {
-                            record.username = account.username
-                        }
+                        guard !Task.isCancelled else { return false }
+                        record.username = boundAccountUsername
                         self.modelContext.saveOrLog(label: "自动登录成功后保存")
                         return true
                     } catch {
@@ -275,40 +218,52 @@ struct ServerListView: View {
 
                 // 无绑定账号：检查服务器是否可达 + 是否已有登录态
                 await APIClient.shared.checkAuth()
-                await MainActor.run {
-                    record.username = APIClient.shared.currentUser?.username
-                }
+                guard !Task.isCancelled else { return false }
+                record.username = APIClient.shared.currentUser?.username
                 self.modelContext.saveOrLog(label: "更新服务器用户名")
                 return APIClient.shared.isLoggedIn
             }
 
-            await MainActor.run {
-                switch result {
-                case .success:
-                    break
-                case .timeout:
-                    timeoutServerURL = record.url
-                    showTimeoutAlert = true
-                    rollbackTo(
+            if Task.isCancelled {
+                Task { @MainActor in
+                    await rollbackTo(
                         previousURL: previousURL,
                         previousBackupURL: previousBackupURL,
                         previousRouteMode: previousRouteMode,
                         previousUser: previousUser,
                         isLoggedIn: previousIsLoggedIn
                     )
-                case .failure:
-                    // 登录失败或服务器不可达，回退到之前的服务器
-                    rollbackTo(
-                        previousURL: previousURL,
-                        previousBackupURL: previousBackupURL,
-                        previousRouteMode: previousRouteMode,
-                        previousUser: previousUser,
-                        isLoggedIn: previousIsLoggedIn
-                    )
+                    isSwitching = false
+                    switchingServerId = nil
                 }
-                isSwitching = false
-                switchingServerId = nil
+                return
             }
+
+            switch result {
+            case .success:
+                break
+            case .timeout:
+                timeoutServerURL = targetURL
+                showTimeoutAlert = true
+                await rollbackTo(
+                    previousURL: previousURL,
+                    previousBackupURL: previousBackupURL,
+                    previousRouteMode: previousRouteMode,
+                    previousUser: previousUser,
+                    isLoggedIn: previousIsLoggedIn
+                )
+            case .failure:
+                // 登录失败或服务器不可达，回退到之前的服务器
+                await rollbackTo(
+                    previousURL: previousURL,
+                    previousBackupURL: previousBackupURL,
+                    previousRouteMode: previousRouteMode,
+                    previousUser: previousUser,
+                    isLoggedIn: previousIsLoggedIn
+                )
+            }
+            isSwitching = false
+            switchingServerId = nil
         }
     }
 
@@ -318,7 +273,7 @@ struct ServerListView: View {
         previousRouteMode: ServerRouteMode,
         previousUser: AuthUser?,
         isLoggedIn: Bool
-    ) {
+    ) async {
         APIClient.shared.clearCookiesForCurrentServer()
         APIClient.shared.configureServerRoutes(
             primaryURL: previousURL,
@@ -328,32 +283,30 @@ struct ServerListView: View {
         APIClient.shared.currentUser = previousUser
         APIClient.shared.isLoggedIn = isLoggedIn
 
-        Task {
-            if APIClient.shared.hasConfiguredAPIKey {
-                await APIClient.shared.checkAuth()
-                if APIClient.shared.isLoggedIn { return }
-            }
-            // cookie 已丢失，尝试用绑定账号重新登录
-            if let record = servers.first(where: { $0.url == previousURL }),
-               let account = record.boundAccount {
-                do {
-                    _ = try await APIClient.shared.quickLogin(account: account)
-                    return
-                } catch {
-                    AppLogger.error("回滚后自动登录失败: \(error)")
-                }
-            }
-            // 无绑定账号或登录失败，仅检查当前状态
+        if APIClient.shared.hasConfiguredAPIKey {
             await APIClient.shared.checkAuth()
+            if APIClient.shared.isLoggedIn { return }
         }
+        // cookie 已丢失，尝试用绑定账号重新登录
+        if let record = servers.first(where: { $0.url == previousURL }),
+           let account = record.boundAccount {
+            do {
+                _ = try await APIClient.shared.quickLogin(account: account)
+                return
+            } catch {
+                AppLogger.error("回滚后自动登录失败: \(error)")
+            }
+        }
+        // 无绑定账号或登录失败，仅检查当前状态
+        await APIClient.shared.checkAuth()
     }
 
     private enum TimeoutResult { case success, failure, timeout }
 
     /// 带超时的异步执行
-    private func withTimeout(_ seconds: TimeInterval, operation: @escaping () async -> Bool) async -> TimeoutResult {
+    private func withTimeout(_ seconds: TimeInterval, operation: @escaping @MainActor () async -> Bool) async -> TimeoutResult {
         await withTaskGroup(of: TimeoutResult.self) { group in
-            group.addTask {
+            group.addTask { @MainActor in
                 let ok = await operation()
                 return ok ? .success : .failure
             }
@@ -378,6 +331,99 @@ struct ServerListView: View {
             modelContext.delete(server)
         }
         modelContext.saveOrLog()
+    }
+}
+
+// MARK: - 服务器列表行
+
+private struct ServerRowView: View {
+    let server: ServerRecord
+    let isCurrent: Bool
+    let activeServerURL: String
+    let activeRouteTitle: String
+    let activeRouteIsLocal: Bool
+    let hasConfiguredAPIKey: Bool
+    let isSwitching: Bool
+    let isSwitchingThisServer: Bool
+    let onTap: () -> Void
+    let onRouteSettings: () -> Void
+    let onBindAccount: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                let securityURL = isCurrent ? activeServerURL : server.url
+                let isHTTPS = securityURL.lowercased().hasPrefix("https://")
+                Image(systemName: isHTTPS ? "lock.fill" : "lock.open.fill")
+                    .font(.caption)
+                    .foregroundStyle(isHTTPS ? .green : .red)
+                Image(systemName: "server.rack")
+                    .font(.title3)
+                    .foregroundStyle(isCurrent ? Color.accentColor : .secondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(server.url)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if let account = server.boundAccount {
+                        HStack(spacing: 4) {
+                            Image(systemName: "person.fill")
+                                .font(.caption2)
+                            Text(account.alias)
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                    } else if let username = server.username, !username.isEmpty {
+                        Text(username)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let backupURL = server.backupURL, !backupURL.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                            Text(server.routeMode.title)
+                            if isCurrent {
+                                Text("· \(activeRouteTitle)")
+                                if activeRouteIsLocal {
+                                    Text("· 内网")
+                                }
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    }
+
+                    if isCurrent, hasConfiguredAPIKey {
+                        Label("API Key", systemImage: "key.horizontal")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                Spacer()
+
+                if isSwitchingThisServer {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if isCurrent {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .disabled(isSwitching)
+        .contextMenu {
+            Button(action: onRouteSettings) {
+                Label("连接设置", systemImage: "point.3.connected.trianglepath.dotted")
+            }
+            Button(action: onBindAccount) {
+                Label("绑定账号", systemImage: "person.badge.key")
+            }
+        }
     }
 }
 
@@ -406,6 +452,7 @@ private struct ServerRouteSettingsSheet: View {
     @State private var removesStoredAPIKey = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var showErrorAlert = false
     @State private var errorAllowsSaving = false
     @State private var verificationToastMessage: String?
     @State private var verificationTask: Task<Void, Never>?
@@ -522,10 +569,7 @@ private struct ServerRouteSettingsSheet: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: verificationToastMessage)
-            .alert("无法保存连接设置", isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
-            )) {
+            .alert("无法保存连接设置", isPresented: $showErrorAlert) {
                 Button("取消", role: .cancel) {}
                 if errorAllowsSaving {
                     Button("仍然保存") {
@@ -538,6 +582,11 @@ private struct ServerRouteSettingsSheet: View {
                 }
             } message: {
                 Text(errorMessage ?? "请检查地址后重试。")
+            }
+            .onChange(of: showErrorAlert) { _, isPresented in
+                if !isPresented {
+                    errorMessage = nil
+                }
             }
             .onChange(of: apiKey) { _, newValue in
                 if !newValue.isEmpty {
@@ -563,7 +612,9 @@ private struct ServerRouteSettingsSheet: View {
                 guard !Task.isCancelled,
                       api.matchesServerProfile(initialPrimaryURL),
                       api.backupServerURL != nil,
-                      api.routeVerification != .checking else {
+                      api.routeVerification != .checking,
+                      api.routeVerification != .verified,
+                      api.routeVerification != .mismatch else {
                     return
                 }
                 _ = await api.refreshRouteVerification()
@@ -673,11 +724,16 @@ private struct ServerRouteSettingsSheet: View {
         return normalizedBackupURL != nil
     }
 
+    private func presentError(_ message: String, allowsSaving: Bool) {
+        errorAllowsSaving = allowsSaving
+        errorMessage = message
+        showErrorAlert = true
+    }
+
     private func save() {
         guard let normalizedPrimaryURL else { return }
         if reservedPrimaryURLs.contains(normalizedPrimaryURL) {
-            errorAllowsSaving = false
-            errorMessage = "该主线路地址已存在于服务器列表中。"
+            presentError("该主线路地址已存在于服务器列表中。", allowsSaving: false)
             return
         }
         let isEmpty = backupURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -696,8 +752,10 @@ private struct ServerRouteSettingsSheet: View {
                 verificationMessage = report.message
                 if verification == .mismatch {
                     isSaving = false
-                    errorAllowsSaving = false
-                    errorMessage = "主线路与备用线路属于不同的 Nowen Reader 服务，不能共享认证或自动切换。"
+                    presentError(
+                        "主线路与备用线路属于不同的 Nowen Reader 服务，不能共享认证或自动切换。",
+                        allowsSaving: false
+                    )
                     return
                 }
             }
@@ -708,28 +766,31 @@ private struct ServerRouteSettingsSheet: View {
                 }
             } catch {
                 isSaving = false
-                errorAllowsSaving = false
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription, allowsSaving: false)
                 return
             }
 
             switch verification {
             case .unavailable:
                 isSaving = false
-                errorAllowsSaving = true
-                errorMessage = verificationMessage
-                    ?? "线路的连接或响应异常，暂时无法确认它们是否属于同一服务器。"
+                presentError(
+                    verificationMessage ?? "线路的连接或响应异常，暂时无法确认它们是否属于同一服务器。",
+                    allowsSaving: true
+                )
                 return
             case .authenticationRequired:
                 isSaving = false
-                errorAllowsSaving = true
-                errorMessage = "当前没有可用于两条线路的登录凭据。保存后会在登录成功时自动验证。"
+                presentError(
+                    "当前没有可用于两条线路的登录凭据。保存后会在登录成功时自动验证。",
+                    allowsSaving: true
+                )
                 return
             case .authenticationFailed:
                 isSaving = false
-                errorAllowsSaving = true
-                errorMessage = verificationMessage
-                    ?? "当前 API Key 或登录状态无法同时通过两条线路认证。请检查线路地址和认证信息。"
+                presentError(
+                    verificationMessage ?? "当前 API Key 或登录状态无法同时通过两条线路认证。请检查线路地址和认证信息。",
+                    allowsSaving: true
+                )
                 return
             case .deferred:
                 // 在外网无法访问内网地址是正常情况，保存后等待线路恢复再验证。
@@ -800,8 +861,7 @@ private struct ServerRouteSettingsSheet: View {
                 && KeychainHelper.deleteAPIKey(for: initialPrimaryURL)
         }
         guard keychainSaved else {
-            errorAllowsSaving = false
-            errorMessage = "无法将 API Key 保存到本机 Keychain。"
+            presentError("无法将 API Key 保存到本机 Keychain。", allowsSaving: false)
             return
         }
         if primaryURL != initialPrimaryURL {

@@ -27,20 +27,27 @@ final class DownloadManager {
     private(set) var downloadedComicIds: Set<String> = []
 
     private let fileManager = OfflineFileManager.shared
-    private var downloadQueue: [String] = []   // 等待中的 comicId
-    private var storageReservations: [String: Int64] = [:]
-    private var localStorageBytesByComic: [String: Int64] = [:]
-    private var deletingComicIds = Set<String>()
-    private var pendingRouteRetryKeys = Set<String>()
-    private var novelResourceFinalizations = Set<String>()
-    private var downloadStateVersion = 0
-    private var storageRefreshVersion = 0
-    private var isRestoring = false
-    private var didRestore = false
+    @ObservationIgnored private var downloadQueue: [String] = []   // 等待中的 comicId
+    @ObservationIgnored private var storageReservations: [String: Int64] = [:]
+    @ObservationIgnored private var localStorageBytesByComic: [String: Int64] = [:]
+    @ObservationIgnored private var deletingComicIds = Set<String>()
+    @ObservationIgnored private var pendingRouteRetryKeys = Set<String>()
+    @ObservationIgnored private var novelResourceFinalizations = Set<String>()
+    @ObservationIgnored private var downloadStateVersion = 0
+    @ObservationIgnored private var storageRefreshVersion = 0
+    @ObservationIgnored private var isRestoring = false
+    @ObservationIgnored private var didRestore = false
+    @ObservationIgnored private var pendingPagesByComic: [String: [Int]] = [:]
+    @ObservationIgnored private var pendingPageCursorByComic: [String: Int] = [:]
+    @ObservationIgnored private var inFlightPagesByComic: [String: Int] = [:]
+    @ObservationIgnored private var statsThrottleTask: Task<Void, Never>?
+    @ObservationIgnored private var lastStatsRefreshAt: ContinuousClock.Instant?
+    @ObservationIgnored private var groupMapFetchTask: Task<[String: [Int]]?, Never>?
     private var activeCount: Int { tasks.values.filter { $0.state == .downloading }.count }
 
     /// 最大并发下载任务数（对于 background session，OS 会自行调度，但这控制着“同时处在 downloading 状态的整书任务数”）
     private let maxConcurrent = 3
+    private let maxPagesPerBook = 6
     private let pageTimeout: TimeInterval = 30
     private let novelChapterTimeout: TimeInterval = 120
 
@@ -104,7 +111,6 @@ final class DownloadManager {
     private init() {
         // 提前访问一下，确保配置在 App 启动时绑定 delegate
         _ = backgroundSession
-        Task { await refreshStorageUsage() }
     }
 
     func refreshStorageUsage() async {
@@ -118,6 +124,48 @@ final class DownloadManager {
         usedStorageBytes = snapshot.totalBytes
         localStorageBytesByComic = snapshot.bytesByComicId
         isStorageUsageLoaded = true
+    }
+
+    private func updateStorageUsage(for comicId: String, deleted: Bool) async {
+        if deleted {
+            if let removed = localStorageBytesByComic.removeValue(forKey: comicId) {
+                usedStorageBytes = max(0, usedStorageBytes - removed)
+            }
+            return
+        }
+        let manager = fileManager
+        let bytes = await Task.detached(priority: .utility) {
+            manager.comicDiskSize(comicId: comicId)
+        }.value
+        let previous = localStorageBytesByComic[comicId] ?? 0
+        localStorageBytesByComic[comicId] = bytes
+        usedStorageBytes = max(0, usedStorageBytes - previous + bytes)
+        isStorageUsageLoaded = true
+    }
+
+    private func scheduleStatsRefresh(immediate: Bool = false) {
+        if immediate {
+            statsThrottleTask?.cancel()
+            statsThrottleTask = nil
+            lastStatsRefreshAt = .now
+            refreshStats()
+            return
+        }
+        if let last = lastStatsRefreshAt, last.duration(to: .now) >= .milliseconds(150) {
+            statsThrottleTask?.cancel()
+            statsThrottleTask = nil
+            lastStatsRefreshAt = .now
+            refreshStats()
+            return
+        }
+        guard statsThrottleTask == nil else { return }
+        statsThrottleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let self, !Task.isCancelled else { return }
+            self.statsThrottleTask = nil
+            self.lastStatsRefreshAt = .now
+            self.refreshStats()
+        }
     }
 
     private func estimatedRemainingStorageBytes(
@@ -152,7 +200,7 @@ final class DownloadManager {
     }
 
     private func reconcileStorageReservation(for comicId: String) async {
-        await refreshStorageUsage()
+        await updateStorageUsage(for: comicId, deleted: false)
         storageReservations.removeValue(forKey: comicId)
     }
 
@@ -181,19 +229,41 @@ final class DownloadManager {
 
     @discardableResult
     func download(comicId: String, title: String, pageCount: Int, fileSize: Int64?, isNovel: Bool = false) -> Bool {
-        guard !deletingComicIds.contains(comicId) else { return false }
+        guard enqueueDownload(
+            comicId: comicId,
+            title: title,
+            pageCount: pageCount,
+            fileSize: fileSize,
+            isNovel: isNovel,
+            syncImmediately: true
+        ) != nil else {
+            return false
+        }
+        Task { await saveGroupInfoIfNeeded(comicId: comicId) }
+        return true
+    }
+
+    private func enqueueDownload(
+        comicId: String,
+        title: String,
+        pageCount: Int,
+        fileSize: Int64?,
+        isNovel: Bool,
+        syncImmediately: Bool
+    ) -> DownloadTask? {
+        guard !deletingComicIds.contains(comicId) else { return nil }
         let previousTask = tasks[comicId]
-        if let previousTask, previousTask.state != .failed { return false }
-        if downloadedComicIds.contains(comicId) { return false }
+        if let previousTask, previousTask.state != .failed { return nil }
+        if downloadedComicIds.contains(comicId) { return nil }
 
         if storageLimitBytes > 0, !isStorageUsageLoaded {
             Task { await refreshStorageUsage() }
-            return false
+            return nil
         }
 
         if wouldExceedLimit(comicId: comicId, pageCount: pageCount, fileSize: fileSize) {
             AppLogger.error("存储空间不足，跳过下载: \(title)")
-            return false
+            return nil
         }
 
         let completedPages = previousTask?.completedPages ?? 0
@@ -210,12 +280,26 @@ final class DownloadManager {
             fileSize: fileSize
         )
         downloadQueue.append(comicId)
-        syncToStore(task: task)
-        refreshTaskLists()
-        refreshStats()
-        processQueue()
-        Task { await saveGroupInfoIfNeeded(comicId: comicId) }
-        return true
+        if syncImmediately {
+            syncToStore(task: task)
+            refreshTaskLists()
+            scheduleStatsRefresh(immediate: true)
+            processQueue()
+        }
+        return task
+    }
+
+    private func fetchSharedComicGroupMapFull() async -> [String: [Int]]? {
+        if let existing = groupMapFetchTask {
+            return await existing.value
+        }
+        let task = Task<[String: [Int]]?, Never> {
+            try? await APIClient.shared.fetchComicGroupMapFull()
+        }
+        groupMapFetchTask = task
+        let result = await task.value
+        groupMapFetchTask = nil
+        return result
     }
 
     private func saveGroupInfoIfNeeded(comicId: String) async {
@@ -223,7 +307,7 @@ final class DownloadManager {
             OfflineFileManager.shared.loadGroups()
         }.value
         if localGroups.contains(where: { $0.comicIds.contains(comicId) }) { return }
-        guard let map = try? await APIClient.shared.fetchComicGroupMapFull(),
+        guard let map = await fetchSharedComicGroupMapFull(),
               let groupIds = map[comicId], !groupIds.isEmpty else { return }
         for groupId in groupIds {
             guard let detail = try? await APIClient.shared.fetchGroupDetail(id: groupId) else { continue }
@@ -258,19 +342,32 @@ final class DownloadManager {
                 OfflineFileManager.shared.saveGroup(meta)
             }
         }
-        var queued = 0
+        var queuedTasks: [DownloadTask] = []
         var skipped = 0
         for comic in comics {
-            let success = download(
+            if let task = enqueueDownload(
                 comicId: comic.id,
                 title: comic.title,
                 pageCount: comic.pageCount,
                 fileSize: comic.fileSize,
-                isNovel: comic.isNovel
-            )
-            if success { queued += 1 } else { skipped += 1 }
+                isNovel: comic.isNovel,
+                syncImmediately: false
+            ) {
+                queuedTasks.append(task)
+            } else {
+                skipped += 1
+            }
         }
-        return (queued, skipped)
+        if !queuedTasks.isEmpty {
+            syncTasksToStore(queuedTasks)
+            refreshTaskLists()
+            scheduleStatsRefresh(immediate: true)
+            processQueue()
+            if groupDetail == nil, let firstId = queuedTasks.first?.comicId {
+                Task { await saveGroupInfoIfNeeded(comicId: firstId) }
+            }
+        }
+        return (queuedTasks.count, skipped)
     }
 
     func pause(comicId: String) {
@@ -280,6 +377,9 @@ final class DownloadManager {
         }
         let hadActiveTransfers = task.state == .downloading
         task.state = .paused
+        pendingPagesByComic.removeValue(forKey: comicId)
+        pendingPageCursorByComic.removeValue(forKey: comicId)
+        inFlightPagesByComic.removeValue(forKey: comicId)
         syncToStore(task: task)
         if hadActiveTransfers {
             backgroundSession.getAllTasks { sessionTasks in
@@ -295,7 +395,7 @@ final class DownloadManager {
         }
         downloadQueue.removeAll { $0 == comicId }
         refreshTaskLists()
-        refreshStats()
+        scheduleStatsRefresh(immediate: true)
         processQueue()
     }
 
@@ -305,7 +405,7 @@ final class DownloadManager {
         downloadQueue.append(comicId)
         syncToStore(task: task)
         refreshTaskLists()
-        refreshStats()
+        scheduleStatsRefresh(immediate: true)
         processQueue()
     }
 
@@ -318,8 +418,11 @@ final class DownloadManager {
         downloadQueue.removeAll { $0 == comicId }
         downloadedComicIds.remove(comicId)
         storageReservations.removeValue(forKey: comicId)
+        pendingPagesByComic.removeValue(forKey: comicId)
+        pendingPageCursorByComic.removeValue(forKey: comicId)
+        inFlightPagesByComic.removeValue(forKey: comicId)
         refreshTaskLists()
-        refreshStats()
+        scheduleStatsRefresh(immediate: true)
         let manager = fileManager
         Task {
             let deleted = await Task.detached(priority: .utility) {
@@ -329,7 +432,7 @@ final class DownloadManager {
                 syncDeleteFromStore(comicIds: [comicId])
                 deletingComicIds.remove(comicId)
             }
-            await refreshStorageUsage()
+            await updateStorageUsage(for: comicId, deleted: deleted)
         }
     }
 
@@ -349,8 +452,11 @@ final class DownloadManager {
         tasks.removeValue(forKey: comicId)
         downloadedComicIds.remove(comicId)
         storageReservations.removeValue(forKey: comicId)
+        pendingPagesByComic.removeValue(forKey: comicId)
+        pendingPageCursorByComic.removeValue(forKey: comicId)
+        inFlightPagesByComic.removeValue(forKey: comicId)
         refreshTaskLists()
-        refreshStats()
+        scheduleStatsRefresh(immediate: true)
         let manager = fileManager
         Task {
             let deleted = await Task.detached(priority: .utility) {
@@ -360,7 +466,7 @@ final class DownloadManager {
                 syncDeleteFromStore(comicIds: [comicId])
                 deletingComicIds.remove(comicId)
             }
-            await refreshStorageUsage()
+            await updateStorageUsage(for: comicId, deleted: deleted)
         }
     }
 
@@ -374,9 +480,12 @@ final class DownloadManager {
             tasks.removeValue(forKey: comicId)
             downloadedComicIds.remove(comicId)
             storageReservations.removeValue(forKey: comicId)
+            pendingPagesByComic.removeValue(forKey: comicId)
+            pendingPageCursorByComic.removeValue(forKey: comicId)
+            inFlightPagesByComic.removeValue(forKey: comicId)
         }
         refreshTaskLists()
-        refreshStats()
+        scheduleStatsRefresh(immediate: true)
 
         let manager = fileManager
         Task {
@@ -391,7 +500,9 @@ final class DownloadManager {
             }.value
             syncDeleteFromStore(comicIds: deletedIds)
             deletingComicIds.subtract(deletedIds)
-            await refreshStorageUsage()
+            for comicId in deletedIds {
+                await updateStorageUsage(for: comicId, deleted: true)
+            }
         }
     }
 
@@ -468,14 +579,17 @@ final class DownloadManager {
             grouping: backgroundDescriptors,
             by: \.comicId
         )
-        let diskSnapshot = await Task.detached(priority: .utility) {
-            var snapshot = manager.downloadStateSnapshot()
+        let startup = await Task.detached(priority: .utility) {
+            let combined = manager.startupSnapshot()
+            var metas = combined.downloadState.metas
+            var completedIds = combined.downloadState.completedIds
+            let pageIndices = combined.downloadState.pageIndices
             for record in recordValues
-            where snapshot.hasAllRequiredPages(
+            where combined.downloadState.hasAllRequiredPages(
                 comicId: record.comicId,
                 pageCount: record.pageCount
             )
-                && snapshot.metas[record.comicId] == nil {
+                && metas[record.comicId] == nil {
                 let repairedMeta = OfflineComicMeta(
                     comicId: record.comicId,
                     title: record.title,
@@ -485,11 +599,22 @@ final class DownloadManager {
                     isNovel: record.isNovel
                 )
                 try? manager.saveMeta(repairedMeta, comicId: record.comicId)
+                metas[record.comicId] = repairedMeta
+                if record.isNovel != true, record.pageCount > 0 {
+                    completedIds.insert(record.comicId)
+                }
             }
-            snapshot = manager.downloadStateSnapshot()
-            return snapshot
+            let finalState = OfflineDownloadStateSnapshot(
+                metas: metas,
+                pageIndices: pageIndices,
+                completedIds: completedIds
+            )
+            return (downloadState: finalState, diskUsage: combined.diskUsage)
         }.value
-        await refreshStorageUsage()
+        let diskSnapshot = startup.downloadState
+        usedStorageBytes = startup.diskUsage.totalBytes
+        localStorageBytesByComic = startup.diskUsage.bytesByComicId
+        isStorageUsageLoaded = true
 
         downloadedComicIds = diskSnapshot.completedIds
             .subtracting(deletingRecordIds)
@@ -560,6 +685,9 @@ final class DownloadManager {
                     completedPages: completedPages,
                     fileSize: task.fileSize
                 )
+            }
+            if state == .downloading && !descriptors.isEmpty {
+                inFlightPagesByComic[comicId] = descriptors.count
             }
             if state == .waiting {
                 restoredQueue.append(comicId)
@@ -683,27 +811,50 @@ final class DownloadManager {
                 return
             }
 
-            var startedTaskCount = 0
-            for index in missingIndices {
-                if startPageDownload(
-                    comicId: comicId,
-                    pageIndex: index,
-                    isNovel: task.isNovel,
-                    generation: generation,
-                    routeRetryCount: 0
-                ) {
-                    startedTaskCount += 1
-                }
-            }
+            pendingPagesByComic[comicId] = missingIndices
+            pendingPageCursorByComic[comicId] = 0
+            inFlightPagesByComic[comicId] = 0
+            pumpPageDownloads(for: task)
 
-            if startedTaskCount == 0 {
+            if (inFlightPagesByComic[comicId] ?? 0) == 0 {
+                pendingPagesByComic.removeValue(forKey: comicId)
+                pendingPageCursorByComic.removeValue(forKey: comicId)
+                inFlightPagesByComic.removeValue(forKey: comicId)
                 task.state = .failed
                 refreshTaskLists()
-                refreshStats()
+                scheduleStatsRefresh(immediate: true)
                 syncToStore(task: task)
                 await reconcileStorageReservation(for: comicId)
                 processQueue()
             }
+        }
+    }
+
+    private func pumpPageDownloads(for task: DownloadTask) {
+        let comicId = task.comicId
+        guard tasks[comicId] === task, task.state == .downloading else { return }
+        guard let pages = pendingPagesByComic[comicId] else { return }
+        var cursor = pendingPageCursorByComic[comicId] ?? 0
+        var inFlight = inFlightPagesByComic[comicId] ?? 0
+
+        while inFlight < maxPagesPerBook, cursor < pages.count {
+            let pageIndex = pages[cursor]
+            cursor += 1
+            if startPageDownload(
+                comicId: comicId,
+                pageIndex: pageIndex,
+                isNovel: task.isNovel,
+                generation: task.generation,
+                routeRetryCount: 0
+            ) {
+                inFlight += 1
+            }
+        }
+        pendingPageCursorByComic[comicId] = cursor
+        inFlightPagesByComic[comicId] = inFlight
+        if cursor >= pages.count {
+            pendingPagesByComic.removeValue(forKey: comicId)
+            pendingPageCursorByComic.removeValue(forKey: comicId)
         }
     }
 
@@ -748,7 +899,7 @@ final class DownloadManager {
             return
         }
         task.completedPages = min(task.completedPages + 1, task.totalPages)
-        refreshStats()
+        scheduleStatsRefresh(immediate: task.completedPages >= task.totalPages)
     }
 
     func handleTaskCompleted(task: URLSessionTask, error: Error?) {
@@ -795,14 +946,26 @@ final class DownloadManager {
                     )
                     pendingRouteRetryKeys.remove(retryKey)
                     if !restarted {
-                        checkTaskCompletion(for: comicId)
+                        inFlightPagesByComic[comicId] = max(0, (inFlightPagesByComic[comicId] ?? 1) - 1)
+                        pumpPageDownloads(for: download)
+                        let hasPending = (pendingPageCursorByComic[comicId] ?? 0) < (pendingPagesByComic[comicId]?.count ?? 0)
+                        if !hasPending && (inFlightPagesByComic[comicId] ?? 0) == 0 {
+                            checkTaskCompletion(for: comicId)
+                        }
                     }
                 }
                 return
             }
         }
 
-        checkTaskCompletion(for: comicId)
+        inFlightPagesByComic[comicId] = max(0, (inFlightPagesByComic[comicId] ?? 1) - 1)
+        if download.state == .downloading {
+            pumpPageDownloads(for: download)
+        }
+        let hasPending = (pendingPageCursorByComic[comicId] ?? 0) < (pendingPagesByComic[comicId]?.count ?? 0)
+        if !hasPending && (inFlightPagesByComic[comicId] ?? 0) == 0 {
+            checkTaskCompletion(for: comicId)
+        }
     }
 
     private func checkTaskCompletion(for comicId: String) {
@@ -912,8 +1075,11 @@ final class DownloadManager {
     }
 
     private func finishTaskStateChange(_ task: DownloadTask) async {
+        pendingPagesByComic.removeValue(forKey: task.comicId)
+        pendingPageCursorByComic.removeValue(forKey: task.comicId)
+        inFlightPagesByComic.removeValue(forKey: task.comicId)
         refreshTaskLists()
-        refreshStats()
+        scheduleStatsRefresh(immediate: true)
         syncToStore(task: task)
         await reconcileStorageReservation(for: task.comicId)
         processQueue()
@@ -973,7 +1139,7 @@ final class DownloadManager {
 
     // MARK: - SwiftData 同步
 
-    private var modelContext: ModelContext?
+    @ObservationIgnored private var modelContext: ModelContext?
 
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
@@ -987,8 +1153,10 @@ final class DownloadManager {
     ) {
         guard let context = modelContext else { return }
         let id = comicId
+        var descriptor = FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
         let existing = context.fetchOrLog(
-            FetchDescriptor<CachedComic>(predicate: #Predicate { $0.id == id }),
+            descriptor,
             label: "查询缓存漫画"
         )
         if let cached = existing.first {
@@ -1011,8 +1179,10 @@ final class DownloadManager {
     private func syncToStore(task: DownloadTask) {
         guard let context = modelContext else { return }
         let id = task.comicId
+        var descriptor = FetchDescriptor<DownloadedComicRecord>(predicate: #Predicate { $0.comicId == id })
+        descriptor.fetchLimit = 1
         let existing = context.fetchOrLog(
-            FetchDescriptor<DownloadedComicRecord>(predicate: #Predicate { $0.comicId == id }),
+            descriptor,
             label: "查询下载记录"
         )
         if let record = existing.first {
@@ -1138,7 +1308,11 @@ private struct BackgroundDownloadDescriptor: Sendable {
 
 @MainActor
 @Observable
-final class DownloadTask: Identifiable {
+final class DownloadTask: Identifiable, Equatable {
+    nonisolated static func == (lhs: DownloadTask, rhs: DownloadTask) -> Bool {
+        lhs === rhs
+    }
+
     let id: String  // comicId
     let comicId: String
     let title: String
@@ -1215,8 +1389,8 @@ final class SessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Se
         }
 
         do {
-            let data = try Data(contentsOf: location)
             if descriptor.isNovel {
+                let data = try Data(contentsOf: location)
                 guard let response = try? JSONDecoder().decode(
                     ChapterContent.self,
                     from: data
@@ -1231,8 +1405,8 @@ final class SessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Se
                     generation: descriptor.generation
                 )
             } else {
-                try OfflineFileManager.shared.savePageData(
-                    data,
+                try OfflineFileManager.shared.movePageFile(
+                    from: location,
                     comicId: comicId,
                     page: index,
                     generation: descriptor.generation

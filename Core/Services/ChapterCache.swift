@@ -6,6 +6,7 @@ final class ChapterCache {
     private var cache: [Int: ChapterContent] = [:]
     private var cacheBytes: Int = 0
     private let capacity: Int
+    private var currentCenter: Int = 0
     private var generation = UUID()
     private var preloadTasks: [Int: Task<Void, Never>] = [:]
     private var preloadTaskIDs: [Int: UUID] = [:]
@@ -60,11 +61,15 @@ final class ChapterCache {
         Self.totalNovelCacheBytes = cacheBytes
     }
 
-    func clear() {
-        generation = UUID()
+    func cancelPreloads() {
         preloadTasks.values.forEach { $0.cancel() }
         preloadTasks.removeAll()
         preloadTaskIDs.removeAll()
+    }
+
+    func clear() {
+        generation = UUID()
+        cancelPreloads()
         cache.removeAll()
         chapterTitles.removeAll()
         chapterEntries.removeAll()
@@ -76,6 +81,13 @@ final class ChapterCache {
 
     /// 预加载当前章节 ±2 的相邻章节（静默失败）
     func preloadAdjacent(comicId: String, currentChapter: Int, totalChapters: Int) {
+        currentCenter = currentChapter
+        let validRange = (currentChapter - 2)...(currentChapter + 2)
+        for key in Array(preloadTasks.keys) where !validRange.contains(key) {
+            preloadTaskIDs.removeValue(forKey: key)
+            preloadTasks.removeValue(forKey: key)?.cancel()
+        }
+
         for offset in [-2, -1, 1, 2] {
             let target = currentChapter + offset
             guard target >= 0 else { continue }
@@ -99,7 +111,7 @@ final class ChapterCache {
                     )
                     guard !Task.isCancelled, generation == requestGeneration else { return }
                     put(content, for: target)
-                    evict(keeping: currentChapter)
+                    evict(keeping: self.currentCenter)
                 } catch {
                     // 静默失败
                 }
@@ -127,6 +139,17 @@ final class ChapterCache {
         comicId: String,
         index: Int
     ) async throws -> ChapterContent {
+        let preferOffline = api.isOfflineMode
+            || !api.isNetworkReachable
+            || DownloadManager.shared.isDownloaded(comicId: comicId)
+        if preferOffline {
+            let manager = OfflineFileManager.shared
+            if let local = await Task.detached(priority: .utility, operation: {
+                manager.loadNovelChapter(comicId: comicId, chapter: index)
+            }).value {
+                return local
+            }
+        }
         do {
             return try await api.fetchChapter(comicId: comicId, index: index)
         } catch {

@@ -335,6 +335,16 @@ struct SeriesItem: Codable, Identifiable, Equatable, Sendable {
         return comic.resolvedEditions
     }
 
+    private var effectiveEditionCount: Int {
+        if let editions, !editions.isEmpty {
+            return editions.count
+        }
+        if let comicEditions = comic.editions, !comicEditions.isEmpty {
+            return comicEditions.count
+        }
+        return (comic.fileLocation != nil || !comic.formatBadge.isEmpty || comic.canDownload == true) ? 1 : 0
+    }
+
     var formatBadge: String {
         let normalizedFormats = (formats ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
@@ -343,7 +353,7 @@ struct SeriesItem: Codable, Identifiable, Equatable, Sendable {
         if normalizedFormats.count > 1 {
             return "\(normalizedFormats[0]) +\(normalizedFormats.count - 1)"
         }
-        let resolvedCount = max(editionCount ?? 0, resolvedEditions.count)
+        let resolvedCount = max(editionCount ?? 0, effectiveEditionCount)
         if resolvedCount > 1 {
             let lead = normalizedFormats.first ?? (explicitFormat.isEmpty ? comic.formatBadge : explicitFormat)
             return lead.isEmpty ? "\(resolvedCount)版" : "\(lead) · \(resolvedCount)版"

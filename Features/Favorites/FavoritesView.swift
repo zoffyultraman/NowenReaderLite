@@ -39,34 +39,7 @@ struct FavoritesMainContent: View {
                         GridItem(.flexible(), spacing: 12),
                     ], spacing: 16) {
                         ForEach(viewModel.entries) { entry in
-                            switch entry {
-                            case .group(let group):
-                                NavigationLink {
-                                    GroupDetailView(groupId: group.id, contentType: group.contentType)
-                                } label: {
-                                    GroupCardView(group: group, serverURL: api.serverURL)
-                                }
-                                .buttonStyle(.plain)
-                            case .comic(let comic):
-                                NavigationLink(value: ComicDetailRoute(comic: comic)) {
-                                    if comic.isSeriesShelfItem {
-                                        SeriesShelfCardView(comic: comic, serverURL: api.serverURL)
-                                    } else {
-                                        ComicCardView(
-                                            id: comic.id,
-                                            title: comic.title,
-                                            isFavorite: comic.isFavorite,
-                                            isNovel: comic.isNovel,
-                                            progress: comic.progress,
-                                            serverURL: api.serverURL,
-                                            readingStatus: comic.readingStatus,
-                                            rating: comic.rating,
-                                            formatBadge: comic.formatBadge
-                                        )
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            }
+                            FavoritesGridCell(entry: entry, serverURL: api.serverURL)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -80,13 +53,17 @@ struct FavoritesMainContent: View {
         .navigationTitle("收藏")
         .navigationBarTitleDisplayMode(.large)
         .comicDetailNavigation()
+        .navigationDestination(for: FavoritesGroupRoute.self) { route in
+            GroupDetailView(groupId: route.id, contentType: route.contentType)
+        }
         .navigationDestination(for: String.self) { comicId in
             ComicDetailView(comicId: comicId)
                 .bookCoverDestination(id: "comic-\(comicId)")
         }
         .task(id: FavoritesRefreshID(
             selectedLibraryId: api.selectedLibraryId,
-            contentMutationRevision: api.contentMutationRevision
+            contentMutationRevision: api.contentMutationRevision,
+            networkRecovered: api.networkRecovered
         )) {
             await viewModel.loadFavorites()
         }
@@ -98,9 +75,49 @@ struct FavoritesMainContent: View {
     }
 }
 
+private struct FavoritesGroupRoute: Hashable {
+    let id: Int
+    let contentType: String?
+}
+
+private struct FavoritesGridCell: View {
+    let entry: FavoritesEntry
+    let serverURL: String
+
+    var body: some View {
+        switch entry {
+        case .group(let group):
+            NavigationLink(value: FavoritesGroupRoute(id: group.id, contentType: group.contentType)) {
+                GroupCardView(group: group, serverURL: serverURL)
+            }
+            .buttonStyle(.plain)
+        case .comic(let comic):
+            NavigationLink(value: ComicDetailRoute(comic: comic)) {
+                if comic.isSeriesShelfItem {
+                    SeriesShelfCardView(comic: comic, serverURL: serverURL)
+                } else {
+                    ComicCardView(
+                        id: comic.id,
+                        title: comic.title,
+                        isFavorite: comic.isFavorite,
+                        isNovel: comic.isNovel,
+                        progress: comic.progress,
+                        serverURL: serverURL,
+                        readingStatus: comic.readingStatus,
+                        rating: comic.rating,
+                        formatBadge: comic.formatBadge
+                    )
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 private struct FavoritesRefreshID: Hashable {
     let selectedLibraryId: String?
     let contentMutationRevision: Int
+    let networkRecovered: Bool
 }
 
 enum FavoritesEntry: Identifiable, Equatable {
@@ -210,8 +227,13 @@ final class FavoritesViewModel {
 
     private func loadGroupedSeriesIds(for groups: [ComicGroup]) async -> Set<String> {
         guard !groups.isEmpty else { return [] }
+        let maxConcurrent = 4
         return await withTaskGroup(of: Set<String>.self) { taskGroup in
-            for group in groups {
+            var nextIndex = 0
+            let initialCount = min(maxConcurrent, groups.count)
+            while nextIndex < initialCount {
+                let group = groups[nextIndex]
+                nextIndex += 1
                 taskGroup.addTask {
                     guard let detail = try? await APIClient.shared.fetchGroupDetail(
                         id: group.id,
@@ -225,6 +247,19 @@ final class FavoritesViewModel {
             var result = Set<String>()
             for await ids in taskGroup {
                 result.formUnion(ids)
+                if nextIndex < groups.count && !Task.isCancelled {
+                    let group = groups[nextIndex]
+                    nextIndex += 1
+                    taskGroup.addTask {
+                        guard let detail = try? await APIClient.shared.fetchGroupDetail(
+                            id: group.id,
+                            contentType: group.contentType
+                        ) else {
+                            return []
+                        }
+                        return Set(detail.seriesList.map(\.id))
+                    }
+                }
             }
             return result
         }

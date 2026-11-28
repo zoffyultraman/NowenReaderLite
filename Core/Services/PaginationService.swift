@@ -4,30 +4,124 @@ import UIKit
 /// 纯文本分页算法，无状态，可在任意线程调用
 enum PaginationService {
 
-    /// EPUB 章节可能是 HTML；纯文本章节保持原样。
+    private static let multiBlankLineRegex = try! NSRegularExpression(
+        pattern: #"\n[ \t]*\n(?:[ \t]*\n)+"#
+    )
+    private static let htmlCommentRegex = try! NSRegularExpression(
+        pattern: #"<!--[\s\S]*?-->"#
+    )
+    private static let htmlIgnorableBlockRegex = try! NSRegularExpression(
+        pattern: #"<(script|style|head)\b[^>]*>[\s\S]*?</\1>"#,
+        options: [.caseInsensitive]
+    )
+    private static let htmlLineBreakRegex = try! NSRegularExpression(
+        pattern: #"<br\b[^>]*>"#,
+        options: [.caseInsensitive]
+    )
+    private static let htmlSingleBreakTagRegex = try! NSRegularExpression(
+        pattern: #"</(?:li|tr)\s*>|<li\b[^>]*>"#,
+        options: [.caseInsensitive]
+    )
+    private static let htmlParagraphBreakTagRegex = try! NSRegularExpression(
+        pattern: #"</(?:p|div|h[1-6]|blockquote|section|article|pre|ul|ol|table)\s*>|<(?:p|div|h[1-6]|blockquote|section|article|hr)\b[^>]*>"#,
+        options: [.caseInsensitive]
+    )
+    private static let htmlAnyTagRegex = try! NSRegularExpression(
+        pattern: #"<[^>]+>"#
+    )
+
+    private static let namedHTMLEntities: [String: String] = [
+        "nbsp": " ",
+        "amp": "&",
+        "lt": "<",
+        "gt": ">",
+        "quot": "\"",
+        "apos": "'",
+        "mdash": "—",
+        "ndash": "–",
+        "hellip": "…",
+        "ldquo": "“",
+        "rdquo": "”",
+        "lsquo": "‘",
+        "rsquo": "’",
+        "copy": "©",
+        "reg": "®",
+        "trade": "™",
+        "middot": "·",
+        "bull": "•",
+        "times": "×",
+        "divide": "÷",
+    ]
+
+    /// EPUB 章节可能是 HTML；纯文本章节保持原样。纯 Swift 实现，线程安全且不触碰 WebKit。
     static func readableText(content: String, mimeType: String?) -> String {
-        guard isHTML(content: content, mimeType: mimeType),
-              let data = content.data(using: .utf8),
-              let attributed = try? NSAttributedString(
-                data: data,
-                options: [
-                    .documentType: NSAttributedString.DocumentType.html,
-                    .characterEncoding: String.Encoding.utf8.rawValue,
-                ],
-                documentAttributes: nil
-              ) else {
+        guard isHTML(content: content, mimeType: mimeType) else {
             return content
         }
 
-        return attributed.string
+        let mutable = NSMutableString(string: content)
+        let fullRange = { NSRange(location: 0, length: mutable.length) }
+        htmlCommentRegex.replaceMatches(in: mutable, range: fullRange(), withTemplate: "")
+        htmlIgnorableBlockRegex.replaceMatches(in: mutable, range: fullRange(), withTemplate: "")
+        htmlLineBreakRegex.replaceMatches(in: mutable, range: fullRange(), withTemplate: "\n")
+        htmlSingleBreakTagRegex.replaceMatches(in: mutable, range: fullRange(), withTemplate: "\n")
+        htmlParagraphBreakTagRegex.replaceMatches(in: mutable, range: fullRange(), withTemplate: "\n\n")
+        htmlAnyTagRegex.replaceMatches(in: mutable, range: fullRange(), withTemplate: "")
+
+        let decoded = decodeHTMLEntities(mutable as String)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
             .replacingOccurrences(of: "\u{fffc}", with: "\n")
             .replacingOccurrences(of: "\u{00a0}", with: " ")
-            .replacingOccurrences(
-                of: #"\n[ \t]*\n(?:[ \t]*\n)+"#,
-                with: "\n\n",
-                options: .regularExpression
-            )
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let collapsed = NSMutableString(string: decoded)
+        multiBlankLineRegex.replaceMatches(
+            in: collapsed,
+            range: NSRange(location: 0, length: collapsed.length),
+            withTemplate: "\n\n"
+        )
+        return (collapsed as String).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func decodeHTMLEntities(_ text: String) -> String {
+        guard text.contains("&") else { return text }
+        var output = String()
+        output.reserveCapacity(text.count)
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            if text[index] == "&",
+               let semicolon = text[index...].firstIndex(of: ";"),
+               text.distance(from: index, to: semicolon) <= 12 {
+                let entityBody = text[text.index(after: index)..<semicolon]
+                if let replacement = resolveHTMLEntity(entityBody) {
+                    output.append(replacement)
+                    index = text.index(after: semicolon)
+                    continue
+                }
+            }
+            output.append(text[index])
+            index = text.index(after: index)
+        }
+        return output
+    }
+
+    private static func resolveHTMLEntity(_ entity: Substring) -> String? {
+        guard !entity.isEmpty else { return nil }
+        if entity.first == "#" {
+            let numberPart = entity.dropFirst()
+            if numberPart.first == "x" || numberPart.first == "X" {
+                if let code = UInt32(numberPart.dropFirst(), radix: 16),
+                   let scalar = UnicodeScalar(code) {
+                    return String(scalar)
+                }
+            } else if let code = UInt32(numberPart, radix: 10),
+                      let scalar = UnicodeScalar(code) {
+                return String(scalar)
+            }
+            return nil
+        }
+        return namedHTMLEntities[entity.lowercased()]
     }
 
     /// 将纯文本按屏幕尺寸分页，返回每页的文本字符串
@@ -40,8 +134,29 @@ enum PaginationService {
         maxHeight: CGFloat,
         firstPageMaxH: CGFloat? = nil
     ) -> [String] {
-        guard !text.isEmpty else { return [""] }
-        guard maxWidth > 0, maxHeight > 0 else { return [text] }
+        paginateWithHeights(
+            text: text,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            firstPageMaxH: firstPageMaxH
+        ).map(\.text)
+    }
+
+    /// 将纯文本按屏幕尺寸分页，同时返回已测量的高度以避免外层二次测高。
+    static func paginateWithHeights(
+        text: String,
+        fontSize: Double,
+        lineSpacing: Double = 10,
+        letterSpacing: Double = 0,
+        maxWidth: CGFloat,
+        maxHeight: CGFloat,
+        firstPageMaxH: CGFloat? = nil
+    ) -> [(text: String, height: CGFloat)] {
+        guard !text.isEmpty else { return [("", 1)] }
+        guard maxWidth > 0, maxHeight > 0 else { return [(text, 1)] }
 
         let attrs = attributes(
             style: .body,
@@ -53,7 +168,7 @@ enum PaginationService {
         let framesetter = CTFramesetterCreateWithAttributedString(attributedText)
         let source = text as NSString
 
-        var result: [String] = []
+        var result: [(text: String, height: CGFloat)] = []
         var location = 0
         var isFirstPage = true
 
@@ -71,27 +186,38 @@ enum PaginationService {
             )
             let visibleRange = CTFrameGetVisibleStringRange(frame)
             let remainingLength = source.length - location
-            var pageLength = fittedTextLength(
+            let fitted = fittedTextResult(
                 in: source,
                 location: location,
                 candidateLength: min(max(visibleRange.length, 1), remainingLength),
-                style: .body,
-                fontSize: fontSize,
-                lineSpacing: lineSpacing,
-                letterSpacing: letterSpacing,
+                attributes: attrs,
                 maxWidth: maxWidth,
                 maxHeight: pageHeight
             )
+            var pageLength = fitted.length
+            var measuredHeight = fitted.height
 
             if pageLength < remainingLength {
-                pageLength = sentenceBoundaryLength(
+                let adjustedLength = sentenceBoundaryLength(
                     in: source,
                     location: location,
                     visibleLength: pageLength
                 )
+                if adjustedLength != pageLength {
+                    pageLength = adjustedLength
+                    let adjustedFragment = source.substring(
+                        with: NSRange(location: location, length: pageLength)
+                    )
+                    measuredHeight = measuredTextHeight(
+                        adjustedFragment,
+                        attributes: attrs,
+                        maxWidth: maxWidth
+                    )
+                }
             }
 
-            result.append(source.substring(with: NSRange(location: location, length: pageLength)))
+            let pageText = source.substring(with: NSRange(location: location, length: pageLength))
+            result.append((pageText, min(measuredHeight, pageHeight)))
             location += pageLength
             isFirstPage = false
         }
@@ -137,6 +263,15 @@ enum PaginationService {
             lineSpacing: lineSpacing,
             letterSpacing: letterSpacing
         )
+        return measuredTextHeight(text, attributes: attrs, maxWidth: maxWidth)
+    }
+
+    static func measuredTextHeight(
+        _ text: String,
+        attributes attrs: [NSAttributedString.Key: Any],
+        maxWidth: CGFloat
+    ) -> CGFloat {
+        guard !text.isEmpty, maxWidth > 0 else { return 1 }
         let attributed = NSAttributedString(string: text, attributes: attrs)
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let ctSize = CTFramesetterSuggestFrameSizeWithConstraints(
@@ -166,45 +301,70 @@ enum PaginationService {
         maxWidth: CGFloat,
         maxHeight: CGFloat
     ) -> Int {
-        guard candidateLength > 0 else { return 0 }
-        let safeCandidate = alignedLength(in: source, location: location, length: candidateLength)
-        let candidateFragment = source.substring(with: NSRange(location: location, length: safeCandidate))
-        if measuredTextHeight(
-            candidateFragment,
+        let attrs = attributes(
             style: style,
             fontSize: fontSize,
             lineSpacing: lineSpacing,
-            letterSpacing: letterSpacing,
-            maxWidth: maxWidth
-        ) <= maxHeight {
-            return safeCandidate
+            letterSpacing: letterSpacing
+        )
+        return fittedTextResult(
+            in: source,
+            location: location,
+            candidateLength: candidateLength,
+            attributes: attrs,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight
+        ).length
+    }
+
+    static func fittedTextResult(
+        in source: NSString,
+        location: Int,
+        candidateLength: Int,
+        attributes attrs: [NSAttributedString.Key: Any],
+        maxWidth: CGFloat,
+        maxHeight: CGFloat
+    ) -> (length: Int, height: CGFloat) {
+        guard candidateLength > 0 else { return (0, 1) }
+        let safeCandidate = alignedLength(in: source, location: location, length: candidateLength)
+        let candidateFragment = source.substring(with: NSRange(location: location, length: safeCandidate))
+        let candidateHeight = measuredTextHeight(candidateFragment, attributes: attrs, maxWidth: maxWidth)
+        if candidateHeight <= maxHeight {
+            return (safeCandidate, candidateHeight)
         }
 
         // CoreText 与 TextKit 在非零字间距/行间距下偶有微差，二分回退至不裁切为止
         var low = alignedLength(in: source, location: location, length: 1)
         var high = safeCandidate - 1
-        var best = low
+        var bestLength = low
+        var bestHeight = measuredTextHeight(
+            source.substring(with: NSRange(location: location, length: low)),
+            attributes: attrs,
+            maxWidth: maxWidth
+        )
 
         while low <= high {
-            if Task.isCancelled { return best }
-            let mid = alignedLength(in: source, location: location, length: (low + high) / 2)
+            if Task.isCancelled { return (bestLength, bestHeight) }
+            let rawMid = (low + high) / 2
+            var mid = alignedLengthDown(in: source, location: location, length: rawMid)
+            if mid < low {
+                mid = alignedLength(in: source, location: location, length: rawMid)
+            }
+            if mid > high {
+                // 区间内仅余跨多 UTF-16 单元字符尾部，无法继续对齐；终止避免死循环
+                break
+            }
             let fragment = source.substring(with: NSRange(location: location, length: mid))
-            let height = measuredTextHeight(
-                fragment,
-                style: style,
-                fontSize: fontSize,
-                lineSpacing: lineSpacing,
-                letterSpacing: letterSpacing,
-                maxWidth: maxWidth
-            )
+            let height = measuredTextHeight(fragment, attributes: attrs, maxWidth: maxWidth)
             if height <= maxHeight {
-                best = mid
+                bestLength = mid
+                bestHeight = height
                 low = mid + 1
             } else {
                 high = mid - 1
             }
         }
-        return best
+        return (bestLength, bestHeight)
     }
 
     private static func alignedLength(in source: NSString, location: Int, length: Int) -> Int {
@@ -212,6 +372,21 @@ enum PaginationService {
         let clamped = min(max(1, length), remaining)
         let endRange = source.rangeOfComposedCharacterSequence(at: location + clamped - 1)
         return min(remaining, endRange.location + endRange.length - location)
+    }
+
+    private static func alignedLengthDown(in source: NSString, location: Int, length: Int) -> Int {
+        let remaining = source.length - location
+        let clamped = min(max(1, length), remaining)
+        let endIndex = location + clamped
+        let seqRange = source.rangeOfComposedCharacterSequence(at: endIndex - 1)
+        let seqEnd = seqRange.location + seqRange.length
+        if seqEnd > endIndex {
+            if seqRange.location > location {
+                return seqRange.location - location
+            }
+            return min(remaining, seqEnd - location)
+        }
+        return clamped
     }
 
     // MARK: - Private

@@ -75,6 +75,9 @@ enum NovelContentParser {
         pattern: #"(?:alt|title)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))"#,
         options: [.caseInsensitive]
     )
+    private static let multiBlankLineRegex = try! NSRegularExpression(
+        pattern: #"\n[ \t]*\n(?:[ \t]*\n)+"#
+    )
 
     static func blocks(content: String, mimeType: String?) -> [NovelContentBlock] {
         guard PaginationService.isHTML(content: content, mimeType: mimeType) else {
@@ -124,21 +127,25 @@ enum NovelContentParser {
                 with: "\n\(replacement.marker)\n"
             )
         }
-        var remaining = PaginationService.readableText(
+        let remaining = PaginationService.readableText(
             content: markedHTML as String,
             mimeType: mimeType
         )
         var result: [NovelContentBlock] = []
+        var cursor = remaining.startIndex
 
         for replacement in replacements {
-            guard let markerRange = remaining.range(of: replacement.marker) else {
+            guard let markerRange = remaining.range(
+                of: replacement.marker,
+                range: cursor..<remaining.endIndex
+            ) else {
                 continue
             }
-            appendText(String(remaining[..<markerRange.lowerBound]), to: &result)
+            appendText(remaining[cursor..<markerRange.lowerBound], to: &result)
             result.append(.image(replacement.reference))
-            remaining = String(remaining[markerRange.upperBound...])
+            cursor = markerRange.upperBound
         }
-        appendText(remaining, to: &result)
+        appendText(remaining[cursor..<remaining.endIndex], to: &result)
         return result
     }
 
@@ -166,15 +173,15 @@ enum NovelContentParser {
         }
     }
 
-    private static func appendText(_ text: String, to result: inout [NovelContentBlock]) {
-        let cleaned = text
-            .replacingOccurrences(of: "\u{00a0}", with: " ")
-            .replacingOccurrences(
-                of: #"\n[ \t]*\n(?:[ \t]*\n)+"#,
-                with: "\n\n",
-                options: .regularExpression
-            )
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func appendText<S: StringProtocol>(_ text: S, to result: inout [NovelContentBlock]) {
+        let normalized = text.replacingOccurrences(of: "\u{00a0}", with: " ")
+        let mutable = NSMutableString(string: normalized)
+        multiBlankLineRegex.replaceMatches(
+            in: mutable,
+            range: NSRange(location: 0, length: mutable.length),
+            withTemplate: "\n\n"
+        )
+        let cleaned = (mutable as String).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         result.append(.text(cleaned))
     }
@@ -269,7 +276,7 @@ extension PaginationService {
             letterSpacing: letterSpacing,
             maxWidth: maxWidth
         )
-        let textPages = paginate(
+        let textPages = paginateWithHeights(
             text: text,
             fontSize: fontSize,
             lineSpacing: lineSpacing,
@@ -279,29 +286,21 @@ extension PaginationService {
             firstPageMaxH: max(1, maxHeight - titleLayout.bodyOffset)
         )
 
-        return textPages.enumerated().map { index, pageText in
+        return textPages.enumerated().map { index, pageEntry in
             var items: [NovelPageItem] = []
             var bodyY: CGFloat = 0
             if index == 0, let titleItem = titleLayout.item {
                 items.append(.text(titleItem))
                 bodyY = titleLayout.bodyOffset
             }
-            let bodyHeight = measuredTextHeight(
-                pageText,
-                style: .body,
-                fontSize: fontSize,
-                lineSpacing: lineSpacing,
-                letterSpacing: letterSpacing,
-                maxWidth: maxWidth
-            )
             items.append(.text(NovelTextPageItem(
-                text: pageText,
+                text: pageEntry.text,
                 style: .body,
                 frame: NovelPageFrame(
                     x: 0,
                     y: bodyY,
                     width: maxWidth,
-                    height: min(bodyHeight, max(1, maxHeight - bodyY))
+                    height: min(pageEntry.height, max(1, maxHeight - bodyY))
                 )
             )))
             return NovelPage(items: items)
@@ -319,6 +318,12 @@ extension PaginationService {
     ) -> [NovelPage] {
         let blockSpacing = max(10, CGFloat(fontSize) * 0.7)
         let minimumLineHeight = max(20, CGFloat(fontSize + lineSpacing) * 1.2)
+        let bodyAttrs = attributes(
+            style: .body,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            letterSpacing: letterSpacing
+        )
         let titleLayout = titleLayout(
             title: title,
             fontSize: fontSize,
@@ -347,6 +352,8 @@ extension PaginationService {
             switch block {
             case let .text(text):
                 let source = text as NSString
+                let attributed = NSAttributedString(string: text, attributes: bodyAttrs)
+                let framesetter = CTFramesetterCreateWithAttributedString(attributed)
                 var location = 0
                 while location < source.length {
                     if Task.isCancelled { return [] }
@@ -357,16 +364,15 @@ extension PaginationService {
                         availableHeight = maxHeight
                     }
 
-                    let visibleLength = visibleTextLength(
+                    let visible = visibleTextResult(
                         in: source,
                         location: location,
-                        fontSize: fontSize,
-                        lineSpacing: lineSpacing,
-                        letterSpacing: letterSpacing,
+                        framesetter: framesetter,
+                        attributes: bodyAttrs,
                         maxWidth: maxWidth,
                         maxHeight: max(1, availableHeight)
                     )
-                    guard visibleLength > 0 else {
+                    guard visible.length > 0 else {
                         if items.isEmpty {
                             let fallback = min(1, source.length - location)
                             let fragment = source.substring(with: NSRange(
@@ -375,10 +381,7 @@ extension PaginationService {
                             ))
                             let height = measuredTextHeight(
                                 fragment,
-                                style: .body,
-                                fontSize: fontSize,
-                                lineSpacing: lineSpacing,
-                                letterSpacing: letterSpacing,
+                                attributes: bodyAttrs,
                                 maxWidth: maxWidth
                             )
                             items.append(.text(NovelTextPageItem(
@@ -401,19 +404,9 @@ extension PaginationService {
 
                     let fragment = source.substring(with: NSRange(
                         location: location,
-                        length: visibleLength
+                        length: visible.length
                     ))
-                    let height = min(
-                        measuredTextHeight(
-                            fragment,
-                            style: .body,
-                            fontSize: fontSize,
-                            lineSpacing: lineSpacing,
-                            letterSpacing: letterSpacing,
-                            maxWidth: maxWidth
-                        ),
-                        availableHeight
-                    )
+                    let height = min(visible.height, availableHeight)
                     let itemY = cursorY + spacing
                     items.append(.text(NovelTextPageItem(
                         text: fragment,
@@ -426,7 +419,7 @@ extension PaginationService {
                         )
                     )))
                     cursorY = itemY + height
-                    location += visibleLength
+                    location += visible.length
                     if location < source.length {
                         finishPage()
                     }
@@ -497,56 +490,51 @@ extension PaginationService {
         )
     }
 
-    private static func visibleTextLength(
+    private static func visibleTextResult(
         in source: NSString,
         location: Int,
-        fontSize: Double,
-        lineSpacing: Double,
-        letterSpacing: Double,
+        framesetter: CTFramesetter,
+        attributes attrs: [NSAttributedString.Key: Any],
         maxWidth: CGFloat,
         maxHeight: CGFloat
-    ) -> Int {
-        let remaining = source.substring(from: location)
-        let attributed = NSAttributedString(
-            string: remaining,
-            attributes: attributes(
-                style: .body,
-                fontSize: fontSize,
-                lineSpacing: lineSpacing,
-                letterSpacing: letterSpacing
-            )
-        )
-        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+    ) -> (length: Int, height: CGFloat) {
         let path = CGPath(
             rect: CGRect(x: 0, y: 0, width: maxWidth, height: maxHeight),
             transform: nil
         )
         let frame = CTFramesetterCreateFrame(
             framesetter,
-            CFRange(location: 0, length: 0),
+            CFRange(location: location, length: 0),
             path,
             nil
         )
         let visible = CTFrameGetVisibleStringRange(frame).length
-        guard visible > 0 else { return 0 }
+        guard visible > 0 else { return (0, 1) }
         let remainingLength = source.length - location
-        let fitted = fittedTextLength(
+        let fitted = fittedTextResult(
             in: source,
             location: location,
             candidateLength: min(visible, remainingLength),
-            style: .body,
-            fontSize: fontSize,
-            lineSpacing: lineSpacing,
-            letterSpacing: letterSpacing,
+            attributes: attrs,
             maxWidth: maxWidth,
             maxHeight: maxHeight
         )
-        guard fitted < remainingLength else { return fitted }
-        return sentenceBoundaryLength(
+        guard fitted.length < remainingLength else { return fitted }
+        let adjustedLength = sentenceBoundaryLength(
             in: source,
             location: location,
-            visibleLength: fitted
+            visibleLength: fitted.length
         )
+        guard adjustedLength != fitted.length else { return fitted }
+        let adjustedFragment = source.substring(
+            with: NSRange(location: location, length: adjustedLength)
+        )
+        let adjustedHeight = measuredTextHeight(
+            adjustedFragment,
+            attributes: attrs,
+            maxWidth: maxWidth
+        )
+        return (adjustedLength, adjustedHeight)
     }
 
     private static func displaySize(
@@ -567,21 +555,26 @@ extension PaginationService {
     }
 }
 
-@MainActor
 enum NovelResourceService {
     static func loadImage(
         reference: NovelImageReference,
-        comicId: String
+        comicId: String,
+        persistOffline: Bool? = nil
     ) async -> NovelResolvedImage {
         do {
-            let persistOffline = await isOfflineNovel(comicId: comicId)
+            let resolvedPersistOffline: Bool
+            if let persistOffline {
+                resolvedPersistOffline = persistOffline
+            } else {
+                resolvedPersistOffline = await isOfflineNovel(comicId: comicId)
+            }
             let data = try await resourceData(
                 reference: reference,
                 comicId: comicId,
-                persistOffline: persistOffline,
+                persistOffline: resolvedPersistOffline,
                 generation: nil
             )
-            let dimensions = await imageDimensions(data)
+            let dimensions = imageDimensionsSync(data)
             return NovelResolvedImage(
                 reference: reference,
                 data: dimensions == nil ? nil : data,
@@ -605,7 +598,7 @@ enum NovelResourceService {
         generation: String
     ) async -> Bool {
         let manager = OfflineFileManager.shared
-        let references = await Task.detached(priority: .utility) {
+        let scanTask = Task.detached(priority: .utility) {
             var unique: [String: NovelImageReference] = [:]
             for chapter in 0..<totalChapters {
                 guard !Task.isCancelled,
@@ -623,7 +616,12 @@ enum NovelResourceService {
                 }
             }
             return Array(unique.values)
-        }.value
+        }
+        let references = await withTaskCancellationHandler {
+            await scanTask.value
+        } onCancel: {
+            scanTask.cancel()
+        }
         guard !Task.isCancelled else { return false }
         guard !references.isEmpty else { return true }
 
@@ -658,6 +656,13 @@ enum NovelResourceService {
         return true
     }
 
+    static func isOfflineNovel(comicId: String) async -> Bool {
+        let manager = OfflineFileManager.shared
+        return await Task.detached(priority: .utility) {
+            manager.loadMeta(comicId: comicId)?.isNovel == true
+        }.value
+    }
+
     private static func resourceData(
         reference: NovelImageReference,
         comicId: String,
@@ -671,14 +676,11 @@ enum NovelResourceService {
                 source: reference.source
             )
         }).value {
-            ImageCache.shared.setData(local, forKey: cacheKey(
-                comicId: comicId,
-                source: reference.source
-            ))
             return local
         }
 
-        let key = cacheKey(comicId: comicId, source: reference.source)
+        let primaryServerURL = await MainActor.run { APIClient.shared.primaryServerURL }
+        let key = "novel-resource:\(primaryServerURL):\(comicId):\(reference.source)"
         if let cached = await ImageCache.shared.data(forKey: key) {
             if persistOffline {
                 try await persist(
@@ -695,9 +697,9 @@ enum NovelResourceService {
         if let inline = inlineImageData(from: reference.source) {
             data = inline
         } else {
-            guard let url = APIClient.shared.serverResourceURL(
-                from: reference.source
-            ) else {
+            guard let url = await MainActor.run(body: {
+                APIClient.shared.serverResourceURL(from: reference.source)
+            }) else {
                 throw APIError.invalidURL
             }
             data = try await APIClient.shared.authenticatedData(
@@ -735,47 +737,36 @@ enum NovelResourceService {
         }.value
     }
 
-    private static func isOfflineNovel(comicId: String) async -> Bool {
-        let manager = OfflineFileManager.shared
-        return await Task.detached(priority: .utility) {
-            manager.loadMeta(comicId: comicId)?.isNovel == true
-        }.value
-    }
-
-    private static func imageDimensions(_ data: Data) async -> (width: Double, height: Double)? {
-        await Task.detached(priority: .userInitiated) {
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let properties = CGImageSourceCopyPropertiesAtIndex(
-                    source,
-                    0,
-                    nil
-                  ) as? [CFString: Any],
-                  let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
-                  let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
-                  width.doubleValue > 0,
-                  height.doubleValue > 0 else {
-                return nil
-            }
-            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue
-            if let orientation, (5...8).contains(orientation) {
-                return (height.doubleValue, width.doubleValue)
-            }
-            return (width.doubleValue, height.doubleValue)
-        }.value
-    }
-
-    private static func cacheKey(comicId: String, source: String) -> String {
-        "novel-resource:\(APIClient.shared.primaryServerURL):\(comicId):\(source)"
+    private static func imageDimensionsSync(_ data: Data) -> (width: Double, height: Double)? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(
+                source,
+                0,
+                nil
+              ) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              width.doubleValue > 0,
+              height.doubleValue > 0 else {
+            return nil
+        }
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue
+        if let orientation, (5...8).contains(orientation) {
+            return (height.doubleValue, width.doubleValue)
+        }
+        return (width.doubleValue, height.doubleValue)
     }
 
     private static func inlineImageData(from source: String) -> Data? {
-        guard source.lowercased().hasPrefix("data:image/"),
-              let separator = source.firstIndex(of: ",") else {
+        guard let separator = source.firstIndex(of: ",") else {
             return nil
         }
-        let metadata = source[..<separator].lowercased()
+        let header = source[..<separator].lowercased()
+        guard header.hasPrefix("data:image/") else {
+            return nil
+        }
         let payload = String(source[source.index(after: separator)...])
-        if metadata.contains(";base64") {
+        if header.contains(";base64") {
             return Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
         }
         return payload.removingPercentEncoding?.data(using: .utf8)

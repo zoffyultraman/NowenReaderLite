@@ -34,7 +34,7 @@ struct ServerConfigView: View {
                     .navigationBarTitleDisplayMode(.inline)
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Color(uiColor: .systemGroupedBackground))
         .alert("连接错误", isPresented: $showError) {
             Button("确定", role: .cancel) {}
         } message: {
@@ -77,10 +77,10 @@ struct ServerConfigView: View {
                 .padding(16)
                 .background(.background)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
-                .overlay(
+                .overlay {
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(borderColor, lineWidth: 1)
-                )
+                }
 
                 APIKeySecureField(
                     value: $apiKey,
@@ -90,10 +90,10 @@ struct ServerConfigView: View {
                 .padding(16)
                 .background(.background)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
-                .overlay(
+                .overlay {
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(.gray.opacity(0.3), lineWidth: 1)
-                )
+                }
 
                 // 绑定账号选择
                 if !accounts.isEmpty {
@@ -122,7 +122,7 @@ struct ServerConfigView: View {
                                         }
                                         .padding(.horizontal, 12)
                                         .padding(.vertical, 8)
-                                        .background(selectedAccountId == account.id ? Color.accentColor.opacity(0.1) : Color(.systemGray6))
+                                        .background(selectedAccountId == account.id ? Color.accentColor.opacity(0.1) : Color(uiColor: .systemGray6))
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
                                     }
                                 }

@@ -218,7 +218,8 @@ struct ComicDetailView: View {
         .task(id: comicId) {
             viewModel.setModelContext(modelContext)
             DownloadManager.shared.setModelContext(modelContext)
-            await viewModel.load(id: comicId)
+            let targetId = viewModel.currentComicId.flatMap { $0.isEmpty ? nil : $0 } ?? comicId
+            await viewModel.load(id: targetId)
         }
     }
 }
@@ -487,7 +488,7 @@ struct ComicActionButtonsSection: View {
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
-                .background(comic.isFavorite ? Color.red.opacity(0.1) : Color(.systemGray6))
+                .background(comic.isFavorite ? Color.red.opacity(0.1) : Color(uiColor: .systemGray6))
                 .foregroundStyle(comic.isFavorite ? .red : .primary)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
@@ -627,7 +628,7 @@ struct DownloadButton: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
-                .background(Color(.systemGray6))
+                .background(Color(uiColor: .systemGray6))
                 .foregroundStyle(.secondary)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
@@ -661,7 +662,7 @@ struct DownloadButton: View {
                     .font(.subheadline.weight(.medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(Color(.systemGray6))
+                    .background(Color(uiColor: .systemGray6))
                     .foregroundStyle(.primary)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             }
@@ -787,13 +788,13 @@ private struct ComicEditionChipView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(
-                isActive ? Color.accentColor : Color(.secondarySystemBackground),
+                isActive ? Color.accentColor : Color(uiColor: .secondarySystemBackground),
                 in: Capsule()
             )
             .overlay {
                 if !isActive {
                     Capsule()
-                        .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                        .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
                 }
             }
         }
@@ -893,7 +894,7 @@ struct ComicFileLocationSection: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
-                .background(Color(.secondarySystemBackground).opacity(0.65))
+                .background(Color(uiColor: .secondarySystemBackground).opacity(0.65))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
             .padding(.horizontal, 20)
@@ -924,7 +925,7 @@ struct ComicProgressSection: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(Color(.systemGray5))
+                            .fill(Color(uiColor: .systemGray5))
                         Capsule()
                             .fill(Color.accentColor)
                             .frame(width: geo.size.width * CGFloat(progress) / 100)
@@ -984,9 +985,11 @@ struct ReadingStatusSection: View {
                             .foregroundStyle(isSelected ? .white : .primary)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 7)
-                            .background(isSelected ? Color.accentColor : Color(.systemGray6))
+                            .background(isSelected ? Color.accentColor : Color(uiColor: .systemGray6))
                             .clipShape(Capsule())
-                            .overlay(Capsule().stroke(isSelected ? Color.clear : Color(.systemGray4), lineWidth: 0.5))
+                            .overlay {
+                                Capsule().stroke(isSelected ? Color.clear : Color(uiColor: .systemGray4), lineWidth: 0.5)
+                            }
                             .accessibilityAddTraits(isSelected ? .isSelected : [])
                         }
                         .buttonStyle(.plain)

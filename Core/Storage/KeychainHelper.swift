@@ -33,7 +33,7 @@ enum KeychainHelper {
     }
 
     static func hasAPIKey(for serverURL: String) -> Bool {
-        readAPIKey(for: serverURL) != nil
+        hasSecret(account: serverURL, service: apiKeyService)
     }
 
     @discardableResult
@@ -67,6 +67,16 @@ enum KeychainHelper {
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
         return SecItemAdd(insertQuery, nil) == errSecSuccess
+    }
+
+    private static func hasSecret(account: String, service: String) -> Bool {
+        let query: NSDictionary = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query, nil) == errSecSuccess
     }
 
     private static func readSecret(account: String, service: String) -> String? {

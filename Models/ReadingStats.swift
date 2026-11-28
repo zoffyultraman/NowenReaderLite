@@ -79,7 +79,7 @@ struct RecentSession: Codable, Identifiable, Sendable {
 
 // MARK: - 增强统计
 
-struct EnhancedReadingStats: Codable, Sendable {
+struct EnhancedReadingStats: Codable, Equatable, Sendable {
     let totalReadTime: Int
     let totalSessions: Int
     let totalComicsRead: Int
@@ -94,14 +94,14 @@ struct EnhancedReadingStats: Codable, Sendable {
     let genreStats: [GenreStat]
 }
 
-struct EnhancedDailyStat: Codable, Identifiable, Sendable {
+struct EnhancedDailyStat: Codable, Identifiable, Equatable, Sendable {
     let date: String
     let duration: Int
     let sessions: Int
     var id: String { date }
 }
 
-struct MonthlyStat: Codable, Identifiable, Sendable {
+struct MonthlyStat: Codable, Identifiable, Equatable, Sendable {
     let month: String
     let duration: Int
     let sessions: Int
@@ -109,7 +109,7 @@ struct MonthlyStat: Codable, Identifiable, Sendable {
     var id: String { month }
 }
 
-struct EnhancedSession: Codable, Identifiable, Sendable {
+struct EnhancedSession: Codable, Identifiable, Equatable, Sendable {
     let id: Int?
     let comicId: String?
     let comicTitle: String?
@@ -124,7 +124,7 @@ struct EnhancedSession: Codable, Identifiable, Sendable {
     }
 }
 
-struct GenreStat: Codable, Identifiable, Sendable {
+struct GenreStat: Codable, Identifiable, Equatable, Sendable {
     let genre: String
     let totalTime: Int
     let comicCount: Int
@@ -133,7 +133,7 @@ struct GenreStat: Codable, Identifiable, Sendable {
 
 // MARK: - 阅读目标
 
-struct ReadingGoalProgress: Codable, Identifiable, Sendable {
+struct ReadingGoalProgress: Codable, Identifiable, Equatable, Sendable {
     let goal: ReadingGoal
     let currentMins: Int
     let currentBooks: Int
@@ -145,7 +145,7 @@ struct ReadingGoalProgress: Codable, Identifiable, Sendable {
     var id: String { goal.goalType }
 }
 
-struct ReadingGoal: Codable, Sendable {
+struct ReadingGoal: Codable, Equatable, Sendable {
     let id: Int
     let goalType: String
     let targetMins: Int

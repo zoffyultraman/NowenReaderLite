@@ -10,6 +10,33 @@ enum UpscaleMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum UpscaleSkipThreshold: Int, CaseIterable, Identifiable, Sendable {
+    case off = 0
+    case p1200 = 1200
+    case p1600 = 1600
+    case p2000 = 2000
+    case p2400 = 2400
+
+    var id: Int { rawValue }
+
+    var shortTitle: String {
+        switch self {
+        case .off: return "不跳过"
+        default: return "≥ \(rawValue) px"
+        }
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .off: return "不跳过（始终超分）"
+        case .p1200: return "≥ 1200 px（iPhone 宽度）"
+        case .p1600: return "≥ 1600 px（推荐）"
+        case .p2000: return "≥ 2000 px（仅超高清）"
+        case .p2400: return "≥ 2400 px"
+        }
+    }
+}
+
 // MARK: - 超分错误
 
 enum UpscaleError: LocalizedError {
@@ -56,6 +83,7 @@ final class ImageUpscaler: @unchecked Sendable {
     private var modelRealESRGANAnime4xLoadFailed = false
     private var tileSize4x: Int = 128
     private var tileSizeRealESRGANAnime4x: Int = 256
+    fileprivate static let sharedCIContext = CIContext(options: [.cacheIntermediates: false])
 
     private init() {}
 
@@ -70,6 +98,7 @@ final class ImageUpscaler: @unchecked Sendable {
             throw UpscaleError.modelNotFound("anime4k-4x-a-hq")
         }
         do {
+            modelRealESRGANAnime4x = nil
             let config = MLModelConfiguration()
             config.computeUnits = .all
             let model = try MLModel(contentsOf: modelURL, configuration: config)
@@ -93,6 +122,7 @@ final class ImageUpscaler: @unchecked Sendable {
         }
 
         do {
+            model4x = nil
             let config = MLModelConfiguration()
             config.computeUnits = .all
             let model = try MLModel(contentsOf: modelURL, configuration: config)
@@ -118,17 +148,50 @@ final class ImageUpscaler: @unchecked Sendable {
 
     // MARK: - 超分推理
 
-    func upscale(_ image: UIImage, mode: UpscaleMode, keepOriginalSize: Bool = false) throws -> UIImage {
-        try Task.checkCancellation()
-        guard mode != .off else { return image }
+    static func shouldSkipUpscale(
+        for image: UIImage,
+        skipThreshold: UpscaleSkipThreshold
+    ) -> Bool {
+        guard skipThreshold.rawValue > 0 else { return false }
+        let width: CGFloat
+        let height: CGFloat
+        if let cgImage = image.cgImage {
+            width = CGFloat(cgImage.width)
+            height = CGFloat(cgImage.height)
+        } else {
+            width = image.size.width * image.scale
+            height = image.size.height * image.scale
+        }
+        return min(width, height) >= CGFloat(skipThreshold.rawValue)
+    }
 
-        // 内存上限检查：2048px 以下用 4x，以上降为 2x 防止 OOM
-        // 2048*4=8192 → 8192²*4B ≈ 256MB（可控）
-        // 4096*4=16384 → 16384²*4B ≈ 1GB（OOM）
-        let safeMax4x: CGFloat = 2048
+    func upscale(
+        _ image: UIImage,
+        mode: UpscaleMode,
+        keepOriginalSize: Bool = false,
+        maxOutputBytes: Int = 64 * 1024 * 1024,
+        skipThreshold: UpscaleSkipThreshold = .off,
+        isCancelled: () -> Bool = { Task.isCancelled }
+    ) throws -> UIImage {
+        if isCancelled() { throw CancellationError() }
+        guard mode != .off else { return image }
+        if Self.shouldSkipUpscale(for: image, skipThreshold: skipThreshold) {
+            return image
+        }
+
+        // 内存上限检查：与 ReaderCacheManager.upscaledBudget / 4 对齐，确保至少 4 页可同时驻留缓存
         let absoluteMax: CGFloat = 4096
-        let imageWidth = image.size.width * image.scale
-        let imageHeight = image.size.height * image.scale
+        let maxOutputDimension: CGFloat = 8192
+        let maxOutputPixels = CGFloat(max(8_000_000, maxOutputBytes / 4))
+        let imageWidth: CGFloat
+        let imageHeight: CGFloat
+        if let cgImage = image.cgImage {
+            imageWidth = CGFloat(cgImage.width)
+            imageHeight = CGFloat(cgImage.height)
+        } else {
+            imageWidth = image.size.width * image.scale
+            imageHeight = image.size.height * image.scale
+        }
 
         if imageWidth > absoluteMax || imageHeight > absoluteMax {
             throw UpscaleError.preprocessingFailed
@@ -137,32 +200,59 @@ final class ImageUpscaler: @unchecked Sendable {
         let model: MLModel
         let tileSize: Int
         let scaleFactor: CGFloat
-        let needsLargeImage = max(imageWidth, imageHeight) > safeMax4x
+        let pixelCount = imageWidth * imageHeight
+        let maxDim = max(imageWidth, imageHeight)
+
+        if keepOriginalSize {
+            guard pixelCount <= maxOutputPixels else {
+                throw UpscaleError.preprocessingFailed
+            }
+            scaleFactor = 1.0
+        } else {
+            let canUse4x = pixelCount * 16 <= maxOutputPixels && maxDim * 4 <= maxOutputDimension
+            let canUse3x = pixelCount * 9 <= maxOutputPixels && maxDim * 3 <= maxOutputDimension
+            let canUse2x = pixelCount * 4 <= maxOutputPixels && maxDim * 2 <= maxOutputDimension
+
+            if canUse4x {
+                scaleFactor = 4.0
+            } else if canUse3x {
+                scaleFactor = 3.0
+            } else if canUse2x {
+                scaleFactor = 2.0
+            } else if pixelCount <= maxOutputPixels {
+                scaleFactor = 1.0
+            } else {
+                throw UpscaleError.preprocessingFailed
+            }
+        }
 
         switch mode {
         case .x4:
             model = try loadModel4x()
             tileSize = tileSize4x
-            scaleFactor = needsLargeImage ? 2.0 : 4.0
         case .realesrganAnime4x:
             model = try loadModelRealESRGANAnime4x()
             tileSize = tileSizeRealESRGANAnime4x
-            scaleFactor = needsLargeImage ? 2.0 : 4.0
         case .off:
             return image
         }
 
-        try Task.checkCancellation()
+        if isCancelled() { throw CancellationError() }
 
         // ✅ RealESRGAN 模型强制使用 TensorType 输入
         let forceTensorInput = (mode == .realesrganAnime4x)
 
-        let resultImage = try tileInference(image: image, model: model, tileSize: tileSize, scaleFactor: scaleFactor, forceTensorInput: forceTensorInput)
+        let resultImage = try tileInference(
+            image: image,
+            model: model,
+            tileSize: tileSize,
+            scaleFactor: scaleFactor,
+            forceTensorInput: forceTensorInput,
+            isCancelled: isCancelled
+        )
 
-        // 直接返回超分结果，不缩放！
-        if keepOriginalSize {
-            let finalImage = resultImage.resize(to: image.size)
-            return finalImage
+        if keepOriginalSize, let cg = resultImage.cgImage {
+            return UIImage(cgImage: cg, scale: image.scale, orientation: .up)
         }
 
         return resultImage
@@ -170,7 +260,14 @@ final class ImageUpscaler: @unchecked Sendable {
 
     // MARK: - Tile 推理核心（tilePad 上下文扩展）
 
-    private func tileInference(image: UIImage, model: MLModel, tileSize: Int, scaleFactor: CGFloat, forceTensorInput: Bool = false) throws -> UIImage {
+    private func tileInference(
+        image: UIImage,
+        model: MLModel,
+        tileSize: Int,
+        scaleFactor: CGFloat,
+        forceTensorInput: Bool = false,
+        isCancelled: () -> Bool = { Task.isCancelled }
+    ) throws -> UIImage {
         guard let cgImage = image.cgImage else { throw UpscaleError.invalidImage }
 
         let imageWidth = cgImage.width
@@ -204,6 +301,7 @@ final class ImageUpscaler: @unchecked Sendable {
         ) else {
             throw UpscaleError.preprocessingFailed
         }
+        outputCtx.interpolationQuality = .high
 
         // 获取输入输出信息
         guard let inputName = model.modelDescription.inputDescriptionsByName.keys.first,
@@ -220,101 +318,112 @@ final class ImageUpscaler: @unchecked Sendable {
             throw UpscaleError.preprocessingFailed
         }
 
-        // 步骤 3: 处理每个 tile
+        // 步骤 3: 处理每个 tile（复用临时像素缓冲 + autoreleasepool 及时释放 CoreML/CoreImage 临时对象）
         var failedTiles = 0
+        var inputScratchBuffer: [UInt8] = []
+        var outputScratchBuffer: [UInt8] = []
 
         for gridY in 0..<tilesY {
             for gridX in 0..<tilesX {
-                try Task.checkCancellation()
+                if isCancelled() { throw CancellationError() }
 
-                // 3a. 有效区域在原图中的坐标和实际尺寸
-                let effX = gridX * stride
-                let effY = gridY * stride
-                let effW = min(effectiveSize, imageWidth - effX)
-                let effH = min(effectiveSize, imageHeight - effY)
+                try autoreleasepool {
+                    // 3a. 有效区域在原图中的坐标和实际尺寸
+                    let effX = gridX * stride
+                    let effY = gridY * stride
+                    let effW = min(effectiveSize, imageWidth - effX)
+                    let effH = min(effectiveSize, imageHeight - effY)
 
-                // 3b. 以有效区域为中心，向四周扩展 tilePad，精确计算每侧 pad 量
-                let padLeft = tilePad - min(tilePad, effX)
-                let padTop = tilePad - min(tilePad, effY)
-                let padRight = tilePad - min(tilePad, imageWidth - (effX + effW))
-                let padBottom = tilePad - min(tilePad, imageHeight - (effY + effH))
+                    // 3b. 以有效区域为中心，向四周扩展 tilePad，精确计算每侧 pad 量
+                    let padLeft = tilePad - min(tilePad, effX)
+                    let padTop = tilePad - min(tilePad, effY)
+                    let padRight = tilePad - min(tilePad, imageWidth - (effX + effW))
+                    let padBottom = tilePad - min(tilePad, imageHeight - (effY + effH))
 
-                // 3c. 从原图裁剪实际可用区域
-                let cropX = max(0, effX - tilePad)
-                let cropY = max(0, effY - tilePad)
-                let cropW = min(tileSize - padLeft - padRight, imageWidth - cropX)
-                let cropH = min(tileSize - padTop - padBottom, imageHeight - cropY)
+                    // 3c. 从原图裁剪实际可用区域
+                    let cropX = max(0, effX - tilePad)
+                    let cropY = max(0, effY - tilePad)
+                    let cropW = min(tileSize - padLeft - padRight, imageWidth - cropX)
+                    let cropH = min(tileSize - padTop - padBottom, imageHeight - cropY)
 
-                guard cropW > 0 && cropH > 0,
-                      let tileCGImage = cgImage.cropping(to: CGRect(x: cropX, y: cropY, width: cropW, height: cropH)) else {
-                    continue
-                }
-                let tileUIImage = UIImage(cgImage: tileCGImage)
+                    guard cropW > 0 && cropH > 0,
+                          let tileCGImage = cgImage.cropping(to: CGRect(x: cropX, y: cropY, width: cropW, height: cropH)) else {
+                        return
+                    }
+                    let tileUIImage = UIImage(cgImage: tileCGImage)
 
-                // 3d. 精确 pad 到 256×256（仅在需要时，避免二次插值）
-                let paddedImage: UIImage
-                if padLeft > 0 || padTop > 0 || padRight > 0 || padBottom > 0 {
-                    paddedImage = tileUIImage.padTo(
-                        left: padLeft, top: padTop,
-                        right: padRight, bottom: padBottom,
-                        targetSize: CGSize(width: tileSize, height: tileSize)
-                    )
-                } else {
-                    paddedImage = tileUIImage
-                }
-
-                // 3e. 创建输入
-                let inputFeature: MLFeatureProvider
-                if inputDesc.type == .multiArray, let constraint = inputDesc.multiArrayConstraint {
-                    let multiArray = try paddedImage.toMLMultiArray(shape: constraint.shape, dataType: constraint.dataType)
-                    inputFeature = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: multiArray)])
-                } else if inputDesc.type == .image && !forceTensorInput {
-                    guard let pixelBuffer = paddedImage.toPixelBuffer(width: tileSize, height: tileSize) else { continue }
-                    inputFeature = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: pixelBuffer)])
-                } else {
-                    if forceTensorInput { throw UpscaleError.preprocessingFailed }
-                    continue
-                }
-
-                // 3f. 推理
-                let output: MLFeatureProvider
-                do {
-                    output = try model.prediction(from: inputFeature)
-                } catch {
-                    failedTiles += 1
-                    continue
-                }
-
-                // 3g. 获取输出，裁剪上下文区域，绘制到输出 CGContext
-                if let outputValue = output.featureValue(for: outputName) {
-                    let outputTile: UIImage?
-                    if outputValue.type == .multiArray, let multiArray = outputValue.multiArrayValue {
-                        do {
-                            outputTile = try UIImage.image(from: multiArray)
-                        } catch {
-                            failedTiles += 1
-                            continue
-                        }
-                    } else if outputValue.type == .image, let pixelBuffer = outputValue.imageBufferValue {
-                        outputTile = UIImage(pixelBuffer: pixelBuffer)
+                    // 3d. 精确 pad 到 tileSize×tileSize（仅在需要时，避免二次插值）
+                    let paddedImage: UIImage
+                    if padLeft > 0 || padTop > 0 || padRight > 0 || padBottom > 0 {
+                        paddedImage = tileUIImage.padTo(
+                            left: padLeft, top: padTop,
+                            right: padRight, bottom: padBottom,
+                            targetSize: CGSize(width: tileSize, height: tileSize)
+                        )
                     } else {
-                        failedTiles += 1
-                        outputTile = nil
+                        paddedImage = tileUIImage
                     }
 
-                    if let outputTile = outputTile, let outputCGImage = outputTile.cgImage {
-                        // 固定 center crop：从 1024×1024 中心裁出 896×896
-                        // 去除上下文扩展区域（tilePad * scale = 64px 每侧）
-                        let scaledPad = tilePad * scale
-                        let fixedCropSize = effectiveSize * scale  // 896
-                        if let croppedCG = outputCGImage.cropping(to: CGRect(
-                            x: scaledPad, y: scaledPad,
-                            width: fixedCropSize, height: fixedCropSize
-                        )) {
-                            // 固定 stride 写入，edge 溢出靠 buffer 边界裁剪
-                            let dstX = gridX * fixedCropSize
-                            let dstY = finalHeight - (gridY * fixedCropSize + fixedCropSize)
-                            outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY, width: fixedCropSize, height: fixedCropSize))
+                    // 3e. 创建输入
+                    let inputFeature: MLFeatureProvider
+                    if inputDesc.type == .multiArray, let constraint = inputDesc.multiArrayConstraint {
+                        let multiArray = try paddedImage.toMLMultiArray(
+                            shape: constraint.shape,
+                            dataType: constraint.dataType,
+                            scratchBuffer: &inputScratchBuffer
+                        )
+                        inputFeature = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: multiArray)])
+                    } else if inputDesc.type == .image && !forceTensorInput {
+                        guard let pixelBuffer = paddedImage.toPixelBuffer(width: tileSize, height: tileSize) else { return }
+                        inputFeature = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: pixelBuffer)])
+                    } else {
+                        if forceTensorInput { throw UpscaleError.preprocessingFailed }
+                        return
+                    }
+
+                    // 3f. 推理
+                    let output: MLFeatureProvider
+                    do {
+                        output = try model.prediction(from: inputFeature)
+                    } catch {
+                        failedTiles += 1
+                        return
+                    }
+                    if isCancelled() { throw CancellationError() }
+
+                    // 3g. 获取输出，按模型实际倍率裁剪上下文区域，并缩放到目标倍率绘制到输出 CGContext
+                    if let outputValue = output.featureValue(for: outputName) {
+                        let outputTile: UIImage?
+                        if outputValue.type == .multiArray, let multiArray = outputValue.multiArrayValue {
+                            do {
+                                outputTile = try UIImage.image(
+                                    from: multiArray,
+                                    scratchBuffer: &outputScratchBuffer
+                                )
+                            } catch {
+                                failedTiles += 1
+                                return
+                            }
+                        } else if outputValue.type == .image, let pixelBuffer = outputValue.imageBufferValue {
+                            outputTile = UIImage(pixelBuffer: pixelBuffer)
+                        } else {
+                            failedTiles += 1
+                            outputTile = nil
+                        }
+
+                        if let outputTile = outputTile, let outputCGImage = outputTile.cgImage {
+                            let modelScale = max(1, outputCGImage.width / tileSize)
+                            let srcPad = tilePad * modelScale
+                            let srcValid = effectiveSize * modelScale
+                            let dstValid = effectiveSize * scale
+                            if let croppedCG = outputCGImage.cropping(to: CGRect(
+                                x: srcPad, y: srcPad,
+                                width: srcValid, height: srcValid
+                            )) {
+                                let dstX = gridX * dstValid
+                                let dstY = finalHeight - (gridY * dstValid + dstValid)
+                                outputCtx.draw(croppedCG, in: CGRect(x: dstX, y: dstY, width: dstValid, height: dstValid))
+                            }
                         }
                     }
                 }
@@ -322,7 +431,7 @@ final class ImageUpscaler: @unchecked Sendable {
         }
 
         // ✅ 检查是否有太多 tile 失败
-        try Task.checkCancellation()
+        if isCancelled() { throw CancellationError() }
         let totalTiles = tilesX * tilesY
         if failedTiles == totalTiles {
             throw UpscaleError.inferenceFailed(NSError(domain: "ImageUpscaler", code: -1, userInfo: [NSLocalizedDescriptionKey: "All tiles failed inference"]))
@@ -364,7 +473,11 @@ private extension UIImage {
         return buffer
     }
 
-    func toMLMultiArray(shape: [NSNumber], dataType: MLMultiArrayDataType) throws -> MLMultiArray {
+    func toMLMultiArray(
+        shape: [NSNumber],
+        dataType: MLMultiArrayDataType,
+        scratchBuffer: inout [UInt8]
+    ) throws -> MLMultiArray {
         // 支持 NCHW [1, C, H, W] 和 NHWC [1, H, W, C]，C 为 3 的倍数
         guard shape.count == 4 else {
             throw UpscaleError.preprocessingFailed
@@ -392,45 +505,85 @@ private extension UIImage {
         guard let cgImage = self.cgImage else { throw UpscaleError.preprocessingFailed }
 
         let array = try MLMultiArray(shape: shape, dataType: dataType)
-        var rawData = [UInt8](repeating: 0, count: targetWidth * targetHeight * 4)
-        guard let context = CGContext(data: &rawData, width: targetWidth, height: targetHeight, bitsPerComponent: 8, bytesPerRow: targetWidth * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+        let neededBytes = targetWidth * targetHeight * 4
+        if scratchBuffer.count != neededBytes {
+            scratchBuffer = [UInt8](repeating: 0, count: neededBytes)
+        }
+        guard let context = scratchBuffer.withUnsafeMutableBytes({ buffer -> CGContext? in
+            guard let baseAddress = buffer.baseAddress else { return nil }
+            return CGContext(
+                data: baseAddress,
+                width: targetWidth,
+                height: targetHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: targetWidth * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            )
+        }) else {
             throw UpscaleError.preprocessingFailed
         }
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
 
         let channelSize = targetHeight * targetWidth
         let rgbCopies = channels / 3  // 12通道 = 4组RGB
+        let strides = array.strides.map(\.intValue)
+        let strideC = isNCHW ? strides[1] : strides[3]
+        let strideH = isNCHW ? strides[2] : strides[1]
+        let strideW = isNCHW ? strides[3] : strides[2]
+        let isContiguous = isNCHW
+            ? (strideW == 1 && strideH == targetWidth && strideC == channelSize)
+            : (strideC == 1 && strideW == channels && strideH == targetWidth * channels)
 
         switch dataType {
         case .float32:
             array.withUnsafeMutableBytes { buffer, _ in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float32.self) else { return }
-                if isNCHW {
-                    // NCHW: [R, G, B] 通道分离
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        let r = Float32(rawData[p]) / 255.0
-                        let g = Float32(rawData[p + 1]) / 255.0
-                        let b = Float32(rawData[p + 2]) / 255.0
-                        for copy in 0..<rgbCopies {
-                            let base = copy * 3 * channelSize
-                            ptr[base + i] = r
-                            ptr[base + channelSize + i] = g
-                            ptr[base + 2 * channelSize + i] = b
+                let scale: Float32 = 1.0 / 255.0
+                if isContiguous {
+                    if isNCHW {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            let r = Float32(scratchBuffer[p]) * scale
+                            let g = Float32(scratchBuffer[p + 1]) * scale
+                            let b = Float32(scratchBuffer[p + 2]) * scale
+                            for copy in 0..<rgbCopies {
+                                let base = copy * 3 * channelSize
+                                ptr[base + i] = r
+                                ptr[base + channelSize + i] = g
+                                ptr[base + 2 * channelSize + i] = b
+                            }
+                        }
+                    } else {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            let r = Float32(scratchBuffer[p]) * scale
+                            let g = Float32(scratchBuffer[p + 1]) * scale
+                            let b = Float32(scratchBuffer[p + 2]) * scale
+                            let base = i * channels
+                            for copy in 0..<rgbCopies {
+                                ptr[base + copy * 3] = r
+                                ptr[base + copy * 3 + 1] = g
+                                ptr[base + copy * 3 + 2] = b
+                            }
                         }
                     }
                 } else {
-                    // NHWC: [R, G, B] 连续
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        let r = Float32(rawData[p]) / 255.0
-                        let g = Float32(rawData[p + 1]) / 255.0
-                        let b = Float32(rawData[p + 2]) / 255.0
-                        let base = i * channels
-                        for copy in 0..<rgbCopies {
-                            ptr[base + copy * 3] = r
-                            ptr[base + copy * 3 + 1] = g
-                            ptr[base + copy * 3 + 2] = b
+                    for y in 0..<targetHeight {
+                        let rowOffset = y * targetWidth
+                        let yStride = y * strideH
+                        for x in 0..<targetWidth {
+                            let p = (rowOffset + x) * 4
+                            let r = Float32(scratchBuffer[p]) * scale
+                            let g = Float32(scratchBuffer[p + 1]) * scale
+                            let b = Float32(scratchBuffer[p + 2]) * scale
+                            let xyOffset = yStride + x * strideW
+                            for copy in 0..<rgbCopies {
+                                let cBase = copy * 3
+                                ptr[xyOffset + cBase * strideC] = r
+                                ptr[xyOffset + (cBase + 1) * strideC] = g
+                                ptr[xyOffset + (cBase + 2) * strideC] = b
+                            }
                         }
                     }
                 }
@@ -438,32 +591,51 @@ private extension UIImage {
         case .float16:
             array.withUnsafeMutableBytes { buffer, _ in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float16.self) else { return }
-                if isNCHW {
-                    // NCHW: [R, G, B] 通道分离
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        let r = Float16(rawData[p]) / Float16(255.0)
-                        let g = Float16(rawData[p + 1]) / Float16(255.0)
-                        let b = Float16(rawData[p + 2]) / Float16(255.0)
-                        for copy in 0..<rgbCopies {
-                            let base = copy * 3 * channelSize
-                            ptr[base + i] = r
-                            ptr[base + channelSize + i] = g
-                            ptr[base + 2 * channelSize + i] = b
+                let scale: Float = 1.0 / 255.0
+                if isContiguous {
+                    if isNCHW {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            let r = Float16(Float(scratchBuffer[p]) * scale)
+                            let g = Float16(Float(scratchBuffer[p + 1]) * scale)
+                            let b = Float16(Float(scratchBuffer[p + 2]) * scale)
+                            for copy in 0..<rgbCopies {
+                                let base = copy * 3 * channelSize
+                                ptr[base + i] = r
+                                ptr[base + channelSize + i] = g
+                                ptr[base + 2 * channelSize + i] = b
+                            }
+                        }
+                    } else {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            let r = Float16(Float(scratchBuffer[p]) * scale)
+                            let g = Float16(Float(scratchBuffer[p + 1]) * scale)
+                            let b = Float16(Float(scratchBuffer[p + 2]) * scale)
+                            let base = i * channels
+                            for copy in 0..<rgbCopies {
+                                ptr[base + copy * 3] = r
+                                ptr[base + copy * 3 + 1] = g
+                                ptr[base + copy * 3 + 2] = b
+                            }
                         }
                     }
                 } else {
-                    // NHWC: [R, G, B] 连续
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        let r = Float16(rawData[p]) / Float16(255.0)
-                        let g = Float16(rawData[p + 1]) / Float16(255.0)
-                        let b = Float16(rawData[p + 2]) / Float16(255.0)
-                        let base = i * channels
-                        for copy in 0..<rgbCopies {
-                            ptr[base + copy * 3] = r
-                            ptr[base + copy * 3 + 1] = g
-                            ptr[base + copy * 3 + 2] = b
+                    for y in 0..<targetHeight {
+                        let rowOffset = y * targetWidth
+                        let yStride = y * strideH
+                        for x in 0..<targetWidth {
+                            let p = (rowOffset + x) * 4
+                            let r = Float16(Float(scratchBuffer[p]) * scale)
+                            let g = Float16(Float(scratchBuffer[p + 1]) * scale)
+                            let b = Float16(Float(scratchBuffer[p + 2]) * scale)
+                            let xyOffset = yStride + x * strideW
+                            for copy in 0..<rgbCopies {
+                                let cBase = copy * 3
+                                ptr[xyOffset + cBase * strideC] = r
+                                ptr[xyOffset + (cBase + 1) * strideC] = g
+                                ptr[xyOffset + (cBase + 2) * strideC] = b
+                            }
                         }
                     }
                 }
@@ -474,7 +646,7 @@ private extension UIImage {
         return array
     }
 
-    static func image(from multiArray: MLMultiArray) throws -> UIImage {
+    static func image(from multiArray: MLMultiArray, scratchBuffer: inout [UInt8]) throws -> UIImage {
         let shape = multiArray.shape.map { Int(truncating: $0) }
 
         // ✅ 验证形状：期望 [1, 3, H, W] (NCHW) 或 [1, H, W, 3] (NHWC)
@@ -501,52 +673,90 @@ private extension UIImage {
         }
 
         let channelSize = height * width
-        var rawData = [UInt8](repeating: 0, count: width * height * 4)
+        let neededBytes = width * height * 4
+        if scratchBuffer.count != neededBytes {
+            scratchBuffer = [UInt8](repeating: 0, count: neededBytes)
+        }
+        let strides = multiArray.strides.map(\.intValue)
+        let strideC = isNCHW ? strides[1] : strides[3]
+        let strideH = isNCHW ? strides[2] : strides[1]
+        let strideW = isNCHW ? strides[3] : strides[2]
+        let isContiguous = isNCHW
+            ? (strideW == 1 && strideH == width && strideC == channelSize)
+            : (strideC == 1 && strideW == 3 && strideH == width * 3)
 
         switch multiArray.dataType {
         case .float32:
             multiArray.withUnsafeBytes { buffer in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float32.self) else { return }
-                if isNCHW {
-                    // NCHW: [R, G, B] 通道分离
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        rawData[p] = UInt8(max(0, min(255, ptr[i] * 255.0)))
-                        rawData[p + 1] = UInt8(max(0, min(255, ptr[channelSize + i] * 255.0)))
-                        rawData[p + 2] = UInt8(max(0, min(255, ptr[2 * channelSize + i] * 255.0)))
-                        rawData[p + 3] = 255
+                if isContiguous {
+                    if isNCHW {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            scratchBuffer[p] = UInt8(max(0, min(255, ptr[i] * 255.0)))
+                            scratchBuffer[p + 1] = UInt8(max(0, min(255, ptr[channelSize + i] * 255.0)))
+                            scratchBuffer[p + 2] = UInt8(max(0, min(255, ptr[2 * channelSize + i] * 255.0)))
+                            scratchBuffer[p + 3] = 255
+                        }
+                    } else {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            let s = i * 3
+                            scratchBuffer[p] = UInt8(max(0, min(255, ptr[s] * 255.0)))
+                            scratchBuffer[p + 1] = UInt8(max(0, min(255, ptr[s + 1] * 255.0)))
+                            scratchBuffer[p + 2] = UInt8(max(0, min(255, ptr[s + 2] * 255.0)))
+                            scratchBuffer[p + 3] = 255
+                        }
                     }
                 } else {
-                    // NHWC: [R, G, B] 连续
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        let s = i * 3
-                        rawData[p] = UInt8(max(0, min(255, ptr[s] * 255.0)))
-                        rawData[p + 1] = UInt8(max(0, min(255, ptr[s + 1] * 255.0)))
-                        rawData[p + 2] = UInt8(max(0, min(255, ptr[s + 2] * 255.0)))
-                        rawData[p + 3] = 255
+                    for y in 0..<height {
+                        let rowOffset = y * width
+                        let yStride = y * strideH
+                        for x in 0..<width {
+                            let p = (rowOffset + x) * 4
+                            let xy = yStride + x * strideW
+                            scratchBuffer[p] = UInt8(max(0, min(255, ptr[xy] * 255.0)))
+                            scratchBuffer[p + 1] = UInt8(max(0, min(255, ptr[xy + strideC] * 255.0)))
+                            scratchBuffer[p + 2] = UInt8(max(0, min(255, ptr[xy + 2 * strideC] * 255.0)))
+                            scratchBuffer[p + 3] = 255
+                        }
                     }
                 }
             }
         case .float16:
             multiArray.withUnsafeBytes { buffer in
                 guard let ptr = buffer.baseAddress?.assumingMemoryBound(to: Float16.self) else { return }
-                if isNCHW {
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        rawData[p] = UInt8(max(0, min(255, Float(ptr[i]) * 255.0)))
-                        rawData[p + 1] = UInt8(max(0, min(255, Float(ptr[channelSize + i]) * 255.0)))
-                        rawData[p + 2] = UInt8(max(0, min(255, Float(ptr[2 * channelSize + i]) * 255.0)))
-                        rawData[p + 3] = 255
+                if isContiguous {
+                    if isNCHW {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            scratchBuffer[p] = UInt8(max(0, min(255, Float(ptr[i]) * 255.0)))
+                            scratchBuffer[p + 1] = UInt8(max(0, min(255, Float(ptr[channelSize + i]) * 255.0)))
+                            scratchBuffer[p + 2] = UInt8(max(0, min(255, Float(ptr[2 * channelSize + i]) * 255.0)))
+                            scratchBuffer[p + 3] = 255
+                        }
+                    } else {
+                        for i in 0..<channelSize {
+                            let p = i * 4
+                            let s = i * 3
+                            scratchBuffer[p] = UInt8(max(0, min(255, Float(ptr[s]) * 255.0)))
+                            scratchBuffer[p + 1] = UInt8(max(0, min(255, Float(ptr[s + 1]) * 255.0)))
+                            scratchBuffer[p + 2] = UInt8(max(0, min(255, Float(ptr[s + 2]) * 255.0)))
+                            scratchBuffer[p + 3] = 255
+                        }
                     }
                 } else {
-                    for i in 0..<channelSize {
-                        let p = i * 4
-                        let s = i * 3
-                        rawData[p] = UInt8(max(0, min(255, Float(ptr[s]) * 255.0)))
-                        rawData[p + 1] = UInt8(max(0, min(255, Float(ptr[s + 1]) * 255.0)))
-                        rawData[p + 2] = UInt8(max(0, min(255, Float(ptr[s + 2]) * 255.0)))
-                        rawData[p + 3] = 255
+                    for y in 0..<height {
+                        let rowOffset = y * width
+                        let yStride = y * strideH
+                        for x in 0..<width {
+                            let p = (rowOffset + x) * 4
+                            let xy = yStride + x * strideW
+                            scratchBuffer[p] = UInt8(max(0, min(255, Float(ptr[xy]) * 255.0)))
+                            scratchBuffer[p + 1] = UInt8(max(0, min(255, Float(ptr[xy + strideC]) * 255.0)))
+                            scratchBuffer[p + 2] = UInt8(max(0, min(255, Float(ptr[xy + 2 * strideC]) * 255.0)))
+                            scratchBuffer[p + 3] = 255
+                        }
                     }
                 }
             }
@@ -554,7 +764,7 @@ private extension UIImage {
             throw UpscaleError.preprocessingFailed
         }
 
-        let cgImage = rawData.withUnsafeMutableBytes { buffer -> CGImage? in
+        let cgImage = scratchBuffer.withUnsafeMutableBytes { buffer -> CGImage? in
             guard let baseAddress = buffer.baseAddress else { return nil }
             return CGContext(data: baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)?.makeImage()
         }
@@ -563,14 +773,20 @@ private extension UIImage {
     }
 
     func resize(to targetSize: CGSize) -> UIImage {
-        UIGraphicsImageRenderer(size: targetSize).image { _ in
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1.0
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: targetSize, format: format).image { _ in
             draw(in: CGRect(origin: .zero, size: targetSize))
         }
     }
 
     /// Padding 到指定尺寸（用黑色填充）
     func padToSize(targetSize: CGSize) -> UIImage {
-        UIGraphicsImageRenderer(size: targetSize).image { context in
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1.0
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: targetSize, format: format).image { context in
             UIColor.black.setFill()
             context.fill(CGRect(origin: .zero, size: targetSize))
             draw(in: CGRect(origin: .zero, size: size))
@@ -579,7 +795,10 @@ private extension UIImage {
 
     /// 精确非对称 padding：在指定方向添加黑边，图像放置在 (left, top) 位置
     func padTo(left: Int, top: Int, right: Int, bottom: Int, targetSize: CGSize) -> UIImage {
-        UIGraphicsImageRenderer(size: targetSize).image { context in
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1.0
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: targetSize, format: format).image { context in
             UIColor.black.setFill()
             context.fill(CGRect(origin: .zero, size: targetSize))
             draw(in: CGRect(x: CGFloat(left), y: CGFloat(top), width: size.width, height: size.height))
@@ -596,7 +815,7 @@ private extension UIImage {
 
     convenience init?(pixelBuffer: CVPixelBuffer) {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let cgImage = CIContext().createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        guard let cgImage = ImageUpscaler.sharedCIContext.createCGImage(ciImage, from: ciImage.extent) else { return nil }
         self.init(cgImage: cgImage)
     }
 }

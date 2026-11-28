@@ -156,7 +156,7 @@ struct ComicCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
@@ -350,11 +350,11 @@ struct LibraryDirectoryNavigationView: View {
                 }
             }
             .padding(12)
-            .background(Color(.secondarySystemBackground))
+            .background(Color(uiColor: .secondarySystemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay {
                 RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                    .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
             }
             .padding(.horizontal, 16)
         }
@@ -389,7 +389,7 @@ private struct LibraryDirectoryBreadcrumbBar: View {
                         .foregroundStyle(currentPath.isEmpty ? .white : .secondary)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
-                        .background(currentPath.isEmpty ? Color.accentColor : Color(.tertiarySystemFill))
+                        .background(currentPath.isEmpty ? Color.accentColor : Color(uiColor: .tertiarySystemFill))
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
@@ -422,7 +422,7 @@ private struct LibraryDirectoryBreadcrumbBar: View {
                             .font(.caption2.weight(.medium))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
-                            .background(Color(.tertiarySystemFill))
+                            .background(Color(uiColor: .tertiarySystemFill))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
@@ -457,7 +457,7 @@ private struct LibraryDirectoryNodeCard: View {
                     if let url = resolvedCoverURL {
                         AuthenticatedImage(url: url)
                     } else {
-                        Color(.tertiarySystemFill)
+                        Color(uiColor: .tertiarySystemFill)
                             .overlay {
                                 Image(systemName: "folder.fill")
                                     .font(.caption)
@@ -491,11 +491,11 @@ private struct LibraryDirectoryNodeCard: View {
             }
             .padding(7)
             .frame(width: 158, height: 58, alignment: .leading)
-            .background(Color(.systemBackground))
+            .background(Color(uiColor: .systemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color(.separator).opacity(0.35), lineWidth: 0.5)
+                    .stroke(Color(uiColor: .separator).opacity(0.35), lineWidth: 0.5)
             }
         }
         .buttonStyle(.plain)
@@ -527,6 +527,7 @@ final class LibraryViewModel {
     /// 当前加载任务版本号，旧任务完成时忽略（避免离线切换时旧请求挂起覆盖状态）
     private var loadVersion: Int = 0
     private var directoryLoadVersion: Int = 0
+    @ObservationIgnored private var loadMoreTask: Task<Void, Never>?
 
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
@@ -537,6 +538,10 @@ final class LibraryViewModel {
         // 离线 + 已有数据 + 非手动刷新 → 跳过（避免切 tab 时清空再重载）
         if api.isOfflineMode && !comics.isEmpty && !refresh {
             return
+        }
+        if refresh {
+            loadMoreTask?.cancel()
+            loadMoreTask = nil
         }
         loadVersion += 1
         let version = loadVersion
@@ -694,6 +699,14 @@ final class LibraryViewModel {
         context.saveOrLog()
     }
 
+    func requestLoadMore() {
+        guard hasMore, !isLoading, loadMoreTask == nil else { return }
+        loadMoreTask = Task { @MainActor [weak self] in
+            defer { self?.loadMoreTask = nil }
+            await self?.loadMore()
+        }
+    }
+
     func loadMore() async {
         guard hasMore, !isLoading else { return }
         loadVersion += 1
@@ -838,6 +851,10 @@ final class CollectionViewModel {
     private let api = APIClient.shared
     private var modelContext: ModelContext?
     private var loadVersion = 0
+    @ObservationIgnored private var currentMutationRevision = 0
+    @ObservationIgnored private var currentNetworkRecovered = false
+    @ObservationIgnored private var lastRemoteCacheKey: CollectionRemoteCacheKey?
+    @ObservationIgnored private var lastRemoteSnapshot: RemoteGroupsSnapshot?
 
     func setModelContext(_ context: ModelContext) {
         self.modelContext = context
@@ -845,6 +862,23 @@ final class CollectionViewModel {
 
     func load(refresh: Bool = false) async {
         if api.isOfflineMode && !groups.isEmpty && !refresh {
+            return
+        }
+        let cacheKey = CollectionRemoteCacheKey(
+            contentType: contentType,
+            tag: tag,
+            mutationRevision: currentMutationRevision,
+            networkRecovered: currentNetworkRecovered
+        )
+        if !refresh,
+           !api.isOfflineMode,
+           api.isNetworkReachable,
+           lastRemoteCacheKey == cacheKey,
+           let cached = lastRemoteSnapshot {
+            groups = sortedGroups(cached.groups)
+            groupedComicIds = cached.membership.comicIds
+            groupedSeriesIds = cached.membership.seriesIds
+            isLoading = false
             return
         }
         loadVersion += 1
@@ -866,6 +900,8 @@ final class CollectionViewModel {
                 }
                 return
             }
+            lastRemoteCacheKey = cacheKey
+            lastRemoteSnapshot = remote
             loaded = remote.groups
             membership = remote.membership
         }
@@ -904,28 +940,21 @@ final class CollectionViewModel {
     }
 
     private func loadGroupMembership(for groups: [ComicGroup]) async -> GroupMembershipSnapshot {
+        guard !groups.isEmpty else { return .empty }
         let selectedContentType = contentType
+        let maxConcurrent = 4
         return await withTaskGroup(of: GroupMembershipSnapshot.self) { taskGroup in
-            for group in groups {
+            var nextIndex = 0
+            let initialCount = min(maxConcurrent, groups.count)
+            while nextIndex < initialCount {
+                let group = groups[nextIndex]
+                nextIndex += 1
                 taskGroup.addTask { [api] in
-                    do {
-                        let detail = try await api.fetchGroupDetail(
-                            id: group.id,
-                            contentType: selectedContentType
-                        )
-                        return GroupMembershipSnapshot(
-                            comicIds: Set(
-                                detail.comics.map(\.id)
-                                    + detail.seriesList.flatMap { $0.comics.map(\.id) }
-                            ),
-                            seriesIds: Set(detail.seriesList.map(\.id))
-                        )
-                    } catch {
-                        if !Task.isCancelled {
-                            AppLogger.error("加载合集目录关系失败: \(error)")
-                        }
-                        return .empty
-                    }
+                    await Self.fetchMembershipSnapshot(
+                        api: api,
+                        groupId: group.id,
+                        contentType: selectedContentType
+                    )
                 }
             }
 
@@ -933,8 +962,44 @@ final class CollectionViewModel {
             for await membership in taskGroup {
                 result.comicIds.formUnion(membership.comicIds)
                 result.seriesIds.formUnion(membership.seriesIds)
+                if nextIndex < groups.count && !Task.isCancelled {
+                    let group = groups[nextIndex]
+                    nextIndex += 1
+                    taskGroup.addTask { [api] in
+                        await Self.fetchMembershipSnapshot(
+                            api: api,
+                            groupId: group.id,
+                            contentType: selectedContentType
+                        )
+                    }
+                }
             }
             return result
+        }
+    }
+
+    private static func fetchMembershipSnapshot(
+        api: APIClient,
+        groupId: Int,
+        contentType: String?
+    ) async -> GroupMembershipSnapshot {
+        do {
+            let detail = try await api.fetchGroupDetail(
+                id: groupId,
+                contentType: contentType
+            )
+            return GroupMembershipSnapshot(
+                comicIds: Set(
+                    detail.comics.map(\.id)
+                        + detail.seriesList.flatMap { $0.comics.map(\.id) }
+                ),
+                seriesIds: Set(detail.seriesList.map(\.id))
+            )
+        } catch {
+            if !Task.isCancelled {
+                AppLogger.error("加载合集目录关系失败: \(error)")
+            }
+            return .empty
         }
     }
 
@@ -1008,15 +1073,32 @@ final class CollectionViewModel {
         }
     }
 
-    func configure(contentType: String?, sortBy: String, sortOrder: String, tag: String? = nil) async {
+    func configure(
+        contentType: String?,
+        sortBy: String,
+        sortOrder: String,
+        tag: String? = nil,
+        contentMutationRevision: Int = 0,
+        networkRecovered: Bool = false,
+        refresh: Bool = true
+    ) async {
         self.contentType = contentType
         self.sortBy = sortBy
         self.sortOrder = sortOrder
+        self.currentMutationRevision = contentMutationRevision
+        self.currentNetworkRecovered = networkRecovered
         self.tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             ? tag?.trimmingCharacters(in: .whitespacesAndNewlines)
             : nil
-        await load(refresh: true)
+        await load(refresh: refresh)
     }
+}
+
+private struct CollectionRemoteCacheKey: Equatable {
+    let contentType: String?
+    let tag: String?
+    let mutationRevision: Int
+    let networkRecovered: Bool
 }
 
 private struct OfflineGroupsLoadSnapshot: Sendable {

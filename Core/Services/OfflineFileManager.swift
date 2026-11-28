@@ -11,9 +11,12 @@ final class OfflineFileManager {
     private let fileManager = FileManager.default
     private let groupsLock = NSLock()
     private let seriesLock = NSLock()
-    private let comicFilesLock = NSLock()
+    private let stateLock = NSLock()
+    private let metaWriteLock = NSLock()
     private var acceptedDownloadGenerations: [String: String] = [:]
     private var discardedComicIds = Set<String>()
+    private var cachedGroups: [OfflineGroupMeta]?
+    private var cachedSeries: [SeriesDetailResponse]?
 
     private init() {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -21,9 +24,9 @@ final class OfflineFileManager {
         try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
     }
 
-    private func withComicFilesLock<T>(_ operation: () throws -> T) rethrows -> T {
-        comicFilesLock.lock()
-        defer { comicFilesLock.unlock() }
+    private func withStateLock<T>(_ operation: () throws -> T) rethrows -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         return try operation()
     }
 
@@ -69,9 +72,7 @@ final class OfflineFileManager {
 
     /// 已写入本地的页面索引，一次目录枚举即可用于恢复与缺页核算。
     func downloadedPageIndices(comicId: String) -> Set<Int> {
-        withComicFilesLock {
-            downloadedPageIndicesUnlocked(comicId: comicId)
-        }
+        downloadedPageIndicesUnlocked(comicId: comicId)
     }
 
     private func downloadedPageIndicesUnlocked(comicId: String) -> Set<Int> {
@@ -98,50 +99,91 @@ final class OfflineFileManager {
     }
 
     func loadNovelPageList(comicId: String) -> PageList? {
-        withComicFilesLock {
-            guard let data = try? Data(contentsOf: novelPageListURL(comicId: comicId)) else {
-                return nil
-            }
-            return try? JSONDecoder().decode(PageList.self, from: data)
+        guard let data = try? Data(contentsOf: novelPageListURL(comicId: comicId)) else {
+            return nil
         }
+        return try? JSONDecoder().decode(PageList.self, from: data)
     }
 
     /// 兼容新版完整章节 JSON 与旧版纯正文字节。
     func loadNovelChapter(comicId: String, chapter: Int) -> ChapterContent? {
-        withComicFilesLock {
-            guard let data = try? Data(contentsOf: pageURL(comicId: comicId, page: chapter)) else {
-                return nil
-            }
-            if let content = try? JSONDecoder().decode(ChapterContent.self, from: data) {
-                return content
-            }
-            guard let text = String(data: data, encoding: .utf8) else { return nil }
-            let pageList: PageList?
-            if let pageListData = try? Data(
-                contentsOf: novelPageListURL(comicId: comicId)
-            ) {
-                pageList = try? JSONDecoder().decode(PageList.self, from: pageListData)
-            } else {
-                pageList = nil
-            }
-            let title = pageList?.pages?.first(where: { $0.index == chapter })?.title
-            return ChapterContent(
-                title: title,
-                content: text,
-                chapterIndex: chapter,
-                totalChapters: pageList?.totalPages,
-                mimeType: Self.looksLikeHTML(text) ? "text/html; charset=utf-8" : "text/plain; charset=utf-8"
-            )
+        guard let data = try? Data(contentsOf: pageURL(comicId: comicId, page: chapter)) else {
+            return nil
         }
+        if let content = try? JSONDecoder().decode(ChapterContent.self, from: data) {
+            return content
+        }
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let pageList: PageList?
+        if let pageListData = try? Data(
+            contentsOf: novelPageListURL(comicId: comicId)
+        ) {
+            pageList = try? JSONDecoder().decode(PageList.self, from: pageListData)
+        } else {
+            pageList = nil
+        }
+        let title = pageList?.pages?.first(where: { $0.index == chapter })?.title
+        return ChapterContent(
+            title: title,
+            content: text,
+            chapterIndex: chapter,
+            totalChapters: pageList?.totalPages,
+            mimeType: Self.looksLikeHTML(text) ? "text/html; charset=utf-8" : "text/plain; charset=utf-8"
+        )
     }
 
     func loadNovelResourceData(comicId: String, source: String) -> Data? {
-        withComicFilesLock {
-            try? Data(contentsOf: novelResourceURL(comicId: comicId, source: source))
-        }
+        try? Data(contentsOf: novelResourceURL(comicId: comicId, source: source))
     }
 
     // MARK: - 写入
+
+    private func ensureComicDirectoryExists(comicId: String) throws -> URL {
+        let dir = comicDir(for: comicId)
+        if !fileManager.fileExists(atPath: dir.path) {
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    private func writeAtomicallyWithGenerationCheck(
+        _ data: Data,
+        to targetURL: URL,
+        comicId: String,
+        generation: String?
+    ) throws {
+        try validateWrite(comicId: comicId, generation: generation)
+        _ = try ensureComicDirectoryExists(comicId: comicId)
+        try data.write(to: targetURL, options: .atomic)
+        do {
+            try validateWrite(comicId: comicId, generation: generation)
+        } catch {
+            try? fileManager.removeItem(at: targetURL)
+            throw error
+        }
+    }
+
+    /// 零拷贝移动后台下载临时文件到目标页面路径。
+    func movePageFile(
+        from sourceURL: URL,
+        comicId: String,
+        page: Int,
+        generation: String? = nil
+    ) throws {
+        try validateWrite(comicId: comicId, generation: generation)
+        _ = try ensureComicDirectoryExists(comicId: comicId)
+        let targetURL = pageURL(comicId: comicId, page: page)
+        if fileManager.fileExists(atPath: targetURL.path) {
+            try? fileManager.removeItem(at: targetURL)
+        }
+        try fileManager.moveItem(at: sourceURL, to: targetURL)
+        do {
+            try validateWrite(comicId: comicId, generation: generation)
+        } catch {
+            try? fileManager.removeItem(at: targetURL)
+            throw error
+        }
+    }
 
     /// 保存某页的原始 JPEG Data
     func savePageData(
@@ -150,15 +192,12 @@ final class OfflineFileManager {
         page: Int,
         generation: String? = nil
     ) throws {
-        try withComicFilesLock {
-            try validateWriteUnlocked(comicId: comicId, generation: generation)
-            let dir = comicDir(for: comicId)
-            if !fileManager.fileExists(atPath: dir.path) {
-                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let url = pageURL(comicId: comicId, page: page)
-            try data.write(to: url, options: .atomic)
-        }
+        try writeAtomicallyWithGenerationCheck(
+            data,
+            to: pageURL(comicId: comicId, page: page),
+            comicId: comicId,
+            generation: generation
+        )
     }
 
     func saveNovelPageList(
@@ -166,15 +205,14 @@ final class OfflineFileManager {
         comicId: String,
         generation: String? = nil
     ) throws {
-        try withComicFilesLock {
-            try validateWriteUnlocked(comicId: comicId, generation: generation)
-            let dir = comicDir(for: comicId)
-            if !fileManager.fileExists(atPath: dir.path) {
-                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let data = try JSONEncoder().encode(pageList)
-            try data.write(to: novelPageListURL(comicId: comicId), options: .atomic)
-        }
+        try validateWrite(comicId: comicId, generation: generation)
+        let data = try JSONEncoder().encode(pageList)
+        try writeAtomicallyWithGenerationCheck(
+            data,
+            to: novelPageListURL(comicId: comicId),
+            comicId: comicId,
+            generation: generation
+        )
     }
 
     func saveNovelResourceData(
@@ -183,47 +221,53 @@ final class OfflineFileManager {
         source: String,
         generation: String? = nil
     ) throws {
-        try withComicFilesLock {
-            try validateWriteUnlocked(comicId: comicId, generation: generation)
-            let dir = comicDir(for: comicId)
-            if !fileManager.fileExists(atPath: dir.path) {
-                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            try data.write(
-                to: novelResourceURL(comicId: comicId, source: source),
-                options: .atomic
-            )
-        }
+        try writeAtomicallyWithGenerationCheck(
+            data,
+            to: novelResourceURL(comicId: comicId, source: source),
+            comicId: comicId,
+            generation: generation
+        )
     }
 
     func markNovelResourcesComplete(
         comicId: String,
         generation: String
     ) throws {
-        try withComicFilesLock {
-            try validateWriteUnlocked(comicId: comicId, generation: generation)
-            guard let meta = loadMetaUnlocked(comicId: comicId) else {
-                throw OfflineFileError.missingMetadata
-            }
-            let updated = OfflineComicMeta(
-                comicId: meta.comicId,
-                title: meta.title,
-                pageCount: meta.pageCount,
-                downloadedAt: meta.downloadedAt,
-                fileSize: meta.fileSize,
-                isNovel: meta.isNovel,
-                novelResourcesComplete: true
-            )
-            let data = try JSONEncoder().encode(updated)
-            try data.write(to: metaURL(comicId: comicId), options: .atomic)
+        metaWriteLock.lock()
+        defer { metaWriteLock.unlock() }
+        try validateWrite(comicId: comicId, generation: generation)
+        guard let meta = loadMetaUnlocked(comicId: comicId) else {
+            throw OfflineFileError.missingMetadata
         }
+        let updated = OfflineComicMeta(
+            comicId: meta.comicId,
+            title: meta.title,
+            pageCount: meta.pageCount,
+            downloadedAt: meta.downloadedAt,
+            fileSize: meta.fileSize,
+            isNovel: meta.isNovel,
+            novelResourcesComplete: true
+        )
+        let data = try JSONEncoder().encode(updated)
+        try writeAtomicallyWithGenerationCheck(
+            data,
+            to: metaURL(comicId: comicId),
+            comicId: comicId,
+            generation: generation
+        )
     }
 
     /// 为一次新的下载尝试登记代次，迟到的旧回调将被拒绝写入。
     func prepareComicDownload(comicId: String, generation: String) {
-        withComicFilesLock {
+        withStateLock {
             acceptedDownloadGenerations[comicId] = generation
             discardedComicIds.remove(comicId)
+        }
+    }
+
+    private func validateWrite(comicId: String, generation: String?) throws {
+        try withStateLock {
+            try validateWriteUnlocked(comicId: comicId, generation: generation)
         }
     }
 
@@ -259,22 +303,21 @@ final class OfflineFileManager {
         comicId: String,
         generation: String? = nil
     ) throws {
-        try withComicFilesLock {
-            try validateWriteUnlocked(comicId: comicId, generation: generation)
-            let dir = comicDir(for: comicId)
-            if !fileManager.fileExists(atPath: dir.path) {
-                try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
-            let data = try JSONEncoder().encode(meta)
-            try data.write(to: metaURL(comicId: comicId), options: .atomic)
-        }
+        metaWriteLock.lock()
+        defer { metaWriteLock.unlock() }
+        try validateWrite(comicId: comicId, generation: generation)
+        let data = try JSONEncoder().encode(meta)
+        try writeAtomicallyWithGenerationCheck(
+            data,
+            to: metaURL(comicId: comicId),
+            comicId: comicId,
+            generation: generation
+        )
     }
 
     /// 读取漫画下载元数据
     func loadMeta(comicId: String) -> OfflineComicMeta? {
-        withComicFilesLock {
-            loadMetaUnlocked(comicId: comicId)
-        }
+        loadMetaUnlocked(comicId: comicId)
     }
 
     private func loadMetaUnlocked(comicId: String) -> OfflineComicMeta? {
@@ -287,40 +330,38 @@ final class OfflineFileManager {
     /// 删除某本漫画的全部本地文件
     @discardableResult
     func deleteComic(comicId: String) -> Bool {
-        withComicFilesLock {
+        withStateLock {
             discardedComicIds.insert(comicId)
             acceptedDownloadGenerations.removeValue(forKey: comicId)
-            let directory = comicDir(for: comicId)
-            guard fileManager.fileExists(atPath: directory.path) else {
-                return true
-            }
-            do {
-                try fileManager.removeItem(at: directory)
-                return true
-            } catch {
-                AppLogger.error("删除离线文件失败 \(comicId): \(error)")
-                return false
-            }
+        }
+        let directory = comicDir(for: comicId)
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return true
+        }
+        do {
+            try fileManager.removeItem(at: directory)
+            return true
+        } catch {
+            AppLogger.error("删除离线文件失败 \(comicId): \(error)")
+            return false
         }
     }
 
     /// 删除所有已下载漫画
     func deleteAll() {
-        withComicFilesLock {
+        withStateLock {
             discardedComicIds.formUnion(acceptedDownloadGenerations.keys)
             acceptedDownloadGenerations.removeAll()
-            try? fileManager.removeItem(at: baseDir)
-            try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
         }
+        try? fileManager.removeItem(at: baseDir)
+        try? fileManager.createDirectory(at: baseDir, withIntermediateDirectories: true)
     }
 
     // MARK: - 统计
 
     /// 某本漫画的本地存储大小（字节）
     func comicDiskSize(comicId: String) -> Int64 {
-        withComicFilesLock {
-            comicDiskSizeUnlocked(comicId: comicId)
-        }
+        comicDiskSizeUnlocked(comicId: comicId)
     }
 
     private func comicDiskSizeUnlocked(comicId: String) -> Int64 {
@@ -340,71 +381,138 @@ final class OfflineFileManager {
     }
 
     func diskUsageSnapshot() -> OfflineDiskUsageSnapshot {
-        withComicFilesLock {
-            guard let items = try? fileManager.contentsOfDirectory(
-                at: baseDir, includingPropertiesForKeys: [.isDirectoryKey],
-                options: .skipsHiddenFiles
-            ) else {
-                return OfflineDiskUsageSnapshot(totalBytes: 0, bytesByComicId: [:])
-            }
-            var bytesByComicId: [String: Int64] = [:]
-            for item in items {
-                var isDir: ObjCBool = false
-                guard fileManager.fileExists(
-                    atPath: item.path,
-                    isDirectory: &isDir
-                ), isDir.boolValue else {
-                    continue
-                }
-                bytesByComicId[item.lastPathComponent] = comicDiskSizeUnlocked(
-                    comicId: item.lastPathComponent
-                )
-            }
-            return OfflineDiskUsageSnapshot(
-                totalBytes: bytesByComicId.values.reduce(0, +),
-                bytesByComicId: bytesByComicId
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: .skipsHiddenFiles
+        ) else {
+            return OfflineDiskUsageSnapshot(totalBytes: 0, bytesByComicId: [:])
+        }
+        var bytesByComicId: [String: Int64] = [:]
+        var totalBytes: Int64 = 0
+        for item in items {
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            guard isDir else { continue }
+            let size = comicDiskSizeUnlocked(comicId: item.lastPathComponent)
+            bytesByComicId[item.lastPathComponent] = size
+            totalBytes += size
+        }
+        return OfflineDiskUsageSnapshot(
+            totalBytes: totalBytes,
+            bytesByComicId: bytesByComicId
+        )
+    }
+
+    /// 单次目录枚举同时构建下载状态快照与磁盘占用统计（启动使用，避免重复全树扫描）。
+    func startupSnapshot() -> (downloadState: OfflineDownloadStateSnapshot, diskUsage: OfflineDiskUsageSnapshot) {
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: .skipsHiddenFiles
+        ) else {
+            return (
+                OfflineDownloadStateSnapshot(metas: [:], pageIndices: [:], completedIds: []),
+                OfflineDiskUsageSnapshot(totalBytes: 0, bytesByComicId: [:])
             )
         }
+
+        var metas: [String: OfflineComicMeta] = [:]
+        var pageIndices: [String: Set<Int>] = [:]
+        var completedIds = Set<String>()
+        var bytesByComicId: [String: Int64] = [:]
+        var totalBytes: Int64 = 0
+
+        for item in items {
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            guard isDir else { continue }
+            let comicId = item.lastPathComponent
+            let files = (try? fileManager.contentsOfDirectory(
+                at: item,
+                includingPropertiesForKeys: [.fileSizeKey]
+            )) ?? []
+
+            var indices = Set<Int>()
+            var comicBytes: Int64 = 0
+            var hasMetaFile = false
+            for fileURL in files {
+                let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                comicBytes += Int64(size)
+                let filename = fileURL.lastPathComponent
+                if filename == "meta.json" {
+                    hasMetaFile = true
+                } else if filename.hasPrefix("page_"), filename.hasSuffix(".jpg") {
+                    let start = filename.index(filename.startIndex, offsetBy: 5)
+                    let end = filename.index(filename.endIndex, offsetBy: -4)
+                    if let pageIndex = Int(filename[start..<end]) {
+                        indices.insert(pageIndex)
+                    }
+                }
+            }
+            bytesByComicId[comicId] = comicBytes
+            totalBytes += comicBytes
+            pageIndices[comicId] = indices
+
+            guard hasMetaFile, let meta = loadMetaUnlocked(comicId: comicId) else { continue }
+            metas[comicId] = meta
+            let novelResourcesReady = meta.isNovel != true || meta.novelResourcesComplete != false
+            if meta.pageCount > 0,
+               novelResourcesReady,
+               (0..<meta.pageCount).allSatisfy(indices.contains) {
+                completedIds.insert(comicId)
+            }
+        }
+
+        return (
+            OfflineDownloadStateSnapshot(
+                metas: metas,
+                pageIndices: pageIndices,
+                completedIds: completedIds
+            ),
+            OfflineDiskUsageSnapshot(
+                totalBytes: totalBytes,
+                bytesByComicId: bytesByComicId
+            )
+        )
     }
 
     /// 返回所有带元数据的下载状态，并单独标记页面完整的作品。
     func downloadStateSnapshot() -> OfflineDownloadStateSnapshot {
-        withComicFilesLock {
-            guard let items = try? fileManager.contentsOfDirectory(
-                at: baseDir,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: .skipsHiddenFiles
-            ) else {
-                return OfflineDownloadStateSnapshot(
-                    metas: [:],
-                    pageIndices: [:],
-                    completedIds: []
-                )
-            }
-
-            var metas: [String: OfflineComicMeta] = [:]
-            var pageIndices: [String: Set<Int>] = [:]
-            var completedIds = Set<String>()
-            for item in items {
-                let comicId = item.lastPathComponent
-                let indices = downloadedPageIndicesUnlocked(comicId: comicId)
-                pageIndices[comicId] = indices
-                guard let meta = loadMetaUnlocked(comicId: comicId) else { continue }
-                metas[comicId] = meta
-                let novelResourcesReady = meta.isNovel != true
-                    || meta.novelResourcesComplete != false
-                if meta.pageCount > 0,
-                   novelResourcesReady,
-                   (0..<meta.pageCount).allSatisfy(indices.contains) {
-                    completedIds.insert(comicId)
-                }
-            }
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: baseDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: .skipsHiddenFiles
+        ) else {
             return OfflineDownloadStateSnapshot(
-                metas: metas,
-                pageIndices: pageIndices,
-                completedIds: completedIds
+                metas: [:],
+                pageIndices: [:],
+                completedIds: []
             )
         }
+
+        var metas: [String: OfflineComicMeta] = [:]
+        var pageIndices: [String: Set<Int>] = [:]
+        var completedIds = Set<String>()
+        for item in items {
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            guard isDir else { continue }
+            let comicId = item.lastPathComponent
+            let indices = downloadedPageIndicesUnlocked(comicId: comicId)
+            pageIndices[comicId] = indices
+            guard let meta = loadMetaUnlocked(comicId: comicId) else { continue }
+            metas[comicId] = meta
+            let novelResourcesReady = meta.isNovel != true
+                || meta.novelResourcesComplete != false
+            if meta.pageCount > 0,
+               novelResourcesReady,
+               (0..<meta.pageCount).allSatisfy(indices.contains) {
+                completedIds.insert(comicId)
+            }
+        }
+        return OfflineDownloadStateSnapshot(
+            metas: metas,
+            pageIndices: pageIndices,
+            completedIds: completedIds
+        )
     }
 
     func completedDownloads() -> [String: OfflineComicMeta] {
@@ -426,8 +534,16 @@ final class OfflineFileManager {
     }
 
     private func loadGroupsUnlocked() -> [OfflineGroupMeta] {
-        guard let data = try? Data(contentsOf: groupsFileURL) else { return [] }
-        return (try? JSONDecoder().decode([OfflineGroupMeta].self, from: data)) ?? []
+        if let cachedGroups {
+            return cachedGroups
+        }
+        guard let data = try? Data(contentsOf: groupsFileURL),
+              let decoded = try? JSONDecoder().decode([OfflineGroupMeta].self, from: data) else {
+            cachedGroups = []
+            return []
+        }
+        cachedGroups = decoded
+        return decoded
     }
 
     /// 保存单个合集（合并已有数据，按 id 去重）
@@ -451,6 +567,7 @@ final class OfflineFileManager {
     }
 
     private func saveGroupsUnlocked(_ groups: [OfflineGroupMeta]) {
+        cachedGroups = groups
         guard let data = try? JSONEncoder().encode(groups) else { return }
         try? data.write(to: groupsFileURL, options: .atomic)
     }
@@ -498,11 +615,20 @@ final class OfflineFileManager {
     }
 
     private func loadAllSeriesUnlocked() -> [SeriesDetailResponse] {
-        guard let data = try? Data(contentsOf: seriesFileURL) else { return [] }
-        return (try? JSONDecoder().decode([SeriesDetailResponse].self, from: data)) ?? []
+        if let cachedSeries {
+            return cachedSeries
+        }
+        guard let data = try? Data(contentsOf: seriesFileURL),
+              let decoded = try? JSONDecoder().decode([SeriesDetailResponse].self, from: data) else {
+            cachedSeries = []
+            return []
+        }
+        cachedSeries = decoded
+        return decoded
     }
 
     private func saveAllSeriesUnlocked(_ list: [SeriesDetailResponse]) {
+        cachedSeries = list
         guard let data = try? JSONEncoder().encode(list) else { return }
         try? data.write(to: seriesFileURL, options: .atomic)
     }

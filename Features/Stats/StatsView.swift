@@ -61,10 +61,11 @@ struct StatsMainContent: View {
                 viewModel.isLoading = false
                 viewModel.enhancedStats = nil
                 viewModel.goals = []
+                viewModel.invalidateCache()
             }
         }
         .refreshable {
-            await viewModel.loadAll()
+            await viewModel.loadAll(force: true)
         }
         .sheet(isPresented: $showGoalSheet) {
             GoalSettingSheet(
@@ -120,7 +121,7 @@ struct GoalProgressCard: View {
         }
         .padding(16)
         .frame(minWidth: 140)
-        .background(Color(.systemGray6))
+        .background(Color(uiColor: .systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
@@ -135,7 +136,7 @@ struct ProgressRingView: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color(.systemGray4), lineWidth: lineWidth)
+                .stroke(Color(uiColor: .systemGray4), lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: min(max(progress, 0), 1))
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
@@ -151,7 +152,7 @@ struct DailyBarChart: View {
 
     var body: some View {
         let recentStats = Array(dailyStats.suffix(30))
-        let maxDuration = recentStats.map(\.duration).max() ?? 1
+        let maxDuration = max(1, recentStats.map(\.duration).max() ?? 1)
 
         ScrollView(.horizontal) {
             HStack(alignment: .bottom, spacing: 4) {
@@ -160,7 +161,7 @@ struct DailyBarChart: View {
                         Spacer()
                         let height = max(CGFloat(stat.duration) / CGFloat(maxDuration) * 90, stat.duration > 0 ? 4 : 2)
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(stat.duration > 0 ? Color.accentColor : Color(.systemGray4))
+                            .fill(stat.duration > 0 ? Color.accentColor : Color(uiColor: .systemGray4))
                             .frame(width: 8, height: height)
                         Text(formatDay(stat.date))
                             .font(.system(size: 8))
@@ -216,13 +217,17 @@ struct GoalSettingSheet: View {
                 if goals.contains(where: { $0.goal.goalType == selectedType }) {
                     Section {
                         Button(role: .destructive) {
+                            guard !isSaving else { return }
+                            isSaving = true
                             Task {
+                                defer { isSaving = false }
                                 await onDelete(selectedType)
                                 dismiss()
                             }
                         } label: {
                             Text("删除\(selectedType == "daily" ? "每日" : "每周")目标")
                         }
+                        .disabled(isSaving)
                     }
                 }
             }
@@ -234,10 +239,11 @@ struct GoalSettingSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
+                        guard !isSaving else { return }
+                        isSaving = true
                         Task {
-                            isSaving = true
+                            defer { isSaving = false }
                             await onSave(selectedType, targetMins, targetBooks)
-                            isSaving = false
                             dismiss()
                         }
                     }
@@ -305,7 +311,7 @@ struct GoalSectionView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
-                        .background(Color(.systemGray6))
+                        .background(Color(uiColor: .systemGray6))
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                     .buttonStyle(.plain)
@@ -324,7 +330,7 @@ struct GoalSectionView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
-                    .background(Color(.systemGray6))
+                    .background(Color(uiColor: .systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .padding(.horizontal, 16)
                 }
@@ -412,7 +418,7 @@ struct StreakCardView: View {
             .frame(maxWidth: .infinity)
         }
         .padding(.vertical, 16)
-        .background(Color(.systemGray6))
+        .background(Color(uiColor: .systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 16)
     }
@@ -442,7 +448,7 @@ struct DailyChartCardView: View {
             }
         }
         .padding(.vertical, 12)
-        .background(Color(.systemGray6))
+        .background(Color(uiColor: .systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 16)
     }
@@ -459,7 +465,7 @@ struct GenreSectionView: View {
                 .font(.headline)
                 .padding(.horizontal, 20)
 
-            let maxTime = genreStats.map(\.totalTime).max() ?? 1
+            let maxTime = max(1, genreStats.map(\.totalTime).max() ?? 1)
 
             ForEach(genreStats.prefix(5)) { genre in
                 HStack(spacing: 10) {
@@ -485,7 +491,7 @@ struct GenreSectionView: View {
             }
         }
         .padding(.vertical, 12)
-        .background(Color(.systemGray6))
+        .background(Color(uiColor: .systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 16)
     }
@@ -499,14 +505,27 @@ final class StatsViewModel {
     var enhancedStats: EnhancedReadingStats?
     var goals: [ReadingGoalProgress] = []
     var isLoading = false
+    @ObservationIgnored private var lastLoadedAt: ContinuousClock.Instant?
+    @ObservationIgnored private let reloadTTL: Duration = .seconds(60)
 
-    func loadAll() async {
+    func invalidateCache() {
+        lastLoadedAt = nil
+    }
+
+    func loadAll(force: Bool = false) async {
         // 离线或网络不可达：立即返回，不挂起等超时
         guard !APIClient.shared.isOfflineMode, APIClient.shared.isNetworkReachable else {
             isLoading = false
             return
         }
         guard !isLoading else { return }
+        if !force,
+           enhancedStats != nil,
+           !PendingReadingActivityManager.shared.hasPending,
+           let lastLoadedAt,
+           lastLoadedAt.duration(to: .now) < reloadTTL {
+            return
+        }
         isLoading = true
         await APIClient.shared.syncPendingReadingActivities()
         async let statsTask = APIClient.shared.fetchEnhancedStats()
@@ -515,11 +534,13 @@ final class StatsViewModel {
             let (stats, fetchedGoals) = try await (statsTask, goalsTask)
             self.enhancedStats = stats
             self.goals = fetchedGoals
+            self.lastLoadedAt = .now
         } catch {
             AppLogger.error("加载统计数据失败: \(error)")
             if APIClient.shared.isOfflineMode {
                 enhancedStats = nil
                 goals = []
+                lastLoadedAt = nil
             }
         }
         isLoading = false
@@ -528,6 +549,7 @@ final class StatsViewModel {
     func setGoal(goalType: String, targetMins: Int, targetBooks: Int) async {
         do {
             _ = try await APIClient.shared.setGoal(goalType: goalType, targetMins: targetMins, targetBooks: targetBooks)
+            invalidateCache()
             await reloadGoals()
         } catch {
             AppLogger.error("设定目标失败: \(error)")
@@ -537,6 +559,7 @@ final class StatsViewModel {
     func deleteGoal(goalType: String) async {
         do {
             try await APIClient.shared.deleteGoal(goalType: goalType)
+            invalidateCache()
             await reloadGoals()
         } catch {
             AppLogger.error("删除目标失败: \(error)")
@@ -575,7 +598,7 @@ struct StatCard: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
-        .background(Color(.systemGray6))
+        .background(Color(uiColor: .systemGray6))
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }

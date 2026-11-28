@@ -17,6 +17,12 @@ struct ServerRouteSelection: Sendable {
 }
 
 enum ServerRouteProbe {
+    private enum ProbeOutcome: Sendable {
+        case reachable(Double)
+        case unexpectedHTTPStatus
+        case transportFailure
+    }
+
     /// 测量实际 HTTP 响应时间；不使用缓存，也不依赖 ICMP 或网络接口类型。
     static func measure(_ baseURL: String, session: URLSession = .shared) async -> ServerRouteLatency {
         guard let components = URLComponents(string: baseURL),
@@ -25,35 +31,49 @@ enum ServerRouteProbe {
               components.user == nil,
               !Task.isCancelled else { return .unreachable }
         let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return await withTaskGroup(of: ServerRouteLatency.self) { group in
-            for (path, method) in [("/api/health", "HEAD"), ("/api/auth/me", "GET")] {
-                guard let url = URL(string: base + path) else { continue }
-                group.addTask {
-                    var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
-                    request.httpMethod = method
-                    request.timeoutInterval = 2
-                    request.setValue("application/json", forHTTPHeaderField: "Accept")
-                    let clock = ContinuousClock()
-                    let start = clock.now
-                    guard let (_, response) = try? await session.data(for: request),
-                          !Task.isCancelled,
-                          let http = response as? HTTPURLResponse,
-                          (200..<300).contains(http.statusCode)
-                            || (method == "GET" && [401, 403].contains(http.statusCode)) else {
-                        return .unreachable
-                    }
-                    let elapsed = start.duration(to: clock.now).components
-                    let milliseconds = Double(elapsed.seconds) * 1_000
-                        + Double(elapsed.attoseconds) / 1_000_000_000_000_000
-                    return .reachable(milliseconds: milliseconds)
-                }
+
+        if let healthURL = URL(string: base + "/api/health") {
+            switch await probe(healthURL, method: "HEAD", session: session) {
+            case .reachable(let milliseconds):
+                return .reachable(milliseconds: milliseconds)
+            case .transportFailure:
+                return .unreachable
+            case .unexpectedHTTPStatus:
+                break
             }
-            for await result in group where result.milliseconds != nil {
-                group.cancelAll()
-                return result
-            }
+        }
+
+        guard !Task.isCancelled, let authURL = URL(string: base + "/api/auth/me") else {
             return .unreachable
         }
+        switch await probe(authURL, method: "GET", session: session) {
+        case .reachable(let milliseconds):
+            return .reachable(milliseconds: milliseconds)
+        case .unexpectedHTTPStatus, .transportFailure:
+            return .unreachable
+        }
+    }
+
+    private static func probe(_ url: URL, method: String, session: URLSession) async -> ProbeOutcome {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
+        request.httpMethod = method
+        request.timeoutInterval = 2
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let clock = ContinuousClock()
+        let start = clock.now
+        guard let (_, response) = try? await session.data(for: request),
+              !Task.isCancelled,
+              let http = response as? HTTPURLResponse else {
+            return .transportFailure
+        }
+        if (200..<300).contains(http.statusCode)
+            || (method == "GET" && [401, 403].contains(http.statusCode)) {
+            let elapsed = start.duration(to: clock.now).components
+            let milliseconds = Double(elapsed.seconds) * 1_000
+                + Double(elapsed.attoseconds) / 1_000_000_000_000_000
+            return .reachable(milliseconds)
+        }
+        return .unexpectedHTTPStatus
     }
 }
 

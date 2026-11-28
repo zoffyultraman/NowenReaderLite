@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -21,6 +22,9 @@ struct NovelReaderView: View {
     @State private var fontSize: Double = 17
     @State private var lineSpacing: Double = 10
     @State private var letterSpacing: Double = 0
+    @State private var committedFontSize: Double = 17
+    @State private var committedLineSpacing: Double = 10
+    @State private var committedLetterSpacing: Double = 0
     @State private var currentPage = 0
     private let recordManager: ReadingRecordManager = ReadingRecordManager.shared
     @State private var restoredChapter = -1
@@ -47,9 +51,9 @@ struct NovelReaderView: View {
                 } else if !viewModel.pages.isEmpty {
                     NovelPager(
                         pages: viewModel.pages,
-                        fontSize: fontSize,
-                        lineSpacing: lineSpacing,
-                        letterSpacing: letterSpacing,
+                        fontSize: committedFontSize,
+                        lineSpacing: committedLineSpacing,
+                        letterSpacing: committedLetterSpacing,
                         darkMode: viewModel.darkMode,
                         paginationGeneration: viewModel.paginationGeneration,
                         initialPage: currentPage,
@@ -58,9 +62,9 @@ struct NovelReaderView: View {
                         onPageChanged: { page in
                             currentPage = page
                             // 尝试追加下一章（无缝翻页）
-                            viewModel.tryAppendNextChapter(currentPage: page, fontSize: fontSize)
+                            viewModel.tryAppendNextChapter(currentPage: page, fontSize: committedFontSize)
                             // 检测是否已翻入下一章
-                            viewModel.advanceToNextChapter(currentPage: page, fontSize: fontSize)
+                            viewModel.advanceToNextChapter(currentPage: page, fontSize: committedFontSize)
 
                             let chapterPages = viewModel.currentChapterPageCount()
                             let relPage = viewModel.relativePageInChapter(page)
@@ -87,7 +91,7 @@ struct NovelReaderView: View {
                                 saveRecord()
                                 restoredChapter = -1
                                 currentPage = 0
-                                Task { await viewModel.nextChapter(fontSize: fontSize) }
+                                Task { await viewModel.nextChapter(fontSize: committedFontSize) }
                             }
                         },
                         onSwipeToPrev: {
@@ -99,7 +103,7 @@ struct NovelReaderView: View {
                             saveRecord()
                             restoredChapter = -1
                             currentPage = 99999
-                            Task { await viewModel.prevChapter(fontSize: fontSize) }
+                            Task { await viewModel.prevChapter(fontSize: committedFontSize) }
                         }
                     )
                     .ignoresSafeArea()
@@ -131,13 +135,20 @@ struct NovelReaderView: View {
             }
             .task(id: loadAttempt) {
                 // 从 UserDefaults 恢复排版设置（避免在 @State 初始化时产生副作用）
-                fontSize = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
-                lineSpacing = UserDefaults.standard.double(forKey: UserDefaultsKey.novelLineSpacing).clamped(to: 2...24, default: 10)
+                let initialFont = UserDefaults.standard.double(forKey: UserDefaultsKey.novelFontSize).clamped(to: 12...30, default: 17)
+                let initialLineSpacing = UserDefaults.standard.double(forKey: UserDefaultsKey.novelLineSpacing).clamped(to: 2...24, default: 10)
+                let initialLetterSpacing: Double
                 if let savedKern = UserDefaults.standard.object(forKey: UserDefaultsKey.novelLetterSpacing) as? Double {
-                    letterSpacing = savedKern.clamped(to: 0...5, default: 0)
+                    initialLetterSpacing = savedKern.clamped(to: 0...5, default: 0)
                 } else {
-                    letterSpacing = 0
+                    initialLetterSpacing = 0
                 }
+                fontSize = initialFont
+                lineSpacing = initialLineSpacing
+                letterSpacing = initialLetterSpacing
+                committedFontSize = initialFont
+                committedLineSpacing = initialLineSpacing
+                committedLetterSpacing = initialLetterSpacing
                 viewModel.setPaginationSize(paginationSize)
                 if scenePhase == .active {
                     viewModel.resumeActivity()
@@ -149,33 +160,42 @@ struct NovelReaderView: View {
                 await viewModel.load(
                     comicId: comicId,
                     chapter: savedChapter,
-                    fontSize: fontSize,
-                    lineSpacing: lineSpacing,
-                    letterSpacing: letterSpacing,
+                    fontSize: initialFont,
+                    lineSpacing: initialLineSpacing,
+                    letterSpacing: initialLetterSpacing,
                     groupContext: groupContext
                 )
                 guard !Task.isCancelled else { return }
 
-                let nextFont = viewModel.cloudFontSize ?? fontSize
-                let nextLineSpacing = viewModel.cloudLineSpacing ?? lineSpacing
-                let nextLetterSpacing = viewModel.cloudLetterSpacing ?? letterSpacing
-                let needsCloudRepaginate = abs(nextFont - fontSize) >= 0.5
-                    || abs(nextLineSpacing - lineSpacing) >= 0.5
-                    || abs(nextLetterSpacing - letterSpacing) >= 0.1
+                let nextFont = viewModel.cloudFontSize ?? initialFont
+                let nextLineSpacing = viewModel.cloudLineSpacing ?? initialLineSpacing
+                let nextLetterSpacing = viewModel.cloudLetterSpacing ?? initialLetterSpacing
+                let needsCloudSync = abs(nextFont - initialFont) >= 0.5
+                    || abs(nextLineSpacing - initialLineSpacing) >= 0.5
+                    || abs(nextLetterSpacing - initialLetterSpacing) >= 0.1
 
-                if needsCloudRepaginate {
+                if needsCloudSync {
                     isApplyingCloudPreferences = true
                     fontSize = nextFont
                     lineSpacing = nextLineSpacing
                     letterSpacing = nextLetterSpacing
+                    committedFontSize = nextFont
+                    committedLineSpacing = nextLineSpacing
+                    committedLetterSpacing = nextLetterSpacing
                     UserDefaults.standard.set(nextFont, forKey: UserDefaultsKey.novelFontSize)
                     UserDefaults.standard.set(nextLineSpacing, forKey: UserDefaultsKey.novelLineSpacing)
                     UserDefaults.standard.set(nextLetterSpacing, forKey: UserDefaultsKey.novelLetterSpacing)
-                    await viewModel.repaginate(
+                    if viewModel.needsRepagination(
                         fontSize: nextFont,
                         lineSpacing: nextLineSpacing,
                         letterSpacing: nextLetterSpacing
-                    )
+                    ) {
+                        await viewModel.repaginate(
+                            fontSize: nextFont,
+                            lineSpacing: nextLineSpacing,
+                            letterSpacing: nextLetterSpacing
+                        )
+                    }
                     isApplyingCloudPreferences = false
                 }
                 guard !Task.isCancelled else { return }
@@ -183,6 +203,7 @@ struct NovelReaderView: View {
             }
             .onDisappear {
                 viewModel.pauseActivity()
+                viewModel.cancelBackgroundWork()
                 saveRecord()
                 Task { await viewModel.finishActivity() }
             }
@@ -200,9 +221,9 @@ struct NovelReaderView: View {
                 Task {
                     await viewModel.updatePaginationSize(
                         newSize,
-                        fontSize: fontSize,
-                        lineSpacing: lineSpacing,
-                        letterSpacing: letterSpacing
+                        fontSize: committedFontSize,
+                        lineSpacing: committedLineSpacing,
+                        letterSpacing: committedLetterSpacing
                     )
                 }
             }
@@ -212,42 +233,12 @@ struct NovelReaderView: View {
             .onChange(of: viewModel.cloudPreferenceRevision) { _, _ in
                 applyCloudPreferencesFromViewModel()
             }
-            .onChange(of: fontSize) { _, newValue in
-                UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelFontSize)
-                guard !isApplyingCloudPreferences else { return }
-                viewModel.scheduleSaveNovelPreferences(
-                    fontSize: newValue,
-                    lineSpacing: lineSpacing,
-                    letterSpacing: letterSpacing,
-                    darkMode: viewModel.darkMode
-                )
-            }
-            .onChange(of: lineSpacing) { _, newValue in
-                UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelLineSpacing)
-                guard !isApplyingCloudPreferences else { return }
-                viewModel.scheduleSaveNovelPreferences(
-                    fontSize: fontSize,
-                    lineSpacing: newValue,
-                    letterSpacing: letterSpacing,
-                    darkMode: viewModel.darkMode
-                )
-            }
-            .onChange(of: letterSpacing) { _, newValue in
-                UserDefaults.standard.set(newValue, forKey: UserDefaultsKey.novelLetterSpacing)
-                guard !isApplyingCloudPreferences else { return }
-                viewModel.scheduleSaveNovelPreferences(
-                    fontSize: fontSize,
-                    lineSpacing: lineSpacing,
-                    letterSpacing: newValue,
-                    darkMode: viewModel.darkMode
-                )
-            }
             .onChange(of: viewModel.darkMode) { _, newDarkMode in
                 guard !isApplyingCloudPreferences else { return }
                 viewModel.scheduleSaveNovelPreferences(
-                    fontSize: fontSize,
-                    lineSpacing: lineSpacing,
-                    letterSpacing: letterSpacing,
+                    fontSize: committedFontSize,
+                    lineSpacing: committedLineSpacing,
+                    letterSpacing: committedLetterSpacing,
                     darkMode: newDarkMode
                 )
             }
@@ -280,7 +271,7 @@ struct NovelReaderView: View {
                         saveRecord()
                         pendingJumpRatio = nil
                         currentPage = 0
-                        Task { await viewModel.load(comicId: viewModel.currentComicId, chapter: index, fontSize: fontSize) }
+                        Task { await viewModel.load(comicId: viewModel.currentComicId, chapter: index, fontSize: committedFontSize) }
                     }
                 )
             }
@@ -481,7 +472,7 @@ struct NovelReaderView: View {
         restoredChapter = -1
         currentPage = 0
         Task {
-            await viewModel.load(comicId: viewModel.currentComicId, chapter: safeChapter, fontSize: fontSize)
+            await viewModel.load(comicId: viewModel.currentComicId, chapter: safeChapter, fontSize: committedFontSize)
         }
     }
 
@@ -508,9 +499,9 @@ struct NovelReaderView: View {
             await viewModel.load(
                 comicId: viewModel.currentComicId,
                 chapter: safeChapter,
-                fontSize: fontSize,
-                lineSpacing: lineSpacing,
-                letterSpacing: letterSpacing
+                fontSize: committedFontSize,
+                lineSpacing: committedLineSpacing,
+                letterSpacing: committedLetterSpacing
             )
         }
     }
@@ -525,26 +516,35 @@ struct NovelReaderView: View {
         if let cloudDark = viewModel.cloudDarkMode {
             viewModel.darkMode = cloudDark
         }
-        let nextFont = viewModel.cloudFontSize ?? fontSize
-        let nextLineSpacing = viewModel.cloudLineSpacing ?? lineSpacing
-        let nextLetterSpacing = viewModel.cloudLetterSpacing ?? letterSpacing
-        let typographyChanged = abs(nextFont - fontSize) >= 0.5
-            || abs(nextLineSpacing - lineSpacing) >= 0.5
-            || abs(nextLetterSpacing - letterSpacing) >= 0.1
+        let nextFont = viewModel.cloudFontSize ?? committedFontSize
+        let nextLineSpacing = viewModel.cloudLineSpacing ?? committedLineSpacing
+        let nextLetterSpacing = viewModel.cloudLetterSpacing ?? committedLetterSpacing
+        let typographyChanged = abs(nextFont - committedFontSize) >= 0.5
+            || abs(nextLineSpacing - committedLineSpacing) >= 0.5
+            || abs(nextLetterSpacing - committedLetterSpacing) >= 0.1
         if typographyChanged, !viewModel.isLoading {
             fontSize = nextFont
             lineSpacing = nextLineSpacing
             letterSpacing = nextLetterSpacing
+            committedFontSize = nextFont
+            committedLineSpacing = nextLineSpacing
+            committedLetterSpacing = nextLetterSpacing
             UserDefaults.standard.set(nextFont, forKey: UserDefaultsKey.novelFontSize)
             UserDefaults.standard.set(nextLineSpacing, forKey: UserDefaultsKey.novelLineSpacing)
             UserDefaults.standard.set(nextLetterSpacing, forKey: UserDefaultsKey.novelLetterSpacing)
-            captureRepaginationAnchor()
-            Task {
-                await viewModel.repaginate(
-                    fontSize: nextFont,
-                    lineSpacing: nextLineSpacing,
-                    letterSpacing: nextLetterSpacing
-                )
+            if viewModel.needsRepagination(
+                fontSize: nextFont,
+                lineSpacing: nextLineSpacing,
+                letterSpacing: nextLetterSpacing
+            ) {
+                captureRepaginationAnchor()
+                Task {
+                    await viewModel.repaginate(
+                        fontSize: nextFont,
+                        lineSpacing: nextLineSpacing,
+                        letterSpacing: nextLetterSpacing
+                    )
+                }
             }
         }
     }
@@ -566,7 +566,7 @@ struct NovelReaderView: View {
     // MARK: - UI
 
     private var backgroundForTheme: Color {
-        viewModel.darkMode ? Color(white: 0.1) : Color(.systemBackground)
+        viewModel.darkMode ? Color(white: 0.1) : Color(uiColor: .systemBackground)
     }
 
     private var isCurrentPageBookmarked: Bool {
@@ -626,12 +626,26 @@ struct NovelReaderView: View {
                     + viewModel.currentChapterPageCount() - 1,
             hasPrevChapter: viewModel.currentChapter > 0 || viewModel.groupContext?.previousVolumeId != nil,
             onTypographyCommit: {
+                committedFontSize = fontSize
+                committedLineSpacing = lineSpacing
+                committedLetterSpacing = letterSpacing
+                UserDefaults.standard.set(committedFontSize, forKey: UserDefaultsKey.novelFontSize)
+                UserDefaults.standard.set(committedLineSpacing, forKey: UserDefaultsKey.novelLineSpacing)
+                UserDefaults.standard.set(committedLetterSpacing, forKey: UserDefaultsKey.novelLetterSpacing)
+                if !isApplyingCloudPreferences {
+                    viewModel.scheduleSaveNovelPreferences(
+                        fontSize: committedFontSize,
+                        lineSpacing: committedLineSpacing,
+                        letterSpacing: committedLetterSpacing,
+                        darkMode: viewModel.darkMode
+                    )
+                }
                 captureRepaginationAnchor()
                 Task {
                     await viewModel.repaginate(
-                        fontSize: fontSize,
-                        lineSpacing: lineSpacing,
-                        letterSpacing: letterSpacing
+                        fontSize: committedFontSize,
+                        lineSpacing: committedLineSpacing,
+                        letterSpacing: committedLetterSpacing
                     )
                 }
             },
@@ -644,7 +658,7 @@ struct NovelReaderView: View {
                 saveRecord()
                 restoredChapter = -1
                 currentPage = 99999
-                Task { await viewModel.prevChapter(fontSize: fontSize) }
+                Task { await viewModel.prevChapter(fontSize: committedFontSize) }
             },
             onNextChapter: {
                 let hasNextChapter = viewModel.totalChapters > 0
@@ -655,7 +669,7 @@ struct NovelReaderView: View {
                 saveRecord()
                 restoredChapter = -1
                 currentPage = 0
-                Task { await viewModel.nextChapter(fontSize: fontSize) }
+                Task { await viewModel.nextChapter(fontSize: committedFontSize) }
             },
             onShowChapterList: { showChapterList = true }
         )
@@ -873,7 +887,7 @@ struct NovelBottomOverlay: View {
 
 // MARK: - 目录弹窗
 
-private struct ChapterListRow: Identifiable, Sendable {
+private struct ChapterListRow: Identifiable, Equatable, Sendable {
     let id: Int
     let title: String
     let level: Int
@@ -905,7 +919,8 @@ private final class ChapterListModel {
     }
 
     func visibleRows(collapsedIndexes: Set<Int>) -> [ChapterListRow] {
-        rows.filter { row in
+        guard !collapsedIndexes.isEmpty else { return rows }
+        return rows.filter { row in
             var parent = row.parentIndex
             var visited = Set<Int>()
             while let parentIndex = parent, visited.insert(parentIndex).inserted {
@@ -1148,7 +1163,7 @@ struct NovelPager: UIViewControllerRepresentable {
         disableBuiltInTapGestures(in: pvc, keeping: coord.tapGesture)
         guard !pages.isEmpty else { return }
 
-        let oldCount = coord.cachedVCs.count
+        let oldCount = coord.pages.count
         let newCount = pages.count
         let renderConfiguration = Coordinator.RenderConfiguration(
             fontSize: fontSize,
@@ -1165,18 +1180,8 @@ struct NovelPager: UIViewControllerRepresentable {
             && coord.paginationGeneration == paginationGeneration
 
         if isAppend {
-            // 追加模式：只添加新页面的 VC，不重置当前位置
-            for i in oldCount..<newCount {
-                let vc = NovelTextPageVC(
-                    page: pages[i],
-                    index: i,
-                    fontSize: fontSize,
-                    lineSpacing: lineSpacing,
-                    letterSpacing: letterSpacing,
-                    darkMode: darkMode
-                )
-                coord.cachedVCs.append(vc)
-            }
+            // 追加模式：仅更新数据源，VC 在翻页时按需懒加载
+            coord.pages = pages
             // 不调用 setViewControllers，保持当前翻页位置
         } else {
             // 完全替换（切章、字号/排版变化等）
@@ -1192,16 +1197,18 @@ struct NovelPager: UIViewControllerRepresentable {
                     letterSpacing: letterSpacing,
                     darkMode: darkMode
                 )
-                let page = min(initialPage, coord.cachedVCs.count - 1)
-                if page >= 0, page < coord.cachedVCs.count {
-                    pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
+                let page = min(initialPage, coord.pages.count - 1)
+                if page >= 0, let targetVC = coord.viewController(at: page) {
+                    pvc.setViewControllers([targetVC], direction: .forward, animated: false)
                     coord.currentIndex = page
+                    coord.trimCache(around: page)
                 }
             } else if pageJumped {
-                let page = min(initialPage, coord.cachedVCs.count - 1)
-                if page >= 0, page < coord.cachedVCs.count {
-                    pvc.setViewControllers([coord.cachedVCs[page]], direction: .forward, animated: false)
+                let page = min(initialPage, coord.pages.count - 1)
+                if page >= 0, let targetVC = coord.viewController(at: page) {
+                    pvc.setViewControllers([targetVC], direction: .forward, animated: false)
                     coord.currentIndex = page
+                    coord.trimCache(around: page)
                 }
             }
         }
@@ -1225,7 +1232,8 @@ struct NovelPager: UIViewControllerRepresentable {
         var parent: NovelPager
         weak var pageViewController: UIPageViewController?
         weak var tapGesture: UITapGestureRecognizer?
-        var cachedVCs: [NovelTextPageVC] = []
+        var pages: [NovelPage] = []
+        private var vcCache: [Int: NovelTextPageVC] = [:]
         var currentIndex: Int = 0
         var paginationGeneration = -1
         var renderConfiguration: RenderConfiguration?
@@ -1258,29 +1266,65 @@ struct NovelPager: UIViewControllerRepresentable {
             }
         }
 
+        func viewController(at index: Int) -> NovelTextPageVC? {
+            guard pages.indices.contains(index) else { return nil }
+            if let cached = vcCache[index] {
+                return cached
+            }
+            let config = renderConfiguration ?? RenderConfiguration(
+                fontSize: parent.fontSize,
+                lineSpacing: parent.lineSpacing,
+                letterSpacing: parent.letterSpacing,
+                darkMode: parent.darkMode
+            )
+            let vc = NovelTextPageVC(
+                page: pages[index],
+                index: index,
+                fontSize: config.fontSize,
+                lineSpacing: config.lineSpacing,
+                letterSpacing: config.letterSpacing,
+                darkMode: config.darkMode
+            )
+            vcCache[index] = vc
+            trimCache(around: currentIndex, keeping: index)
+            return vc
+        }
+
+        func trimCache(around center: Int, keeping extraIndex: Int? = nil) {
+            guard vcCache.count > 7 else { return }
+            for key in Array(vcCache.keys) {
+                if key == center || key == extraIndex { continue }
+                if abs(key - center) > 3 {
+                    vcCache.removeValue(forKey: key)
+                }
+            }
+        }
+
         private func turnToPreviousPage(in pvc: UIPageViewController) {
-            guard !cachedVCs.isEmpty else { return }
+            guard !pages.isEmpty else { return }
             let prev = currentIndex - 1
             if prev < 0 {
                 DispatchQueue.main.async { self.parent.onSwipeToPrev() }
                 return
             }
-            guard let targetVC = cachedVCs[safe: prev] else { return }
+            guard let targetVC = viewController(at: prev) else { return }
             currentIndex = prev
+            trimCache(around: prev)
             pvc.setViewControllers([targetVC], direction: .reverse, animated: true) { [weak self] _ in
                 self?.parent.onPageChanged(prev)
             }
         }
 
         private func turnToNextPage(in pvc: UIPageViewController) {
-            guard !cachedVCs.isEmpty else { return }
+            guard !pages.isEmpty else { return }
             let next = currentIndex + 1
-            if next >= cachedVCs.count {
+            if next >= pages.count {
                 DispatchQueue.main.async { self.parent.onReachEnd() }
                 return
             }
-            guard let targetVC = cachedVCs[safe: next] else { return }
+            guard let targetVC = viewController(at: next) else { return }
             currentIndex = next
+            trimCache(around: next)
             pvc.setViewControllers([targetVC], direction: .forward, animated: true) { [weak self] _ in
                 self?.parent.onPageChanged(next)
             }
@@ -1310,16 +1354,8 @@ struct NovelPager: UIViewControllerRepresentable {
                 letterSpacing: letterSpacing,
                 darkMode: darkMode
             )
-            cachedVCs = pages.enumerated().map { index, page in
-                NovelTextPageVC(
-                    page: page,
-                    index: index,
-                    fontSize: fontSize,
-                    lineSpacing: lineSpacing,
-                    letterSpacing: letterSpacing,
-                    darkMode: darkMode
-                )
-            }
+            self.pages = pages
+            vcCache.removeAll()
         }
 
         func pageViewController(_ pvc: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
@@ -1329,22 +1365,23 @@ struct NovelPager: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.onSwipeToPrev() }
                 return nil
             }
-            return cachedVCs[safe: prev]
+            return self.viewController(at: prev)
         }
 
         func pageViewController(_ pvc: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
             guard let page = viewController as? NovelTextPageVC else { return nil }
             let next = page.index + 1
-            if next >= cachedVCs.count {
+            if next >= pages.count {
                 DispatchQueue.main.async { self.parent.onReachEnd() }
                 return nil
             }
-            return cachedVCs[safe: next]
+            return self.viewController(at: next)
         }
 
         func pageViewController(_ pvc: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
             guard completed, let current = pvc.viewControllers?.first as? NovelTextPageVC else { return }
             currentIndex = current.index
+            trimCache(around: current.index)
             parent.onPageChanged(current.index)
         }
     }
@@ -1359,6 +1396,7 @@ class NovelTextPageVC: UIViewController {
     let lineSpacing: Double
     let letterSpacing: Double
     let darkMode: Bool
+    private var imageLoadTasks: [Task<Void, Never>] = []
 
     init(
         page: NovelPage,
@@ -1378,6 +1416,10 @@ class NovelTextPageVC: UIViewController {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        imageLoadTasks.forEach { $0.cancel() }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -1438,13 +1480,17 @@ class NovelTextPageVC: UIViewController {
         _ item: NovelImagePageItem,
         to contentView: UIView
     ) {
-        guard let data = item.data, let image = UIImage(data: data) else {
+        guard let data = item.data else {
             let placeholder = NovelImagePlaceholderView(altText: item.altText)
             add(placeholder, frame: item.frame.cgRect, to: contentView)
             return
         }
 
-        let imageView = UIImageView(image: image)
+        let displayScale = max(1, traitCollection.displayScale)
+        let maxPixelSize = max(1, max(item.frame.width, item.frame.height) * displayScale)
+        let thumbKey = "novel-thumb:\(item.source):\(Int(maxPixelSize.rounded()))"
+
+        let imageView = UIImageView()
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
         imageView.isUserInteractionEnabled = true
@@ -1453,6 +1499,60 @@ class NovelTextPageVC: UIViewController {
         let tap = UITapGestureRecognizer(target: self, action: #selector(openImage(_:)))
         imageView.addGestureRecognizer(tap)
         add(imageView, frame: item.frame.cgRect, to: contentView)
+
+        if let cached = ImageCache.shared.memoryImage(forKey: thumbKey) {
+            imageView.image = cached
+            return
+        }
+
+        let task = Task { [weak self, weak imageView] in
+            let decoded = await Self.decodeDownsampledImage(
+                data: data,
+                maxPixelSize: maxPixelSize
+            )
+            guard !Task.isCancelled, let self, let imageView else { return }
+            if let decoded {
+                ImageCache.shared.setMemoryOnly(decoded, forKey: thumbKey)
+                imageView.image = decoded
+            } else {
+                let placeholder = NovelImagePlaceholderView(altText: item.altText)
+                self.add(placeholder, frame: item.frame.cgRect, to: contentView)
+                imageView.removeFromSuperview()
+            }
+        }
+        imageLoadTasks.append(task)
+    }
+
+    private static func decodeDownsampledImage(
+        data: Data,
+        maxPixelSize: CGFloat
+    ) async -> UIImage? {
+        let decodeTask = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard !Task.isCancelled else { return nil }
+            let options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+            if let source = CGImageSourceCreateWithData(data as CFData, options as CFDictionary) {
+                let thumbOptions: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceShouldCacheImmediately: true,
+                ]
+                if let cgImage = CGImageSourceCreateThumbnailAtIndex(
+                    source,
+                    0,
+                    thumbOptions as CFDictionary
+                ) {
+                    return UIImage(cgImage: cgImage)
+                }
+            }
+            guard !Task.isCancelled, let raw = UIImage(data: data) else { return nil }
+            return raw.preparingForDisplay() ?? raw
+        }
+        return await withTaskCancellationHandler {
+            await decodeTask.value
+        } onCancel: {
+            decodeTask.cancel()
+        }
     }
 
     private func add(_ child: UIView, frame: CGRect, to contentView: UIView) {
@@ -1644,10 +1744,13 @@ final class NovelReaderViewModel {
     @ObservationIgnored private var paginationTask: Task<Void, Never>?
     @ObservationIgnored private var appendPaginationTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
+    @ObservationIgnored private var lastPaginatedTypography: (fontSize: Double, lineSpacing: Double, letterSpacing: Double)?
     private var paginationRequestID = UUID()
     private var appendPaginationRequestID: UUID?
     private var appendedChapterContent: ChapterContent?
     private var paginationSize = CGSize(width: 320, height: 640)
+
+    private nonisolated static let searchWhitespaceRegex = try! NSRegularExpression(pattern: #"\s+"#)
 
     init() {
         self.currentComicId = ""
@@ -1666,6 +1769,28 @@ final class NovelReaderViewModel {
         if let observer = cacheObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        paginationTask?.cancel()
+        appendPaginationTask?.cancel()
+        bannerTask?.cancel()
+        prefSaveTask?.cancel()
+    }
+
+    func cancelBackgroundWork() {
+        paginationTask?.cancel()
+        appendPaginationTask?.cancel()
+        bannerTask?.cancel()
+        cache.cancelPreloads()
+    }
+
+    func needsRepagination(
+        fontSize: Double,
+        lineSpacing: Double,
+        letterSpacing: Double
+    ) -> Bool {
+        guard let last = lastPaginatedTypography else { return true }
+        return abs(last.fontSize - fontSize) >= 0.5
+            || abs(last.lineSpacing - lineSpacing) >= 0.5
+            || abs(last.letterSpacing - letterSpacing) >= 0.1
     }
 
     // MARK: - 分页尺寸
@@ -1792,7 +1917,14 @@ final class NovelReaderViewModel {
             cache.evict(keeping: chapter)
             await cloudSyncTask
             guard !Task.isCancelled else { return }
-            await repaginate(fontSize: fontSize)
+            let effectiveFontSize = cloudFontSize ?? fontSize
+            let effectiveLineSpacing = cloudLineSpacing ?? typographyLineSpacing
+            let effectiveLetterSpacing = cloudLetterSpacing ?? typographyLetterSpacing
+            await repaginate(
+                fontSize: effectiveFontSize,
+                lineSpacing: effectiveLineSpacing,
+                letterSpacing: effectiveLetterSpacing
+            )
             guard !Task.isCancelled else { return }
             updateActivityProgress()
         } catch {
@@ -1868,7 +2000,14 @@ final class NovelReaderViewModel {
             }
             currentChapter = safeChapter
             await cloudSyncTask
-            await repaginate(fontSize: fontSize)
+            let effectiveFontSize = cloudFontSize ?? fontSize
+            let effectiveLineSpacing = cloudLineSpacing ?? typographyLineSpacing
+            let effectiveLetterSpacing = cloudLetterSpacing ?? typographyLetterSpacing
+            await repaginate(
+                fontSize: effectiveFontSize,
+                lineSpacing: effectiveLineSpacing,
+                letterSpacing: effectiveLetterSpacing
+            )
             updateActivityProgress()
         } catch {
             await cloudSyncTask
@@ -2229,19 +2368,27 @@ final class NovelReaderViewModel {
 
         let targetComicId = currentComicId.isEmpty ? comicId : currentComicId
         let chaptersCount = totalChapters
-        let cachedContents: [(Int, String, String)] = (0..<chaptersCount).compactMap { idx in
-            let title = chapterTitles[idx]
-                ?? chapterEntries.first(where: { $0.index == idx })?.title
-                ?? "第 \(idx + 1) 章"
-            if let mem = cache.get(idx)?.content, !mem.isEmpty {
-                return (idx, title, PaginationService.readableText(content: mem, mimeType: cache.get(idx)?.mimeType))
+        let titlesSnapshot = chapterTitles
+        let entryTitles = Dictionary(
+            chapterEntries.compactMap { entry -> (Int, String)? in
+                guard let title = entry.title, !title.isEmpty else { return nil }
+                return (entry.index, title)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var cachedRawByIndex: [Int: (title: String, content: String, mimeType: String?)] = [:]
+        for idx in 0..<chaptersCount {
+            if let cached = cache.get(idx), let raw = cached.content, !raw.isEmpty {
+                let title = titlesSnapshot[idx]
+                    ?? entryTitles[idx]
+                    ?? cached.title
+                    ?? "第 \(idx + 1) 章"
+                cachedRawByIndex[idx] = (title, raw, cached.mimeType)
             }
-            return nil
         }
 
-        return await Task.detached(priority: .userInitiated) {
+        let searchTask = Task.detached(priority: .userInitiated) { () -> NovelSearchResponse in
             let offlineManager = OfflineFileManager.shared
-            let lowerQuery = trimmed.lowercased()
             var items: [NovelSearchResultItem] = []
             var totalMatches = 0
             var truncated = false
@@ -2250,24 +2397,36 @@ final class NovelReaderViewModel {
                 if Task.isCancelled { break }
                 let plainText: String
                 let title: String
-                if let memMatch = cachedContents.first(where: { $0.0 == idx }) {
-                    title = memMatch.1
-                    plainText = memMatch.2
+                if let memMatch = cachedRawByIndex[idx] {
+                    title = memMatch.title
+                    plainText = PaginationService.readableText(
+                        content: memMatch.content,
+                        mimeType: memMatch.mimeType
+                    )
                 } else if let local = offlineManager.loadNovelChapter(comicId: targetComicId, chapter: idx),
                           let raw = local.content,
                           !raw.isEmpty {
-                    title = local.title ?? "第 \(idx + 1) 章"
-                    plainText = PaginationService.readableText(content: raw, mimeType: local.mimeType)
+                    title = titlesSnapshot[idx]
+                        ?? entryTitles[idx]
+                        ?? local.title
+                        ?? "第 \(idx + 1) 章"
+                    plainText = PaginationService.readableText(
+                        content: raw,
+                        mimeType: local.mimeType
+                    )
                 } else {
                     continue
                 }
 
-                let lowerText = plainText.lowercased()
                 var matchCount = 0
                 var firstRange: Range<String.Index>?
-                var searchStart = lowerText.startIndex
-                while searchStart < lowerText.endIndex,
-                      let found = lowerText.range(of: lowerQuery, range: searchStart..<lowerText.endIndex) {
+                var searchStart = plainText.startIndex
+                while searchStart < plainText.endIndex,
+                      let found = plainText.range(
+                        of: trimmed,
+                        options: [.caseInsensitive],
+                        range: searchStart..<plainText.endIndex
+                      ) {
                     if firstRange == nil { firstRange = found }
                     matchCount += 1
                     searchStart = found.upperBound
@@ -2279,21 +2438,27 @@ final class NovelReaderViewModel {
                     break
                 }
 
-                let snippetStart = lowerText.index(
+                let snippetStart = plainText.index(
                     firstRange.lowerBound,
                     offsetBy: -24,
-                    limitedBy: lowerText.startIndex
-                ) ?? lowerText.startIndex
-                let snippetEnd = lowerText.index(
+                    limitedBy: plainText.startIndex
+                ) ?? plainText.startIndex
+                let snippetEnd = plainText.index(
                     firstRange.upperBound,
                     offsetBy: 36,
-                    limitedBy: lowerText.endIndex
-                ) ?? lowerText.endIndex
-                let snippetRaw = String(plainText[snippetStart..<snippetEnd])
-                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    limitedBy: plainText.endIndex
+                ) ?? plainText.endIndex
+                let rawSlice = String(plainText[snippetStart..<snippetEnd])
+                let mutableSnippet = NSMutableString(string: rawSlice)
+                Self.searchWhitespaceRegex.replaceMatches(
+                    in: mutableSnippet,
+                    range: NSRange(location: 0, length: mutableSnippet.length),
+                    withTemplate: " "
+                )
+                let snippetRaw = (mutableSnippet as String)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let prefix = snippetStart > lowerText.startIndex ? "..." : ""
-                let suffix = snippetEnd < lowerText.endIndex ? "..." : ""
+                let prefix = snippetStart > plainText.startIndex ? "..." : ""
+                let suffix = snippetEnd < plainText.endIndex ? "..." : ""
 
                 totalMatches += matchCount
                 items.append(NovelSearchResultItem(
@@ -2312,7 +2477,12 @@ final class NovelReaderViewModel {
                 truncated: truncated,
                 results: items
             )
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await searchTask.value
+        } onCancel: {
+            searchTask.cancel()
+        }
     }
 
     /// 在指定章节的分页结果中查找包含关键词的目标页码（用于搜索跳转精确定位）
@@ -2502,6 +2672,7 @@ final class NovelReaderViewModel {
             self.chapterPageOffsets = [chapter: 0]
             self.nextChapterAppended = false
             self.pages = newPages
+            self.lastPaginatedTypography = (fontSize, resolvedLineSpacing, resolvedLetterSpacing)
             self.paginationGeneration += 1
         }
         paginationTask = task
@@ -2622,25 +2793,46 @@ final class NovelReaderViewModel {
         }
         guard !Task.isCancelled else { return [] }
 
-        let references = Dictionary(
+        let references = Array(Dictionary(
             blocks.compactMap { block -> (String, NovelImageReference)? in
                 guard case let .image(reference) = block else { return nil }
                 return (reference.source, reference)
             },
             uniquingKeysWith: { first, _ in first }
-        ).values
+        ).values)
         var imagesBySource: [String: NovelResolvedImage] = [:]
-        await withTaskGroup(of: NovelResolvedImage.self) { group in
-            for reference in references {
-                group.addTask {
-                    await NovelResourceService.loadImage(
-                        reference: reference,
-                        comicId: comicId
-                    )
+        if !references.isEmpty {
+            let persistOffline = await NovelResourceService.isOfflineNovel(comicId: comicId)
+            guard !Task.isCancelled else { return [] }
+            let maxConcurrentImages = 4
+            await withTaskGroup(of: NovelResolvedImage.self) { group in
+                var nextIndex = 0
+                let initialCount = min(maxConcurrentImages, references.count)
+                while nextIndex < initialCount {
+                    let ref = references[nextIndex]
+                    nextIndex += 1
+                    group.addTask {
+                        await NovelResourceService.loadImage(
+                            reference: ref,
+                            comicId: comicId,
+                            persistOffline: persistOffline
+                        )
+                    }
                 }
-            }
-            for await image in group {
-                imagesBySource[image.reference.source] = image
+                for await image in group {
+                    imagesBySource[image.reference.source] = image
+                    if nextIndex < references.count && !Task.isCancelled {
+                        let ref = references[nextIndex]
+                        nextIndex += 1
+                        group.addTask {
+                            await NovelResourceService.loadImage(
+                                reference: ref,
+                                comicId: comicId,
+                                persistOffline: persistOffline
+                            )
+                        }
+                    }
+                }
             }
         }
         guard !Task.isCancelled else { return [] }
@@ -2682,6 +2874,17 @@ final class NovelReaderViewModel {
         comicId: String,
         index: Int
     ) async throws -> ChapterContent {
+        let preferOffline = api.isOfflineMode
+            || !api.isNetworkReachable
+            || DownloadManager.shared.isDownloaded(comicId: comicId)
+        if preferOffline {
+            let manager = OfflineFileManager.shared
+            if let local = await Task.detached(priority: .utility, operation: {
+                manager.loadNovelChapter(comicId: comicId, chapter: index)
+            }).value {
+                return local
+            }
+        }
         do {
             return try await api.fetchChapter(comicId: comicId, index: index)
         } catch {
@@ -2697,6 +2900,12 @@ final class NovelReaderViewModel {
     }
 
     private func loadPageList(comicId: String) async -> PageList? {
+        let preferOffline = api.isOfflineMode
+            || !api.isNetworkReachable
+            || DownloadManager.shared.isDownloaded(comicId: comicId)
+        if preferOffline, let local = await loadLocalPageList(comicId: comicId) {
+            return local
+        }
         do {
             let pageList = try await api.fetchPages(comicId: comicId)
             let manager = OfflineFileManager.shared
@@ -2708,36 +2917,40 @@ final class NovelReaderViewModel {
             }.value
             return pageList
         } catch {
-            let manager = OfflineFileManager.shared
-            return await Task.detached(priority: .utility) {
-                if let pageList = manager.loadNovelPageList(comicId: comicId) {
-                    return pageList
-                }
-                guard let meta = manager.loadMeta(comicId: comicId),
-                      meta.isNovel == true else {
-                    return nil
-                }
-                let pages = (0..<meta.pageCount).map {
-                    PageEntry(
-                        index: $0,
-                        name: nil,
-                        url: nil,
-                        title: nil,
-                        level: nil,
-                        parentIndex: nil,
-                        hasChildren: nil
-                    )
-                }
-                return PageList(
-                    comicId: comicId,
-                    title: meta.title,
-                    totalPages: meta.pageCount,
-                    isNovel: true,
-                    isPdf: false,
-                    pages: pages
-                )
-            }.value
+            return await loadLocalPageList(comicId: comicId)
         }
+    }
+
+    private func loadLocalPageList(comicId: String) async -> PageList? {
+        let manager = OfflineFileManager.shared
+        return await Task.detached(priority: .utility) {
+            if let pageList = manager.loadNovelPageList(comicId: comicId) {
+                return pageList
+            }
+            guard let meta = manager.loadMeta(comicId: comicId),
+                  meta.isNovel == true else {
+                return nil
+            }
+            let pages = (0..<meta.pageCount).map {
+                PageEntry(
+                    index: $0,
+                    name: nil,
+                    url: nil,
+                    title: nil,
+                    level: nil,
+                    parentIndex: nil,
+                    hasChildren: nil
+                )
+            }
+            return PageList(
+                comicId: comicId,
+                title: meta.title,
+                totalPages: meta.pageCount,
+                isNovel: true,
+                isPdf: false,
+                pages: pages
+            )
+        }.value
     }
 }
 
@@ -3421,7 +3634,7 @@ private struct NovelSearchBarSection: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
 
             if isSearching {
                 Button("取消", action: onCancelSearch)

@@ -9,12 +9,19 @@ final class ImageCache {
     private let dataMemory = NSCache<NSString, NSData>()
     private let diskDir: URL
     private let fileManager = FileManager.default
-    private let diskQueue = DispatchQueue(
-        label: "com.nowen.readerlite.image-cache",
+    private let diskReadQueue = DispatchQueue(
+        label: "com.nowen.readerlite.image-cache.read",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+    private let diskWriteQueue = DispatchQueue(
+        label: "com.nowen.readerlite.image-cache.write",
         qos: .utility
     )
     private let generationLock = NSLock()
     private var generation = 0
+    private var writeCountSincePrune = 0
+    private let maxDiskCacheBytes: Int64 = 300 * 1024 * 1024
 
     private init() {
         memory.countLimit = 200
@@ -24,7 +31,9 @@ final class ImageCache {
 
         let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         diskDir = caches.appendingPathComponent("ImageCache", isDirectory: true)
-        try? fileManager.createDirectory(at: diskDir, withIntermediateDirectories: true)
+        diskWriteQueue.async { [fileManager, diskDir] in
+            try? fileManager.createDirectory(at: diskDir, withIntermediateDirectories: true)
+        }
     }
 
     // MARK: - Public
@@ -45,12 +54,13 @@ final class ImageCache {
         let loadGeneration = currentGeneration()
         let fileURL = diskPath(for: key)
         let diskImage: UIImage? = await withCheckedContinuation { continuation in
-            diskQueue.async {
-                guard let data = try? Data(contentsOf: fileURL) else {
+            diskReadQueue.async {
+                guard let data = try? Data(contentsOf: fileURL),
+                      let decoded = UIImage(data: data) else {
                     continuation.resume(returning: nil)
                     return
                 }
-                continuation.resume(returning: UIImage(data: data))
+                continuation.resume(returning: decoded.preparingForDisplay() ?? decoded)
             }
         }
         guard let image = diskImage else {
@@ -58,8 +68,8 @@ final class ImageCache {
         }
         guard loadGeneration == currentGeneration() else { return nil }
 
-        // 回填内存
-        memory.setObject(image, forKey: nsKey)
+        // 回填内存（附带真实像素字节成本）
+        setMemoryOnly(image, forKey: key)
         return image
     }
 
@@ -72,7 +82,7 @@ final class ImageCache {
         let fileURL = diskPath(for: key)
         let loadGeneration = currentGeneration()
         let data: Data? = await withCheckedContinuation { continuation in
-            diskQueue.async {
+            diskReadQueue.async {
                 continuation.resume(returning: try? Data(contentsOf: fileURL))
             }
         }
@@ -87,19 +97,41 @@ final class ImageCache {
         return data
     }
 
+    func setMemoryOnly(_ image: UIImage, forKey key: String) {
+        let cost = Self.decodedCost(of: image)
+        guard cost <= memory.totalCostLimit else { return }
+        memory.setObject(image, forKey: key as NSString, cost: cost)
+    }
+
+    static func decodedCost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            let (cost, overflow) = cgImage.bytesPerRow.multipliedReportingOverflow(
+                by: cgImage.height
+            )
+            return overflow ? Int.max : max(1, cost)
+        }
+        let cost = Double(image.size.width * image.scale)
+            * Double(image.size.height * image.scale) * 4
+        guard cost.isFinite, cost < Double(Int.max) else { return Int.max }
+        return max(1, Int(cost))
+    }
+
     func set(_ image: UIImage, forKey key: String) {
-        let nsKey = key as NSString
+        set(image, originalData: nil, forKey: key)
+    }
+
+    func set(_ image: UIImage, originalData: Data?, forKey key: String) {
         let writeGeneration = currentGeneration()
 
-        // 写内存
-        memory.setObject(image, forKey: nsKey)
+        // 写内存（附带字节成本）
+        setMemoryOnly(image, forKey: key)
 
-        // 异步写磁盘
+        // 异步写磁盘（优先直写原字节，避免无谓 JPEG 重编码）
         let fileURL = diskPath(for: key)
-        diskQueue.async {
+        diskWriteQueue.async {
             guard writeGeneration == self.currentGeneration() else { return }
-            guard let data = image.jpegData(compressionQuality: 0.85) else { return }
-            try? data.write(to: fileURL, options: .atomic)
+            guard let data = originalData ?? image.jpegData(compressionQuality: 0.85) else { return }
+            self.writeDiskDataUnlocked(data, to: fileURL)
         }
     }
 
@@ -108,13 +140,10 @@ final class ImageCache {
         let nsKey = key as NSString
         let writeGeneration = currentGeneration()
         dataMemory.setObject(data as NSData, forKey: nsKey, cost: data.count)
-        if let image = UIImage(data: data) {
-            memory.setObject(image, forKey: nsKey)
-        }
         let fileURL = diskPath(for: key)
-        diskQueue.async {
+        diskWriteQueue.async {
             guard writeGeneration == self.currentGeneration() else { return }
-            try? data.write(to: fileURL, options: .atomic)
+            self.writeDiskDataUnlocked(data, to: fileURL)
         }
     }
 
@@ -123,12 +152,13 @@ final class ImageCache {
         memory.removeAllObjects()
         dataMemory.removeAllObjects()
         await withCheckedContinuation { continuation in
-            diskQueue.async {
+            diskWriteQueue.async {
                 try? self.fileManager.removeItem(at: self.diskDir)
                 try? self.fileManager.createDirectory(
                     at: self.diskDir,
                     withIntermediateDirectories: true
                 )
+                self.writeCountSincePrune = 0
                 continuation.resume()
             }
         }
@@ -137,7 +167,7 @@ final class ImageCache {
     /// 磁盘缓存大小（字节）
     func diskSize() async -> Int64 {
         await withCheckedContinuation { continuation in
-            diskQueue.async {
+            diskReadQueue.async {
                 guard let items = try? self.fileManager.contentsOfDirectory(
                     at: self.diskDir,
                     includingPropertiesForKeys: [.fileSizeKey]
@@ -157,6 +187,46 @@ final class ImageCache {
     }
 
     // MARK: - Private
+
+    private func writeDiskDataUnlocked(_ data: Data, to fileURL: URL) {
+        if !fileManager.fileExists(atPath: diskDir.path) {
+            try? fileManager.createDirectory(at: diskDir, withIntermediateDirectories: true)
+        }
+        try? data.write(to: fileURL, options: .atomic)
+        writeCountSincePrune += 1
+        if writeCountSincePrune >= 50 {
+            writeCountSincePrune = 0
+            pruneDiskCacheIfNeededUnlocked()
+        }
+    }
+
+    private func pruneDiskCacheIfNeededUnlocked() {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: diskDir,
+            includingPropertiesForKeys: keys,
+            options: .skipsHiddenFiles
+        ) else { return }
+
+        var entries: [(url: URL, size: Int64, modifiedAt: Date)] = []
+        var totalBytes: Int64 = 0
+        for url in items {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            let size = Int64(values?.fileSize ?? 0)
+            let modified = values?.contentModificationDate ?? .distantPast
+            totalBytes += size
+            entries.append((url, size, modified))
+        }
+        guard totalBytes > maxDiskCacheBytes else { return }
+
+        let targetBytes = maxDiskCacheBytes * 4 / 5
+        entries.sort { $0.modifiedAt < $1.modifiedAt }
+        for entry in entries {
+            guard totalBytes > targetBytes else { break }
+            try? fileManager.removeItem(at: entry.url)
+            totalBytes -= entry.size
+        }
+    }
 
     private func diskPath(for key: String) -> URL {
         let filename = key.sha256hex
@@ -180,6 +250,8 @@ extension ImageCache: @unchecked Sendable {}
 
 // MARK: - String SHA256
 
+private let sha256HexTable: [Character] = Array("0123456789abcdef")
+
 private extension String {
     var sha256hex: String {
         guard let data = self.data(using: .utf8) else { return self }
@@ -187,6 +259,12 @@ private extension String {
         data.withUnsafeBytes { buffer in
             _ = CC_SHA256(buffer.baseAddress, CC_LONG(data.count), &hash)
         }
-        return hash.map { String(format: "%02x", $0) }.joined()
+        var chars: [Character] = []
+        chars.reserveCapacity(64)
+        for byte in hash {
+            chars.append(sha256HexTable[Int(byte >> 4)])
+            chars.append(sha256HexTable[Int(byte & 0x0f)])
+        }
+        return String(chars)
     }
 }
